@@ -1,0 +1,22 @@
+{
+  "name": "datastitcher",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n mod1,vite -c blue,magenta \"npm run dev:mod1\" \"npm run dev:vite\"",
+    "dev:mod1": "backend\\.venv\\Scripts\\python backend/module-1/app.py",
+    "dev:vite": "cd frontend && npx vite",
+    "build": "cd frontend && npx vite build",
+    "start": "npm run dev:mod1",
+    "lint": "cd frontend && tsc --noEmit"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  },
+  "description": "<div align=\"center\"> <img width=\"1200\" height=\"475\" alt=\"GHBanner\" src=\"https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6\" /> </div>",
+  "main": "index.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

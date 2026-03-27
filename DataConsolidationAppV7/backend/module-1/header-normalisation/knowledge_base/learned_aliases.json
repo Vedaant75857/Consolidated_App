@@ -1,0 +1,214 @@
+{
+  "Vendor Name": [
+    "DOC. FORNITORE",
+    "FORNITORE_NOME",
+    "FILE_NAME",
+    "SUPPLIERNAME",
+    "SUPPLIERTYPE",
+    "CO#_NAME"
+  ],
+  "Invoice Number": [
+    "FATT DATA DOC.",
+    "MANUFACTURERNAME",
+    "MANUFACTURERPARTNUMBER",
+    "DUNSNUMBER"
+  ],
+  "GL Account Description": [
+    "CONTO_CO_GE_DESC"
+  ],
+  "GL Account": [
+    "WBE",
+    "NAME OF OFFSETTING ACCOUNT",
+    "WBS ELEMENT",
+    "ACCOUNTNAME",
+    "MAJORACCOUNTID",
+    "MAJORACCOUNTNAME",
+    "CHARTOFACCOUNTSID",
+    "CHARTOFACCOUNTSNAME"
+  ],
+  "Invoice Line Description": [
+    "WBE_DESC",
+    "PROFIT_CENTER_DESC",
+    "CENTRO_DI_COSTO_DESC",
+    "DOCUMENT HEADER TEXT",
+    "DESCRIPTION1",
+    "DESCRIPTION2",
+    "PARTFLEXTEXT1",
+    "PARTFLEXTEXT2",
+    "PARTFLEXTEXT3",
+    "COMMODITY DESCRIPTION",
+    "DOC TYPE DESC",
+    "SCHTYPE DESC"
+  ],
+  "Total Amount paid in Reporting Currency": [
+    "DIVISA DI GRUPPO",
+    "IMPORTO_EUR"
+  ],
+  "Total Amount paid in Local Currency": [
+    "IMPORTO_DIVISA_DOCUMENTO",
+    "IMPORTO_DIVISA_LOCALE",
+    "AMOUNT IN LOC.CRCY 2",
+    "AMOUNT IN LOCAL CRCY",
+    "GROSS AMOUNT"
+  ],
+  "Vendor Code": [
+    "FORNITORE"
+  ],
+  "Business Unit": [
+    "PROFIT CENTER",
+    "BUSA"
+  ],
+  "Data Source System": [
+    "_source_table",
+    "WOMANOWNEDENTERPRISE",
+    "VETERANOWNEDENTERPRISE",
+    "DVOENTERPRISE",
+    "ETHNICITYENTERPRISE",
+    "DISADVANTAGEDENTERPRISE"
+  ],
+  "Debit/ Credit Indicator": [
+    "TYPE",
+    "STOCKINDICATOR",
+    "ORDERROUTINGTYPE",
+    "PER/ CORP"
+  ],
+  "Local Currency Code": [
+    "COCD",
+    "CRCY",
+    "AMOUNT IN DOC. CURR.",
+    "LCURR",
+    "STANDARDCOSTCURRENCY",
+    "CUR COD",
+    "MINORITY CODE",
+    "CAT CDE",
+    "SCH TYP"
+  ],
+  "Fiscal Year": [
+    "YEAR/MONTH"
+  ],
+  "Goods Receipt Date": [
+    "PSTNG DATE",
+    "ENTRY DATE"
+  ],
+  "PO Document Date": [
+    "DOC. DATE",
+    "ORDEREDDATE",
+    "DUE DATE"
+  ],
+  "Invoice Date": [
+    "DOCUMENTNO"
+  ],
+  "Transaction ID": [
+    "REFERENCE",
+    "REFERENCE KEY 3",
+    "JDE DOCUMENT NUMBER"
+  ],
+  "Cost Center Code": [
+    "COST CTR",
+    "HSN/SAC CODE",
+    "COSTCENTERNAME"
+  ],
+  "Payment date": [
+    "CLEARING",
+    "PAY INST"
+  ],
+  "PO Manufacturer name": [
+    "USER NAME",
+    "USERNAME"
+  ],
+  "Company Code": [
+    "COMPANYCODE"
+  ],
+  "Plant Name": [
+    "SITEID",
+    "SITENAME",
+    "STREETADDRESS",
+    "REQUESTERID",
+    "MAILING NAME"
+  ],
+  "Company Name": [
+    "COMPANYLEVEL0",
+    "COMPANYLEVEL1",
+    "COMPANYLEVEL2",
+    "COMPANYLEVEL3"
+  ],
+  "Vendor City": [
+    "CITY"
+  ],
+  "Vendor State": [
+    "STATE",
+    "REGION"
+  ],
+  "Vendor Country": [
+    "COUNTRY"
+  ],
+  "Invoice PO Number": [
+    "POSTALCODE",
+    "EXTRAPOKEY",
+    "MATERIALCOMPOSITION",
+    "OPENPOINDICATOR",
+    "SUPERVISORID",
+    "PARENT / GROUP TODAY",
+    "ADDRESS LINE 1 - ADD1"
+  ],
+  "Contract ID": [
+    "CONTRACTNAME",
+    "CONTACTFIRSTNAME"
+  ],
+  "PO Material Group Code": [
+    "COMMODITYID"
+  ],
+  "PO Material Group Description": [
+    "COMMODITYNAME",
+    "COMMODITYTYPE",
+    "COMMODITY ROLL UP"
+  ],
+  "PO Manufacturer part number": [
+    "REVISIONNUMBER"
+  ],
+  "Invoice Line Number Quantity UOM": [
+    "ORIGINCOUNTRY"
+  ],
+  "Invoice PO Line Number": [
+    "CONTACTPHONENUMBER"
+  ],
+  "Vendor Preferred Status": [
+    "PREFERREDLANGUAGE"
+  ],
+  "PO Material Number": [
+    "FAXNUMBER"
+  ],
+  "Invoice Line Number": [
+    "ANNUMBER"
+  ],
+  "Payment Terms": [
+    "PAYMENTTYPE",
+    "PYMT TERMS",
+    "PAYMENT TERMS - A/P",
+    "PMT TRM"
+  ],
+  "Vendor Diversity": [
+    "MINORITYOWNED",
+    "DIVERSITYSBA8A",
+    "DIVERSITYHUBZONE",
+    "DIVERSITYSDB",
+    "DIVERSITYDVO",
+    "DIVERSITYETHNICITY",
+    "DIVERSITYGLBTOWNED",
+    "DIVERSITYDISABLEDOWNED",
+    "DIVERSITYLABORSURPLUS",
+    "DIVERSITYHBCU",
+    "DIVERSITYSMALLBUSINESS",
+    "DIVERSITYGREEN",
+    "CERTIFIEDDIVERSITY",
+    "CERTIFIEDMINORITYOWNED",
+    "DIVERSITYENTERPRISE",
+    "MINORITYOWNEDENTERPRISE"
+  ],
+  "Contract Start Date": [
+    "START EFFECTIVE DATE"
+  ],
+  "Vendor Address": [
+    "LONG ADDRESS"
+  ]
+}

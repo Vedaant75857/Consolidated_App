@@ -1,0 +1,73 @@
+"""Inventory routes: clean-table, clean-group, delete-rows."""
+
+from __future__ import annotations
+
+from flask import Blueprint, jsonify, request
+
+from shared.db import get_session_db
+from inventory.service import clean_table_sql, clean_group_sql, delete_rows_sql
+from inventory.dtype_defaults import STANDARD_FIELD_DTYPES
+
+inventory_bp = Blueprint("inventory_bp", __name__)
+
+
+@inventory_bp.route("/standard-field-dtypes", methods=["GET"])
+def standard_field_dtypes():
+    return jsonify(STANDARD_FIELD_DTYPES)
+
+
+@inventory_bp.route("/clean-table", methods=["POST"])
+def clean_table():
+    try:
+        body = request.get_json(force=True)
+        session_id = body.get("sessionId")
+        table_key = body.get("tableKey")
+        config = body.get("config")
+        if not session_id or not table_key or not config:
+            return jsonify({"error": "Missing required fields."}), 400
+
+        conn = get_session_db(session_id)
+        result = clean_table_sql(conn, table_key, config)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc) or "An error occurred during cleaning."}), 500
+
+
+@inventory_bp.route("/clean-group", methods=["POST"])
+def clean_group():
+    try:
+        body = request.get_json(force=True)
+        session_id = body.get("sessionId")
+        group_id = body.get("groupId")
+        config = body.get("config")
+        if not session_id or not group_id or not config:
+            return jsonify({"error": "Missing required fields."}), 400
+
+        conn = get_session_db(session_id)
+        result = clean_group_sql(conn, group_id, config)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc) or "An error occurred during cleaning."}), 500
+
+
+@inventory_bp.route("/delete-rows", methods=["POST"])
+def delete_rows():
+    try:
+        body = request.get_json(force=True)
+        session_id = body.get("sessionId")
+        table_key = body.get("tableKey")
+        row_ids = body.get("rowIds")
+        if not session_id or not table_key or not row_ids:
+            return jsonify({"error": "Missing required fields."}), 400
+
+        conn = get_session_db(session_id)
+        result = delete_rows_sql(conn, table_key, row_ids)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc) or "An error occurred."}), 500

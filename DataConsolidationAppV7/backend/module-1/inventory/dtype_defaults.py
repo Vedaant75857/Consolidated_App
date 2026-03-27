@@ -1,0 +1,90 @@
+"""Default data-type mapping for the 73 standard procurement header fields.
+
+Each standard header name maps to one of: "string", "number", "date".
+This file is the single source of truth used by the data-cleaning step
+to pre-select column types after header normalisation.
+"""
+
+STANDARD_FIELD_DTYPES: dict[str, str] = {
+    # ── Invoice Details ──────────────────────────────────────────────────
+    "Invoice Number": "string",
+    "Invoice Line Number": "number",
+    "Invoice Date": "date",
+    "Goods Receipt Date": "date",
+    "Invoice Line Description": "string",
+    "Invoice Line Number Quantity": "number",
+    "Invoice Line Number Quantity UOM": "string",
+    "Local Currency Code": "string",
+    "Total Amount paid in Local Currency": "number",
+    "Total Amount paid in Reporting Currency": "number",
+    "Price per UOM": "number",
+    "Contract indicator": "string",
+    "Fiscal Year": "number",
+    "Payment date": "date",
+    "Debit/ Credit Indicator": "string",
+    "PO Indicator": "string",
+    # ── PO Details ───────────────────────────────────────────────────────
+    "Invoice PO Number": "string",
+    "Invoice PO Line Number": "number",
+    "PO Document Date": "date",
+    "PO Line Item Description 1": "string",
+    "PO Material Group Description": "string",
+    "PO Material Number": "string",
+    "PO Material Description": "string",
+    "PO Material Group Code": "string",
+    "PO Line Item Quantity": "number",
+    "PO Line Item Quantity UOM": "string",
+    "PO Local Currency Code": "string",
+    "PO Line Item Unit Price": "number",
+    "PO Manufacturer part number": "string",
+    "PO Manufacturer name": "string",
+    "PO Line Item Description 2": "string",
+    "PO Total Amount in Local Currency": "number",
+    "PO Total Amount in reporting currency": "number",
+    # ── Vendor Details ───────────────────────────────────────────────────
+    "Vendor Code": "string",
+    "Vendor Name": "string",
+    "Vendor Country": "string",
+    "Vendor State": "string",
+    "Vendor Preferred Status": "string",
+    "Vendor Address": "string",
+    "Vendor City": "string",
+    "Vendor Zip/Postal Code": "string",
+    "Vendor Diversity": "string",
+    # ── Buyer Details ────────────────────────────────────────────────────
+    "Business Unit": "string",
+    "Company Code": "string",
+    "Company Name": "string",
+    "Company Country": "string",
+    "Plant Name": "string",
+    "Plant Code": "string",
+    "Plant Country": "string",
+    "Plant State": "string",
+    "Plant City": "string",
+    "Business Division": "string",
+    # ── Contract Details ─────────────────────────────────────────────────
+    "Contract ID": "string",
+    "Contract party": "string",
+    "Contract End Date": "date",
+    "Contract Start Date": "date",
+    "Payment Terms": "string",
+    "Contract Status": "string",
+    "Contract Description": "string",
+    # ── Procurement Details ──────────────────────────────────────────────
+    "Spend Classification Level 1": "string",
+    "Spend Classification Level 2": "string",
+    "Spend Classification Level 3": "string",
+    "Spend Classification Level 4": "string",
+    "Procurement Contract Owner": "string",
+    # ── Accounting Data ──────────────────────────────────────────────────
+    "Cost Center Code": "string",
+    "Cost Center Description": "string",
+    "GL Account": "string",
+    "GL Account Description": "string",
+    "GL Account Hierarchy Level 1": "string",
+    "GL Account Hierarchy Level 2": "string",
+    # ── Others ───────────────────────────────────────────────────────────
+    "Currency Conversion rate": "number",
+    "Data Source System": "string",
+    "Transaction ID": "string",
+}
