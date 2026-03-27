@@ -786,6 +786,14 @@ export default function App() {
     syncGroupsToServer(finalGroups, newUnassigned);
   };
 
+  const renameGroup = (groupId: string, newName: string) => {
+    const updatedGroups = appendGroups.map(g =>
+      g.group_id === groupId ? { ...g, group_name: newName } : g
+    );
+    setAppendGroups(updatedGroups);
+    syncGroupsToServer(updatedGroups, unassigned);
+  };
+
   const excludeTable = (tableKey: string) => {
     const newGroups = appendGroups.map(g => ({
       ...g, tables: g.tables.filter((t: string) => t !== tableKey)
@@ -1117,6 +1125,7 @@ export default function App() {
                     handleExecuteAppend={handleExecuteAppend}
                     moveTableToGroup={moveTableToGroup}
                     createNewGroup={createNewGroup}
+                    renameGroup={renameGroup}
                     excludeTable={excludeTable}
                     restoreTable={restoreTable}
                     appendReport={appendReport}

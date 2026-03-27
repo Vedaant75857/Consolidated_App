@@ -701,15 +701,6 @@ export default function Merging(props: MergingProps) {
                         {cc && <Link2 className="w-3 h-3 opacity-40 shrink-0" />}
                       </span>
 
-                      {cc ? (
-                        <span className="block text-[9px] font-normal opacity-60 mt-0.5">
-                          {cc.category} · {Math.round(cc.overlap_pct ?? 0)}% overlap
-                        </span>
-                      ) : categoryLabel && categoryLabel !== "unknown" ? (
-                        <span className="block text-[9px] font-normal opacity-60 mt-0.5">
-                          {categoryLabel}
-                        </span>
-                      ) : null}
                     </th>
                   );
                 })}

@@ -282,6 +282,7 @@ export default function DataLoading({
 }: DataLoadingProps) {
   const [isDragOver, setIsDragOver] = useState(false);
   const [fileLabel, setFileLabel] = useState<string | null>(null);
+  const [fileList, setFileList] = useState<{ path: string; file: File }[]>([]);
   const [zipping, setZipping] = useState(false);
   const [expandedTable, setExpandedTable] = useState<string | null>(null);
   const [headerEditTable, setHeaderEditTable] = useState<string | null>(null);
@@ -298,6 +299,7 @@ export default function DataLoading({
     const zipFile = await buildZipFromFiles(all);
     setFile(zipFile);
     setFileLabel(`${all.length} file${all.length !== 1 ? "s" : ""} ready for upload`);
+    setFileList([...all]);
   }, [setFile]);
 
   const toggleRowSelection = (tableKey: string, rowId: string | number) => {
@@ -429,9 +431,25 @@ export default function DataLoading({
     }
   }, [rebuildFromAccumulated]);
 
+  const removeFile = useCallback(async (path: string) => {
+    accumulatedFilesRef.current = accumulatedFilesRef.current.filter((f) => f.path !== path);
+    const all = accumulatedFilesRef.current;
+    if (all.length === 0) {
+      setFile(null);
+      setFileLabel(null);
+      setFileList([]);
+      return;
+    }
+    const zipFile = await buildZipFromFiles(all);
+    setFile(zipFile);
+    setFileLabel(`${all.length} file${all.length !== 1 ? "s" : ""} ready for upload`);
+    setFileList([...all]);
+  }, [setFile]);
+
   const clearFile = () => {
     setFile(null);
     setFileLabel(null);
+    setFileList([]);
     accumulatedFilesRef.current = [];
     if (zipInputRef.current) zipInputRef.current.value = "";
     if (folderInputRef.current) folderInputRef.current.value = "";
@@ -493,6 +511,32 @@ export default function DataLoading({
                       <Upload className="w-8 h-8" />
                     </div>
                     <p className="text-sm font-bold text-neutral-900 dark:text-white">{fileLabel}</p>
+                    {fileList.length > 0 && (
+                      <div className="w-full max-h-40 overflow-y-auto px-6 py-2">
+                        <div className="flex flex-col gap-1">
+                          {fileList.map((f) => {
+                            const basename = f.path.split("/").pop() || f.path;
+                            return (
+                              <div
+                                key={f.path}
+                                title={f.path}
+                                className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-[11px] font-medium text-emerald-700 dark:text-emerald-300"
+                              >
+                                <FileText className="w-3 h-3 shrink-0" />
+                                <span className="truncate flex-1 text-left">{basename}</span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); removeFile(f.path); }}
+                                  className="ml-auto shrink-0 hover:text-red-500 transition-colors"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                     <p className="text-xs text-neutral-400 dark:text-neutral-500">Drop or browse more files to add them</p>
                     <div className="flex items-center gap-3">
                       <button

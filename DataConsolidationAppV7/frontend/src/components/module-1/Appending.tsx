@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Loader2, ChevronRight, ChevronDown, LayoutGrid, ListChecks, ArrowRight, Info, Plus, MoreHorizontal, Undo2, Ban, X, Eye, EyeOff, Database } from "lucide-react";
+import { Loader2, ChevronRight, ChevronDown, LayoutGrid, ListChecks, ArrowRight, Info, Plus, MoreHorizontal, Undo2, Ban, X, Eye, EyeOff, Database, Pencil } from "lucide-react";
 import { motion } from "motion/react";
 import AppendReport from "./AppendReport";
 import { PrimaryButton, EmptyState } from "../common/ui";
@@ -18,6 +18,7 @@ interface AppendingProps {
   handleExecuteAppend: () => void;
   moveTableToGroup: (tableKey: string, targetGroupId: string | null) => void;
   createNewGroup: (tableKeys: string[]) => void;
+  renameGroup: (groupId: string, newName: string) => void;
   excludeTable: (tableKey: string) => void;
   restoreTable: (tableKey: string) => void;
   appendReport: any[] | null;
@@ -106,6 +107,7 @@ export default function Appending({
   handleExecuteAppend,
   moveTableToGroup,
   createNewGroup,
+  renameGroup,
   excludeTable,
   restoreTable,
   appendReport,
@@ -114,6 +116,8 @@ export default function Appending({
   const [selectedTables, setSelectedTables] = useState<string[]>([]);
   const [showExcluded, setShowExcluded] = useState(false);
   const [previewTable, setPreviewTable] = useState<string | null>(null);
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+  const editNameRef = useRef<HTMLInputElement>(null);
 
   const toggleTableSelection = (tableKey: string) => {
     setSelectedTables(prev =>
@@ -193,9 +197,38 @@ export default function Appending({
                       <div className="flex items-center justify-between px-5 py-3 border-b border-neutral-100 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-800/50 rounded-t-2xl">
                         <div className="flex items-center gap-2 min-w-0">
                           <Database className="w-4 h-4 text-red-500 shrink-0" />
-                          <h3 className="font-bold text-sm text-neutral-900 dark:text-white truncate">
-                            {g.group_name || g.group_id}
-                          </h3>
+                          {editingGroupId === g.group_id ? (
+                            <input
+                              ref={editNameRef}
+                              type="text"
+                              defaultValue={g.group_name || g.group_id}
+                              autoFocus
+                              className="font-bold text-sm text-neutral-900 dark:text-white bg-white dark:bg-neutral-800 border border-red-300 dark:border-red-700 rounded-lg px-2 py-0.5 focus:outline-none focus:ring-2 focus:ring-red-500 min-w-[120px]"
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  const val = editNameRef.current?.value.trim();
+                                  if (val) renameGroup(g.group_id, val);
+                                  setEditingGroupId(null);
+                                } else if (e.key === "Escape") {
+                                  setEditingGroupId(null);
+                                }
+                              }}
+                              onBlur={() => {
+                                const val = editNameRef.current?.value.trim();
+                                if (val) renameGroup(g.group_id, val);
+                                setEditingGroupId(null);
+                              }}
+                            />
+                          ) : (
+                            <h3
+                              className="font-bold text-sm text-neutral-900 dark:text-white truncate cursor-pointer group/name flex items-center gap-1.5 hover:text-red-600 dark:hover:text-red-400 transition-colors"
+                              onClick={() => setEditingGroupId(g.group_id)}
+                              title="Click to rename group"
+                            >
+                              {g.group_name || g.group_id}
+                              <Pencil className="w-3 h-3 opacity-0 group-hover/name:opacity-60 transition-opacity shrink-0" />
+                            </h3>
+                          )}
                           <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-neutral-200 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 shrink-0">
                             {g.tables?.length} {g.tables?.length === 1 ? "file" : "files"}
                           </span>
