@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #CC0000;
+  --color-primary-hover: #A30000;
+  --color-primary-light: #FEE2E2;
+  --color-primary-50: #FFF5F5;
+  --color-primary-100: #FED7D7;
+  --color-primary-200: #FEB2B2;
+  --color-primary-300: #FC8181;
+  --color-primary-400: #F56565;
+  --color-primary-500: #CC0000;
+  --color-primary-600: #A30000;
+  --color-primary-700: #8B0000;
+  --color-primary-800: #6B0000;
+  --color-primary-900: #4A0000;
+
+  --color-surface: #FFFFFF;
+  --color-surface-secondary: #F9FAFB;
+  --color-surface-dark: #1A1A1A;
+  --color-surface-dark-secondary: #262626;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+html {
+  font-family: var(--font-sans);
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: #F9FAFB;
+  color: #111827;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+html.dark body {
+  background: #0A0A0A;
+  color: #F9FAFB;
+}
+
+:root {
+  --chart-1: #CC0000;
+  --chart-2: #E53E3E;
+  --chart-3: #FC8181;
+  --chart-4: #FEB2B2;
+  --chart-5: #4A5568;
+  --chart-6: #718096;
+  --chart-7: #A0AEC0;
+  --chart-8: #CBD5E0;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #D1D5DB;
+  border-radius: 3px;
+}
+html.dark ::-webkit-scrollbar-thumb {
+  background: #374151;
+}
+
+/* Range input theming */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: 3px;
+  background: #E5E7EB;
+  outline: none;
+}
+html.dark input[type="range"] {
+  background: #374151;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #CC0000;
+  cursor: pointer;
+  border: 2px solid white;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+/* Selection color */
+::selection {
+  background: #FEB2B2;
+  color: #4A0000;
+}
+html.dark ::selection {
+  background: #6B0000;
+  color: #FEB2B2;
+}

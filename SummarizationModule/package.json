@@ -1,0 +1,13 @@
+{
+  "name": "spend-analyzer",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently --kill-others-on-fail --names \"backend,frontend\" --prefix-colors \"red,blue\" \"npm run backend\" \"npm run frontend\"",
+    "backend": "python backend/app.py",
+    "frontend": "npm run dev --prefix frontend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

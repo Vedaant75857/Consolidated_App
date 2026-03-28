@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Database, Layers, ArrowRight, Sun, Moon } from "lucide-react";
+import { Database, Layers, BarChart3, ArrowRight, Sun, Moon } from "lucide-react";
 import {
   motion,
   AnimatePresence,
@@ -35,6 +35,19 @@ const APPS = [
     accentBg: "bg-rose-50 dark:bg-rose-950/30",
     accentRgb: "225, 29, 72",
     tag: "Module 2",
+  },
+  {
+    title: "Spend Analyzer",
+    description:
+      "Upload procurement data, map columns with AI, and generate interactive spend dashboards with charts, Pareto analysis, and exportable PDF reports.",
+    url: "http://localhost:3004",
+    icon: BarChart3,
+    gradient: "from-amber-600 to-orange-600",
+    shadowColor: "shadow-amber-200/40 dark:shadow-amber-900/30",
+    accentText: "text-amber-600 dark:text-amber-400",
+    accentBg: "bg-amber-50 dark:bg-amber-950/30",
+    accentRgb: "217, 119, 6",
+    tag: "Module 3",
   },
 ];
 
@@ -351,7 +364,7 @@ export default function App() {
             }}
             className="text-5xl font-bold tracking-tight mb-4 gradient-text"
           >
-            Process. Normalize. Deliver.
+            Process. Normalize. Analyze. Deliver.
           </motion.h1>
 
           {/* Subheadline */}
