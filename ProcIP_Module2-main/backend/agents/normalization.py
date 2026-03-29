@@ -375,7 +375,7 @@ def add_record_id_agent(df):
 
 
 def date_normalization_agent(df, api_key=None, user_format=None, **kwargs):
-    """Normalize date columns using pd.to_datetime with AI format-string fallback."""
+    """Normalize date columns via column profiling (DMY/MDY inference) + stacked mask extraction."""
     cost = CostTracker()
     custom_sys = kwargs.get('custom_system', '')
     custom_inst = kwargs.get('custom_instructions', '')
@@ -390,13 +390,9 @@ def date_normalization_agent(df, api_key=None, user_format=None, **kwargs):
     if not date_cols:
         return df, "No new date columns found.", cost.summary()
 
-    COMMON_FORMATS = [
-        '%Y-%m-%d', '%d-%m-%Y', '%m/%d/%Y', '%d/%m/%Y',
-        '%Y/%m/%d', '%m-%d-%Y', '%d.%m.%Y', '%Y.%m.%d',
-        '%b %d, %Y', '%d %b %Y', '%B %d, %Y', '%d %B %Y',
-        '%Y-%m-%d %H:%M:%S', '%m/%d/%Y %H:%M:%S',
-        '%Y%m%d', '%d-%b-%Y', '%d-%b-%y',
-    ]
+    # Predefine the specific masks to sequentially cascade.
+    DMY_MASKS = ['%d-%m-%Y', '%d-%b-%Y', '%d-%B-%Y', '%d-%m-%y', '%d-%b-%y', '%d-%B-%y', '%Y-%m-%d', '%y-%m-%d']
+    MDY_MASKS = ['%m-%d-%Y', '%b-%d-%Y', '%B-%d-%Y', '%m-%d-%y', '%b-%d-%y', '%B-%d-%y', '%Y-%m-%d', '%y-%m-%d']
 
     for col in date_cols:
         try:
@@ -405,25 +401,51 @@ def date_normalization_agent(df, api_key=None, user_format=None, **kwargs):
             if series.empty:
                 continue
 
-            parsed = pd.Series(pd.NaT, index=df.index)
             total_count = series.shape[0]
 
-            for fmt in COMMON_FORMATS:
-                try:
-                    attempt = pd.to_datetime(df[col], format=fmt, errors='coerce')
-                    success_rate = attempt.notna().sum() / max(total_count, 1)
-                    if success_rate > 0.8:
-                        parsed = attempt
-                        break
-                except Exception:
-                    continue
+            # 1. Pre-Processing: Unify separators and whitespace to hyphens.
+            s_clean = series.str.replace(r'[/\.\s]+', '-', regex=True).str.strip()
 
-            if parsed.isna().sum() > total_count * 0.2:
-                try:
-                    parsed = pd.to_datetime(df[col], infer_datetime_format=True, errors='coerce')
-                except Exception:
-                    parsed = pd.to_datetime(df[col], errors='coerce')
+            # 2. Extract parts to Profile Column
+            parts = s_clean.str.split('-', expand=True)
 
+            # Ensure we have at least 2 parts to profile
+            if parts.shape[1] >= 2:
+                # Count Numeric > 12
+                valid_p0 = pd.to_numeric(parts[0], errors='coerce')
+                count_p0_gt_12 = (valid_p0 > 12).sum()
+
+                valid_p1 = pd.to_numeric(parts[1], errors='coerce')
+                count_p1_gt_12 = (valid_p1 > 12).sum()
+
+                # Count Month Names
+                months_pattern = r'(?i)^(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)'
+                count_p0_month = parts[0].str.contains(months_pattern, na=False).sum()
+                count_p1_month = parts[1].str.contains(months_pattern, na=False).sum()
+
+                # Score
+                score_dmy = count_p0_gt_12 + count_p1_month
+                score_mdy = count_p1_gt_12 + count_p0_month
+
+                master_pattern = 'MDY' if score_mdy > score_dmy else 'DMY'
+            else:
+                master_pattern = 'DMY'
+
+            # 3. Stack Format Masks
+            active_masks = DMY_MASKS if master_pattern == 'DMY' else MDY_MASKS
+            parsed = pd.Series(pd.NaT, index=df.index)
+            
+            # Apply all primary masks concurrently
+            for fmt in active_masks:
+                parsed = parsed.combine_first(pd.to_datetime(s_clean, format=fmt, errors='coerce'))
+
+            # Fallback 1: let Pandas automatically try its best on whatever is still failing
+            if parsed.isna().sum() > 0:
+                is_dayfirst = (master_pattern == 'DMY')
+                fallback_parsed = pd.to_datetime(s_clean, dayfirst=is_dayfirst, format='mixed', errors='coerce')
+                parsed = parsed.combine_first(fallback_parsed)
+
+            # 4. AI Backing (Bottom 20% failure case)
             still_failed = parsed.isna().sum()
             if still_failed > total_count * 0.2:
                 samples = _diverse_date_samples(df[col], max_samples=30)
@@ -449,17 +471,16 @@ def date_normalization_agent(df, api_key=None, user_format=None, **kwargs):
                         cost.record(resp)
                         ai_fmt = json.loads(resp.choices[0].message.content).get('format', '')
                         if ai_fmt:
-                            ai_parsed = pd.to_datetime(df[col], format=ai_fmt, errors='coerce')
-                            improved = ai_parsed.notna().sum() > parsed.notna().sum()
-                            if improved:
-                                parsed = ai_parsed
+                            ai_parsed = pd.to_datetime(s_clean, format=ai_fmt, errors='coerce')
+                            parsed = parsed.combine_first(ai_parsed)
                     except Exception as e:
                         cost.record_error(f"Date AI fallback for '{col}': {e}")
 
+            # 5. Output Extraction
             new_col = f"Norm_Date_{col}"
-            df[new_col] = parsed.dt.strftime(target_fmt).where(parsed.notna(), '')
+            df[new_col] = parsed.dt.strftime(target_fmt).fillna('')
             success = parsed.notna().sum()
-            log.append(f"'{col}' → '{new_col}': {success}/{total_count} parsed")
+            log.append(f"'{col}' [{master_pattern} anchor] → '{new_col}': {success}/{total_count} parsed")
         except Exception as e:
             log.append(f"Error '{col}': {e}")
 

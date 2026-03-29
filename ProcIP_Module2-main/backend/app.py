@@ -80,7 +80,7 @@ def upload_file():
                     try:
                         if lower.endswith(('.xlsx', '.xlsm', '.xltx')):
                             data = zf.read(name)
-                            excel_file = pd.ExcelFile(io.BytesIO(data))
+                            excel_file = pd.ExcelFile(io.BytesIO(data), engine='calamine')
                             for sheet in excel_file.sheet_names:
                                 key = f"{name}::{sheet}"
                                 df = pd.read_excel(excel_file, sheet_name=sheet, header=None)
@@ -100,7 +100,7 @@ def upload_file():
             # Fallback natively handles bare individual Excel or CSV uploads effortlessly
             try:
                 if filename.endswith(('.xlsx', '.xlsm', '.xltx')):
-                    excel_file = pd.ExcelFile(io.BytesIO(buffer))
+                    excel_file = pd.ExcelFile(io.BytesIO(buffer), engine='calamine')
                     for sheet in excel_file.sheet_names:
                         key = f"{file.filename}::{sheet}"
                         df = pd.read_excel(excel_file, sheet_name=sheet, header=None)

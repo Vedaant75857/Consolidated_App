@@ -7,7 +7,7 @@
     "dev:landing": "cd landing-page && npx vite",
     "dev:stitcher-be": "cd DataConsolidationAppV7 && backend\\.venv\\Scripts\\python backend/module-1/app.py",
     "dev:stitcher-fe": "cd DataConsolidationAppV7/frontend && npx vite",
-    "dev:normalizer-be": "cd ProcIP_Module2-main/backend && python app.py",
+    "dev:normalizer-be": "cd ProcIP_Module2-main/backend && .venv\\Scripts\\python app.py",
     "dev:normalizer-fe": "cd ProcIP_Module2-main/frontend && npx vite",
     "dev:summarizer-be": "cd SummarizationModule && .venv\\Scripts\\python backend/app.py",
     "dev:summarizer-fe": "cd SummarizationModule/frontend && npx vite"
