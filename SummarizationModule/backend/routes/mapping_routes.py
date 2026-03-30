@@ -1,3 +1,5 @@
+import logging
+
 from flask import Blueprint, jsonify, request
 
 from shared.db import get_session_db, get_meta, set_meta, session_exists
@@ -7,6 +9,7 @@ from services.column_mapper import (
     build_typed_table,
 )
 
+logger = logging.getLogger(__name__)
 mapping_bp = Blueprint("mapping", __name__)
 
 
@@ -28,7 +31,11 @@ def map_columns():
             return jsonify({"error": "No columns found. Upload data first."}), 400
 
         mappings = ai_map_columns(columns, api_key)
+        logger.info("AI returned %d mapping(s): %s",
+                     len(mappings),
+                     [m.get("fieldKey") for m in mappings] if mappings else "EMPTY")
         set_meta(conn, "ai_mappings", mappings)
+        set_meta(conn, "step", 3)
         conn.close()
 
         return jsonify({
@@ -55,7 +62,7 @@ def confirm_mapping():
         set_meta(conn, "mapping", mapping)
 
         cast_report = build_typed_table(conn, mapping)
-        set_meta(conn, "step", 3)
+        set_meta(conn, "step", 4)
         conn.close()
 
         return jsonify({"castReport": cast_report})

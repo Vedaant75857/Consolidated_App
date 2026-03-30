@@ -1,15 +1,22 @@
 export interface ColumnInfo {
   name: string;
-  detectedType: "numeric" | "datetime" | "string";
-  parseSuccessRate: number;
-  distinctCount: number;
   sampleValues: string[];
 }
 
 export interface FileInventoryItem {
-  tableName: string;
-  rowCount: number;
-  columnCount: number;
+  table_key: string;
+  rows: number;
+  cols: number;
+}
+
+export interface UploadWarning {
+  file: string;
+  message: string;
+}
+
+export interface PreviewData {
+  columns: string[];
+  rows: any[];
 }
 
 export interface StandardField {
@@ -100,4 +107,4 @@ export interface ViewConfig {
   paretoThreshold: number;
 }
 
-export type AppStep = 1 | 2 | 3 | 4;
+export type AppStep = 1 | 2 | 3 | 4 | 5;

@@ -6,13 +6,16 @@ import sqlite3
 import zipfile
 from typing import Any
 
-import pandas as pd
 from openpyxl import load_workbook
 
 
-def _safe_table_name(raw: str) -> str:
+# ──────────────────────────────────────────────
+# Internal helpers
+# ──────────────────────────────────────────────
+
+def _safe_sql_name(raw: str) -> str:
     cleaned = re.sub(r"[^a-zA-Z0-9_]", "_", raw)
-    return f"data__{cleaned}"[:120]
+    return cleaned[:120]
 
 
 def _clean_header(h: str) -> str:
@@ -32,73 +35,129 @@ def _dedupe_headers(headers: list[str]) -> list[str]:
     return out
 
 
-def _parse_csv_bytes(data: bytes, filename: str) -> list[dict[str, Any]]:
+def _ensure_registry(conn: sqlite3.Connection):
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS _table_registry "
+        "(table_key TEXT PRIMARY KEY, data_table TEXT, raw_table TEXT)"
+    )
+    conn.commit()
+
+
+def _register_table(conn: sqlite3.Connection, table_key: str, data_table: str, raw_table: str):
+    conn.execute(
+        "INSERT OR REPLACE INTO _table_registry (table_key, data_table, raw_table) VALUES (?, ?, ?)",
+        (table_key, data_table, raw_table),
+    )
+
+
+def _get_registry(conn: sqlite3.Connection) -> list[dict[str, str]]:
+    _ensure_registry(conn)
+    rows = conn.execute("SELECT table_key, data_table, raw_table FROM _table_registry ORDER BY rowid").fetchall()
+    return [{"table_key": r[0], "data_table": r[1], "raw_table": r[2]} for r in rows]
+
+
+def _unregister_table(conn: sqlite3.Connection, table_key: str):
+    conn.execute("DELETE FROM _table_registry WHERE table_key = ?", (table_key,))
+
+
+# ──────────────────────────────────────────────
+# Parsing
+# ──────────────────────────────────────────────
+
+def _parse_csv_bytes(data: bytes, filename: str) -> tuple[list[list[Any]], list[str]]:
+    """Returns (raw_grid, header_names). raw_grid includes the header row."""
     text = data.decode("utf-8", errors="replace")
     if text.startswith("\ufeff"):
         text = text[1:]
     reader = csv.reader(io.StringIO(text))
-    rows_iter = iter(reader)
-    try:
-        raw_headers = next(rows_iter)
-    except StopIteration:
-        return []
+    raw_grid: list[list[Any]] = []
+    for row in reader:
+        raw_grid.append(row)
+    if not raw_grid:
+        return [], []
+    raw_headers = raw_grid[0]
     headers = _dedupe_headers([_clean_header(h) for h in raw_headers])
-    records = []
-    for row in rows_iter:
-        if not any(cell.strip() for cell in row):
-            continue
-        record = {}
-        for idx, h in enumerate(headers):
-            record[h] = row[idx] if idx < len(row) else ""
-        records.append(record)
-    return records
+    return raw_grid, headers
 
 
-def _parse_excel_bytes(data: bytes, filename: str) -> dict[str, list[dict[str, Any]]]:
+def _parse_excel_bytes(data: bytes, filename: str) -> dict[str, tuple[list[list[Any]], list[str]]]:
+    """Returns {sheet_name: (raw_grid, header_names)}."""
     wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
-    result: dict[str, list[dict[str, Any]]] = {}
+    result: dict[str, tuple[list[list[Any]], list[str]]] = {}
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
         rows = list(ws.iter_rows(values_only=True))
         if not rows:
             continue
-        raw_headers = [str(c) if c is not None else "" for c in rows[0]]
+        raw_grid = []
+        for row in rows:
+            raw_grid.append([str(c) if c is not None else "" for c in row])
+        raw_headers = raw_grid[0]
         headers = _dedupe_headers([_clean_header(h) for h in raw_headers])
-        records = []
-        for row in rows[1:]:
-            vals = [c for c in row]
-            if not any(v is not None and str(v).strip() for v in vals):
-                continue
-            record = {}
-            for idx, h in enumerate(headers):
-                v = vals[idx] if idx < len(vals) else None
-                record[h] = str(v) if v is not None else ""
-            records.append(record)
-        if records:
-            result[sheet_name] = records
+        if headers:
+            result[sheet_name] = (raw_grid, headers)
     wb.close()
     return result
 
 
-def _store_records(conn: sqlite3.Connection, table_name: str, records: list[dict]):
-    if not records:
-        return
-    headers = list(records[0].keys())
-    col_defs = ", ".join(f'"{h}" TEXT' for h in headers)
-    conn.execute(f'CREATE TABLE IF NOT EXISTS "{table_name}" ({col_defs})')
-    placeholders = ", ".join("?" for _ in headers)
-    conn.executemany(
-        f'INSERT INTO "{table_name}" VALUES ({placeholders})',
-        [tuple(r.get(h, "") for h in headers) for r in records],
-    )
+# ──────────────────────────────────────────────
+# Storage: raw + data tables
+# ──────────────────────────────────────────────
 
+def _store_raw_table(conn: sqlite3.Connection, table_name: str, raw_grid: list[list[Any]]):
+    """Store the raw grid as RAW_0, RAW_1, ... columns (all TEXT)."""
+    if not raw_grid:
+        return
+    max_cols = max(len(r) for r in raw_grid)
+    col_defs = ", ".join(f'"RAW_{i}" TEXT' for i in range(max_cols))
+    conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+    conn.execute(f'CREATE TABLE "{table_name}" ({col_defs})')
+    placeholders = ", ".join("?" for _ in range(max_cols))
+    for row in raw_grid:
+        padded = list(row) + [""] * (max_cols - len(row))
+        conn.execute(f'INSERT INTO "{table_name}" VALUES ({placeholders})', padded)
+
+
+def _store_data_table(conn: sqlite3.Connection, table_name: str, headers: list[str], data_rows: list[list[Any]]):
+    """Store parsed data with proper column names (all TEXT). Adds RECORD_ID."""
+    if not headers:
+        return
+    all_headers = ["RECORD_ID"] + headers
+    col_defs = ", ".join(f'"{h}" TEXT' for h in all_headers)
+    conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+    conn.execute(f'CREATE TABLE "{table_name}" ({col_defs})')
+    placeholders = ", ".join("?" for _ in all_headers)
+    record_id = 0
+    for row in data_rows:
+        vals = [str(v).strip() if v is not None and str(v).strip() else "" for v in row]
+        if not any(v for v in vals):
+            continue
+        padded = vals + [""] * (len(headers) - len(vals))
+        record_id += 1
+        conn.execute(
+            f'INSERT INTO "{table_name}" VALUES ({placeholders})',
+            [str(record_id)] + padded[:len(headers)],
+        )
+
+
+def _build_table_key(zip_path: str, sheet_name: str | None) -> str:
+    name = os.path.basename(zip_path) if zip_path else "file"
+    if sheet_name:
+        return f"{name}::{sheet_name}"
+    return f"{name}::"
+
+
+# ──────────────────────────────────────────────
+# Load ZIP / single file
+# ──────────────────────────────────────────────
 
 def load_zip_to_session(
     conn: sqlite3.Connection, file_data: bytes
-) -> tuple[list[str], list[str]]:
-    """Extract ZIP, parse files, store in SQLite. Returns (table_names, warnings)."""
-    warnings: list[str] = []
-    table_names: list[str] = []
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Extract ZIP, parse files, store raw + data tables. Returns (table_keys, warnings)."""
+    _ensure_registry(conn)
+    warnings: list[dict[str, str]] = []
+    table_keys: list[str] = []
 
     with zipfile.ZipFile(io.BytesIO(file_data)) as zf:
         for entry in zf.namelist():
@@ -112,169 +171,252 @@ def load_zip_to_session(
             try:
                 raw = zf.read(entry)
                 if ext == ".csv":
-                    records = _parse_csv_bytes(raw, basename)
-                    tname = _safe_table_name(os.path.splitext(basename)[0])
-                    _store_records(conn, tname, records)
-                    table_names.append(tname)
+                    raw_grid, headers = _parse_csv_bytes(raw, basename)
+                    if not headers:
+                        continue
+                    table_key = _build_table_key(entry, None)
+                    safe = _safe_sql_name(os.path.splitext(basename)[0])
+                    data_tbl = f"data__{safe}"
+                    raw_tbl = f"raw__{safe}"
+                    _store_raw_table(conn, raw_tbl, raw_grid)
+                    _store_data_table(conn, data_tbl, headers, raw_grid[1:])
+                    _register_table(conn, table_key, data_tbl, raw_tbl)
+                    table_keys.append(table_key)
+
                 elif ext in (".xlsx", ".xlsm", ".xltx", ".xltm"):
                     sheets = _parse_excel_bytes(raw, basename)
-                    for sheet_name, records in sheets.items():
-                        tname = _safe_table_name(
-                            f"{os.path.splitext(basename)[0]}__{sheet_name}"
-                        )
-                        _store_records(conn, tname, records)
-                        table_names.append(tname)
-                else:
-                    continue
+                    for sheet_name, (raw_grid, headers) in sheets.items():
+                        table_key = _build_table_key(entry, sheet_name)
+                        safe = _safe_sql_name(f"{os.path.splitext(basename)[0]}__{sheet_name}")
+                        data_tbl = f"data__{safe}"
+                        raw_tbl = f"raw__{safe}"
+                        _store_raw_table(conn, raw_tbl, raw_grid)
+                        _store_data_table(conn, data_tbl, headers, raw_grid[1:])
+                        _register_table(conn, table_key, data_tbl, raw_tbl)
+                        table_keys.append(table_key)
             except Exception as exc:
-                warnings.append(f"Failed to parse {basename}: {exc}")
+                warnings.append({"file": basename, "message": str(exc)})
 
     conn.commit()
-    return table_names, warnings
+    return table_keys, warnings
 
 
 def load_single_file(
     conn: sqlite3.Connection, filename: str, file_data: bytes
-) -> tuple[list[str], list[str]]:
-    """Parse a single CSV/Excel file. Returns (table_names, warnings)."""
-    warnings: list[str] = []
-    table_names: list[str] = []
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Parse a single CSV/Excel file. Returns (table_keys, warnings)."""
+    _ensure_registry(conn)
+    warnings: list[dict[str, str]] = []
+    table_keys: list[str] = []
     ext = os.path.splitext(filename)[1].lower()
 
     try:
         if ext == ".csv":
-            records = _parse_csv_bytes(file_data, filename)
-            tname = _safe_table_name(os.path.splitext(filename)[0])
-            _store_records(conn, tname, records)
-            table_names.append(tname)
-        elif ext in (".xlsx", ".xlsm"):
+            raw_grid, headers = _parse_csv_bytes(file_data, filename)
+            if headers:
+                table_key = _build_table_key(filename, None)
+                safe = _safe_sql_name(os.path.splitext(filename)[0])
+                data_tbl = f"data__{safe}"
+                raw_tbl = f"raw__{safe}"
+                _store_raw_table(conn, raw_tbl, raw_grid)
+                _store_data_table(conn, data_tbl, headers, raw_grid[1:])
+                _register_table(conn, table_key, data_tbl, raw_tbl)
+                table_keys.append(table_key)
+
+        elif ext in (".xlsx", ".xlsm", ".xltx", ".xltm"):
             sheets = _parse_excel_bytes(file_data, filename)
-            for sheet_name, records in sheets.items():
-                tname = _safe_table_name(
-                    f"{os.path.splitext(filename)[0]}__{sheet_name}"
-                )
-                _store_records(conn, tname, records)
-                table_names.append(tname)
+            for sheet_name, (raw_grid, headers) in sheets.items():
+                table_key = _build_table_key(filename, sheet_name)
+                safe = _safe_sql_name(f"{os.path.splitext(filename)[0]}__{sheet_name}")
+                data_tbl = f"data__{safe}"
+                raw_tbl = f"raw__{safe}"
+                _store_raw_table(conn, raw_tbl, raw_grid)
+                _store_data_table(conn, data_tbl, headers, raw_grid[1:])
+                _register_table(conn, table_key, data_tbl, raw_tbl)
+                table_keys.append(table_key)
     except Exception as exc:
-        warnings.append(f"Failed to parse {filename}: {exc}")
+        warnings.append({"file": filename, "message": str(exc)})
 
     conn.commit()
-    return table_names, warnings
+    return table_keys, warnings
 
 
-def detect_column_types(
-    conn: sqlite3.Connection, table_names: list[str]
+# ──────────────────────────────────────────────
+# Column info (lightweight — no type inference)
+# ──────────────────────────────────────────────
+
+def collect_column_info(
+    conn: sqlite3.Connection, table_keys: list[str]
 ) -> list[dict[str, Any]]:
-    """Run type inference on every column across all tables.
-    Returns a list of {name, detectedType, parseSuccessRate, distinctCount, sampleValues}.
-    Also stores results in _column_types table.
+    """Gather column names and sample values across all session tables.
+
+    Returns [{"name": "COL", "sampleValues": [...]}].
+    No type detection or parsing — just raw string samples so the AI
+    can infer types from the values themselves.
     """
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS _column_types "
-        "(column_name TEXT PRIMARY KEY, detected_type TEXT, "
-        "parse_success_rate REAL, distinct_count INTEGER)"
-    )
+    registry = _get_registry(conn)
+    data_tables = [r["data_table"] for r in registry if r["table_key"] in table_keys]
 
     all_columns: dict[str, list[str]] = {}
-    for tname in table_names:
-        cursor = conn.execute(f'PRAGMA table_info("{tname}")')
+    for tname in data_tables:
+        try:
+            cursor = conn.execute(f'PRAGMA table_info("{tname}")')
+        except Exception:
+            continue
         cols = [row[1] for row in cursor.fetchall()]
         for col in cols:
+            if col == "RECORD_ID":
+                continue
             if col not in all_columns:
                 all_columns[col] = []
             rows = conn.execute(
                 f'SELECT DISTINCT "{col}" FROM "{tname}" '
                 f'WHERE "{col}" IS NOT NULL AND TRIM("{col}") != "" '
-                f"LIMIT 500"
+                f"LIMIT 50"
             ).fetchall()
             all_columns[col].extend(r[0] for r in rows)
 
     results: list[dict[str, Any]] = []
     for col_name, values in all_columns.items():
-        unique_vals = list(dict.fromkeys(values))[:500]
-        if not unique_vals:
-            results.append({
-                "name": col_name,
-                "detectedType": "string",
-                "parseSuccessRate": 0.0,
-                "distinctCount": 0,
-                "sampleValues": [],
-            })
-            continue
-
-        detected_type, success_rate = _infer_type(unique_vals)
-        distinct_count = len(set(values))
-        sample_50 = unique_vals[:50]
-
-        conn.execute(
-            "INSERT OR REPLACE INTO _column_types VALUES (?, ?, ?, ?)",
-            (col_name, detected_type, success_rate, distinct_count),
-        )
-
+        unique_vals = list(dict.fromkeys(values))[:50]
         results.append({
             "name": col_name,
-            "detectedType": detected_type,
-            "parseSuccessRate": round(success_rate, 4),
-            "distinctCount": distinct_count,
-            "sampleValues": sample_50,
+            "sampleValues": unique_vals,
         })
 
-    conn.commit()
     return results
 
 
-def _infer_type(values: list[str]) -> tuple[str, float]:
-    """Try datetime then numeric. Return (type, success_rate)."""
-    n = len(values)
-    if n == 0:
-        return "string", 0.0
+# ──────────────────────────────────────────────
+# Inventory & Preview (new format)
+# ──────────────────────────────────────────────
 
-    dt_ok = 0
-    for v in values:
+def build_inventory(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Returns [{table_key, rows, cols}, ...]"""
+    registry = _get_registry(conn)
+    inventory = []
+    for entry in registry:
+        tname = entry["data_table"]
         try:
-            pd.to_datetime(v, format="mixed")
-            dt_ok += 1
+            row_count = conn.execute(f'SELECT COUNT(*) FROM "{tname}"').fetchone()[0]
+            cols = conn.execute(f'PRAGMA table_info("{tname}")').fetchall()
+            col_names = [c[1] for c in cols if c[1] != "RECORD_ID"]
+            inventory.append({
+                "table_key": entry["table_key"],
+                "rows": row_count,
+                "cols": len(col_names),
+            })
         except Exception:
             pass
-    if dt_ok / n >= 0.80:
-        return "datetime", dt_ok / n
-
-    num_ok = 0
-    for v in values:
-        try:
-            cleaned = re.sub(r"[,$\s€£¥]", "", str(v))
-            float(cleaned)
-            num_ok += 1
-        except (ValueError, TypeError):
-            pass
-    if num_ok / n >= 0.80:
-        return "numeric", num_ok / n
-
-    return "string", 1.0
-
-
-def build_inventory(
-    conn: sqlite3.Connection, table_names: list[str]
-) -> list[dict[str, Any]]:
-    inventory = []
-    for tname in table_names:
-        row_count = conn.execute(f'SELECT COUNT(*) FROM "{tname}"').fetchone()[0]
-        cols = conn.execute(f'PRAGMA table_info("{tname}")').fetchall()
-        inventory.append({
-            "tableName": tname,
-            "rowCount": row_count,
-            "columnCount": len(cols),
-        })
     return inventory
 
 
-def build_preview(
-    conn: sqlite3.Connection, table_names: list[str], limit: int = 50
-) -> dict[str, list[dict]]:
-    previews = {}
-    for tname in table_names:
-        cursor = conn.execute(f'SELECT * FROM "{tname}" LIMIT {limit}')
-        col_names = [desc[0] for desc in cursor.description]
-        rows = cursor.fetchall()
-        previews[tname] = [dict(zip(col_names, row)) for row in rows]
+def build_preview(conn: sqlite3.Connection, limit: int = 50) -> dict[str, dict[str, Any]]:
+    """Returns {table_key: {columns: [...], rows: [{...}, ...]}}"""
+    registry = _get_registry(conn)
+    previews: dict[str, dict[str, Any]] = {}
+    for entry in registry:
+        tname = entry["data_table"]
+        try:
+            cursor = conn.execute(f'SELECT * FROM "{tname}" LIMIT {limit}')
+            col_names = [desc[0] for desc in cursor.description]
+            rows = cursor.fetchall()
+            previews[entry["table_key"]] = {
+                "columns": col_names,
+                "rows": [dict(zip(col_names, row)) for row in rows],
+            }
+        except Exception:
+            pass
     return previews
+
+
+# ──────────────────────────────────────────────
+# Table operations (inventory management)
+# ──────────────────────────────────────────────
+
+def delete_table_from_session(conn: sqlite3.Connection, table_key: str):
+    registry = _get_registry(conn)
+    entry = next((r for r in registry if r["table_key"] == table_key), None)
+    if not entry:
+        return
+    for tbl in [entry["data_table"], entry["raw_table"]]:
+        try:
+            conn.execute(f'DROP TABLE IF EXISTS "{tbl}"')
+        except Exception:
+            pass
+    _unregister_table(conn, table_key)
+    conn.commit()
+
+
+def get_raw_preview(conn: sqlite3.Connection, table_key: str, limit: int = 50) -> list[list[Any]]:
+    registry = _get_registry(conn)
+    entry = next((r for r in registry if r["table_key"] == table_key), None)
+    if not entry:
+        return []
+    raw_tbl = entry["raw_table"]
+    try:
+        cursor = conn.execute(f'SELECT * FROM "{raw_tbl}" LIMIT {limit}')
+        rows = cursor.fetchall()
+        return [list(r) for r in rows]
+    except Exception:
+        return []
+
+
+def set_header_row_for_table(
+    conn: sqlite3.Connection,
+    table_key: str,
+    header_row_index: int,
+    custom_names: dict[int, str] | None = None,
+):
+    """Rebuild the data table using a different row from the raw table as headers."""
+    registry = _get_registry(conn)
+    entry = next((r for r in registry if r["table_key"] == table_key), None)
+    if not entry:
+        raise ValueError(f"Table key not found: {table_key}")
+
+    raw_tbl = entry["raw_table"]
+    data_tbl = entry["data_table"]
+
+    cursor = conn.execute(f'SELECT * FROM "{raw_tbl}"')
+    all_rows = cursor.fetchall()
+    if header_row_index >= len(all_rows):
+        raise ValueError(f"Row index {header_row_index} out of range (table has {len(all_rows)} rows)")
+
+    raw_header_row = list(all_rows[header_row_index])
+    headers = []
+    for i, cell in enumerate(raw_header_row):
+        if custom_names and i in custom_names and custom_names[i].strip():
+            headers.append(_clean_header(custom_names[i]))
+        elif cell is not None and str(cell).strip():
+            headers.append(_clean_header(str(cell)))
+        else:
+            headers.append(f"COL_{i}")
+    headers = _dedupe_headers(headers)
+
+    data_rows = [list(r) for idx, r in enumerate(all_rows) if idx != header_row_index]
+
+    _store_data_table(conn, data_tbl, headers, data_rows)
+    conn.commit()
+
+
+def delete_rows_from_table(
+    conn: sqlite3.Connection,
+    table_key: str,
+    row_ids: list[str | int],
+) -> int:
+    """Delete rows by RECORD_ID from the data table. Returns count deleted."""
+    registry = _get_registry(conn)
+    entry = next((r for r in registry if r["table_key"] == table_key), None)
+    if not entry:
+        return 0
+    data_tbl = entry["data_table"]
+    placeholders = ", ".join("?" for _ in row_ids)
+    str_ids = [str(rid) for rid in row_ids]
+    try:
+        cursor = conn.execute(
+            f'DELETE FROM "{data_tbl}" WHERE RECORD_ID IN ({placeholders})', str_ids
+        )
+        conn.commit()
+        return cursor.rowcount
+    except Exception:
+        return 0

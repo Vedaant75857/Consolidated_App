@@ -3,6 +3,8 @@ build/
 dist/
 coverage/
 .sessions/
+sessions/
+**/sessions/*.sqlite*
 .venv/
 __pycache__/
 *.pyc

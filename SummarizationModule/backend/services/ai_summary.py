@@ -1,7 +1,10 @@
 import json
+import logging
 from typing import Any
 
 from shared.ai_client import call_ai_json
+
+logger = logging.getLogger(__name__)
 
 SUMMARY_SYSTEM_PROMPT = """You are a procurement analyst. Given table data and view metadata,
 write a concise analytical summary (4-6 sentences) highlighting key findings, trends,
@@ -30,6 +33,7 @@ def generate_summary_for_view(
 ) -> str:
     rows = _extract_first_50_rows(view_result)
     if not rows:
+        logger.warning("No rows extracted for view '%s' — skipping summary", view_result.get("title"))
         return "No data available for analysis."
 
     payload = {
@@ -49,16 +53,27 @@ def generate_summary_for_view(
     if "threshold" in view_result:
         payload["paretoThreshold"] = view_result["threshold"]
 
+    logger.info(
+        "Generating AI summary for view '%s' (%d rows, %d columns)",
+        view_result.get("title"),
+        len(rows),
+        len(payload.get("columns", [])),
+    )
+
     try:
         result = call_ai_json(SUMMARY_SYSTEM_PROMPT, payload, api_key=api_key)
-        return result.get("summary", "Summary generation failed.")
+        summary = result.get("summary", "Summary generation failed.")
+        logger.info("Summary generated successfully for view '%s'", view_result.get("title"))
+        return summary
     except Exception as exc:
+        logger.error("AI summary failed for view '%s': %s", view_result.get("title"), exc, exc_info=True)
         return f"AI summary unavailable: {exc}"
 
 
 def generate_summaries(
     view_results: list[dict[str, Any]], api_key: str
 ) -> list[dict[str, Any]]:
+    logger.info("Generating summaries for %d view(s)", len(view_results))
     for view in view_results:
         if "error" not in view:
             view["aiSummary"] = generate_summary_for_view(view, api_key)

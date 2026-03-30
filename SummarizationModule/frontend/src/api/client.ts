@@ -1,6 +1,8 @@
 import type {
   ColumnInfo,
   FileInventoryItem,
+  UploadWarning,
+  PreviewData,
   AIMapping,
   StandardField,
   CastReport,
@@ -39,8 +41,8 @@ export async function uploadFile(file: File) {
     sessionId: string;
     columns: ColumnInfo[];
     fileInventory: FileInventoryItem[];
-    preview: Record<string, any[]>;
-    warnings: string[];
+    previews: Record<string, PreviewData>;
+    warnings: UploadWarning[];
   }>("/upload", fd);
 }
 
@@ -49,9 +51,12 @@ export async function getSessionState(sessionId: string) {
     step: number;
     columns: ColumnInfo[] | null;
     fileInventory: FileInventoryItem[] | null;
+    previews: Record<string, PreviewData> | null;
     mapping: Record<string, string | null> | null;
     castReport: CastReport | null;
     viewResults: ViewResult[] | null;
+    aiMappings: AIMapping[] | null;
+    standardFields: StandardField[] | null;
   }>(`/session/${sessionId}/state`);
 }
 
@@ -88,6 +93,45 @@ export async function computeViews(
     config,
     apiKey,
   });
+}
+
+export async function deleteTable(sessionId: string, tableKey: string) {
+  return post<{
+    inventory: FileInventoryItem[];
+    previews: Record<string, PreviewData>;
+  }>("/delete-table", { sessionId, tableKey });
+}
+
+export async function setHeaderRow(
+  sessionId: string,
+  tableKey: string,
+  headerRowIndex: number,
+  customColumnNames?: Record<number, string>
+) {
+  return post<{
+    inventory: FileInventoryItem[];
+    previews: Record<string, PreviewData>;
+    columns: ColumnInfo[];
+  }>("/set-header-row", { sessionId, tableKey, headerRowIndex, customColumnNames });
+}
+
+export async function getRawPreview(sessionId: string, tableKey: string) {
+  return post<{ rawPreview: any[][] }>("/get-raw-preview", {
+    sessionId,
+    tableKey,
+  });
+}
+
+export async function deleteRows(
+  sessionId: string,
+  tableKey: string,
+  rowIds: (string | number)[]
+) {
+  return post<{
+    deletedCount: number;
+    preview: PreviewData;
+    inventoryRow: FileInventoryItem;
+  }>("/delete-rows", { sessionId, tableKey, rowIds });
 }
 
 export async function exportCsv(sessionId: string, viewId: string) {

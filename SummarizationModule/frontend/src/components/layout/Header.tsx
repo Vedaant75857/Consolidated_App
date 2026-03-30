@@ -4,9 +4,10 @@ import type { AppStep } from "../../types";
 
 const STEPS = [
   { step: 1, label: "Upload" },
-  { step: 2, label: "Map Columns" },
-  { step: 3, label: "Select Views" },
-  { step: 4, label: "Dashboard" },
+  { step: 2, label: "Inventory" },
+  { step: 3, label: "Map Columns" },
+  { step: 4, label: "Select Views" },
+  { step: 5, label: "Dashboard" },
 ] as const;
 
 export default function Header({ currentStep }: { currentStep: AppStep }) {
@@ -41,7 +42,7 @@ export default function Header({ currentStep }: { currentStep: AppStep }) {
                 </span>
                 {label}
               </div>
-              {step < 4 && (
+              {step < 5 && (
                 <div
                   className={`w-6 h-px mx-1 ${
                     step < currentStep

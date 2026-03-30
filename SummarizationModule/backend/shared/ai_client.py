@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -7,6 +8,8 @@ from typing import Any
 
 from portkey_ai import Portkey
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_URL = "https://portkey.bain.dev/v1"
 _DEFAULT_MODEL = "@personal-openai/gpt-5.4"
@@ -16,14 +19,18 @@ _CACHE_TTL = float(os.getenv("AI_CACHE_TTL_SEC", "300"))
 
 
 def get_model() -> str:
-    return os.getenv("AI_MODEL", _DEFAULT_MODEL)
+    return os.getenv("PORTKEY_MODEL", _DEFAULT_MODEL)
 
 
 def get_client(api_key: str | None = None) -> Portkey:
-    key = api_key or os.getenv("PORTKEY_API_KEY", "")
+    key = (api_key or os.getenv("PORTKEY_API_KEY", "")).strip()
     if not key:
         raise ValueError("Missing API Key. Set PORTKEY_API_KEY or pass api_key.")
     base_url = os.getenv("PORTKEY_BASE_URL", _DEFAULT_BASE_URL)
+    logger.info(
+        "Creating Portkey client (base_url=%s, model=%s, key_len=%d, key_prefix=%s…)",
+        base_url, get_model(), len(key), key[:8],
+    )
     return Portkey(api_key=key, base_url=base_url)
 
 
@@ -55,10 +62,17 @@ def call_ai_json(
     if ck in _cache:
         ts, val = _cache[ck]
         if time.time() - ts < _CACHE_TTL:
+            logger.debug("Cache hit for AI call (key=%s…)", ck[:12])
             return val
 
     attempts = max(1, int(os.getenv("AI_JSON_RETRY_ATTEMPTS", "3")))
     backoff = max(0.0, float(os.getenv("AI_JSON_RETRY_BACKOFF_SEC", "0.35")))
+
+    payload_size_kb = len(user_str) / 1024
+    logger.info(
+        "Calling AI (model=%s, payload=%.1fKB, attempts=%d)",
+        mdl, payload_size_kb, attempts,
+    )
 
     last_err: Exception | None = None
     for i in range(attempts):
@@ -72,6 +86,7 @@ def call_ai_json(
                 response_format={"type": "json_object"},
             )
             raw = resp.choices[0].message.content
+            logger.debug("AI response received (%d chars)", len(raw) if raw else 0)
             try:
                 parsed = json.loads(raw)
             except json.JSONDecodeError:
@@ -81,9 +96,11 @@ def call_ai_json(
             return parsed
         except Exception as exc:
             last_err = exc
+            logger.warning("AI call attempt %d/%d failed: %s", i + 1, attempts, exc)
             if i < attempts - 1:
                 time.sleep(backoff * (2 ** i))
 
+    logger.error("AI JSON call failed after %d attempt(s): %s", attempts, last_err)
     raise ValueError(f"AI JSON call failed after {attempts} attempt(s): {last_err}")
 
 

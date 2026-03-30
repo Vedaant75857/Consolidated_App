@@ -71,21 +71,27 @@ STANDARD_FIELDS = [
 ]
 
 COLUMN_MAPPING_SYSTEM_PROMPT = """You are a senior procurement data analyst. Given a list of column names with sample
-values and their detected data types from a procurement/spend dataset, map each
-required field to the most suitable column. Each required field has an expected data
-type (numeric, datetime, or string) — you MUST only map columns whose detected type
-matches or is coercible to the expected type.
+values from a procurement/spend dataset, map each required field to the most suitable
+column. Each required field has an expected data type (numeric, datetime, or string).
+You must infer the actual data type of each column from its sample values and only map
+columns whose inferred type is compatible with the expected type.
 
 For each field, provide the best match and 2 alternatives. If no suitable column
 exists for a field, set bestMatch to null.
 
 Return a JSON object with a single key "mappings" containing an array.
 
-TYPE COMPATIBILITY RULES:
-- numeric fields: only match columns detected as numeric
-- datetime fields: only match columns detected as datetime, or string columns where
-  sample values look like dates (e.g. "2023-01-15", "01/15/2023", "Jan 2023")
-- string fields: can match any detected type
+TYPE INFERENCE RULES (infer from sample values):
+- numeric: sample values are numbers, possibly with currency symbols/commas
+  (e.g. "1,234.56", "$500", "10000.00")
+- datetime: sample values look like dates (e.g. "2023-01-15", "01/15/2023",
+  "Jan 2023", "15-Mar-2024")
+- string: sample values are free-text, codes, or names
+
+TYPE COMPATIBILITY:
+- numeric fields: only map columns whose samples are parseable as numbers
+- datetime fields: only map columns whose samples are parseable as dates
+- string fields: can map any column
 
 DISAMBIGUATION HINTS — read carefully before mapping:
 
@@ -170,15 +176,38 @@ def ai_map_columns(
         "columns": [
             {
                 "name": c["name"],
-                "detectedType": c["detectedType"],
-                "distinctCount": c["distinctCount"],
                 "samples": c["sampleValues"][:50],
             }
             for c in columns
         ],
     }
     result = call_ai_json(COLUMN_MAPPING_SYSTEM_PROMPT, user_payload, api_key=api_key)
-    return result.get("mappings", [])
+    mappings = result.get("mappings", [])
+
+    if isinstance(mappings, dict):
+        mappings = list(mappings.values()) if mappings else []
+    if not isinstance(mappings, list):
+        mappings = []
+
+    for m in mappings:
+        m.setdefault("fieldKey", "")
+        m.setdefault("bestMatch", None)
+        m.setdefault("alternatives", [])
+        m.setdefault("confidence", 0)
+        m.setdefault("reasoning", "")
+        m.setdefault("expectedType", "string")
+
+        bm = m.get("bestMatch")
+        if isinstance(bm, dict):
+            m["bestMatch"] = bm.get("column") or bm.get("name") or None
+        if not isinstance(m.get("alternatives"), list):
+            m["alternatives"] = []
+        m["alternatives"] = [
+            (a.get("column") or a.get("name") or "") if isinstance(a, dict) else str(a)
+            for a in m["alternatives"]
+        ]
+
+    return mappings
 
 
 def build_typed_table(
@@ -193,12 +222,17 @@ def build_typed_table(
     Returns:
         Cast report with per-field stats.
     """
-    table_names = get_meta(conn, "table_names") or []
+    from services.file_loader import _get_registry
+
+    registry = _get_registry(conn)
+    data_tables = [r["data_table"] for r in registry]
 
     frames = []
-    for tname in table_names:
+    for tname in data_tables:
         try:
             df = pd.read_sql(f'SELECT * FROM "{tname}"', conn)
+            if "RECORD_ID" in df.columns:
+                df = df.drop(columns=["RECORD_ID"])
             frames.append(df)
         except Exception:
             continue

@@ -3,8 +3,12 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ArrowLeft } from "lucide-react";
 import type {
   AppStep,
+  AIMapping,
+  StandardField,
   ColumnInfo,
   FileInventoryItem,
+  UploadWarning,
+  PreviewData,
   ViewDefinition,
   ViewResult,
   CastReport,
@@ -19,9 +23,13 @@ import {
   computeViews,
   exportCsv,
   exportPdf,
+  deleteTable,
+  setHeaderRow,
+  deleteRows,
 } from "./api/client";
 import Header from "./components/layout/Header";
-import UploadStep from "./components/upload/UploadStep";
+import { ErrorBoundary } from "./components/common/ui";
+import DataLoading from "./components/upload/DataLoading";
 import ColumnMappingStep from "./components/mapping/ColumnMappingStep";
 import ViewSelectionStep from "./components/views/ViewSelectionStep";
 import Dashboard from "./components/dashboard/Dashboard";
@@ -44,13 +52,23 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
+  const [file, setFile] = useState<File | null>(null);
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem(LS_API_KEY) || "");
+
   const [columns, setColumns] = useState<ColumnInfo[]>([]);
   const [inventory, setInventory] = useState<FileInventoryItem[]>([]);
+  const [previews, setPreviews] = useState<Record<string, PreviewData>>({});
+  const [uploadWarnings, setUploadWarnings] = useState<UploadWarning[]>([]);
   const [castReport, setCastReport] = useState<CastReport | null>(null);
   const [availableViews, setAvailableViews] = useState<ViewDefinition[]>([]);
   const [viewResults, setViewResults] = useState<ViewResult[]>([]);
+  const [savedAiMappings, setSavedAiMappings] = useState<AIMapping[] | null>(null);
+  const [savedStandardFields, setSavedStandardFields] = useState<StandardField[] | null>(null);
 
-  const apiKey = () => localStorage.getItem(LS_API_KEY) || "";
+  useEffect(() => {
+    if (apiKey) localStorage.setItem(LS_API_KEY, apiKey);
+    else localStorage.removeItem(LS_API_KEY);
+  }, [apiKey]);
 
   useEffect(() => {
     const savedSession = localStorage.getItem(LS_SESSION_KEY);
@@ -60,8 +78,11 @@ export default function App() {
           setSessionId(savedSession);
           if (state.columns) setColumns(state.columns);
           if (state.fileInventory) setInventory(state.fileInventory);
+          if (state.previews) setPreviews(state.previews);
           if (state.castReport) setCastReport(state.castReport);
           if (state.viewResults) setViewResults(state.viewResults);
+          if (state.aiMappings) setSavedAiMappings(state.aiMappings);
+          if (state.standardFields) setSavedStandardFields(state.standardFields);
           setStep((state.step || 1) as AppStep);
         })
         .catch(() => {
@@ -70,34 +91,115 @@ export default function App() {
     }
   }, []);
 
-  const handleUpload = useCallback(async (file: File, key: string) => {
+  /* ──── Upload (step 1 -> 2) ──── */
+
+  const handleUpload = useCallback(async () => {
+    if (!file) {
+      setError("Please select a file or folder to upload.");
+      return;
+    }
+    if (file.size > 300 * 1024 * 1024) {
+      setError(
+        `File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum allowed size is 300 MB.`
+      );
+      return;
+    }
     setLoading(true);
     setError("");
     try {
-      localStorage.setItem(LS_API_KEY, key);
       const result = await uploadFile(file);
       setSessionId(result.sessionId);
       localStorage.setItem(LS_SESSION_KEY, result.sessionId);
       setColumns(result.columns);
       setInventory(result.fileInventory);
+      setPreviews(result.previews);
+      setUploadWarnings(result.warnings || []);
       setStep(2);
     } catch (err: any) {
       setError(err.message || "Upload failed");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [file]);
+
+  /* ──── Inventory table operations ──── */
+
+  const handleDeleteTable = useCallback(
+    async (tableKey: string) => {
+      if (!sessionId) return;
+      setLoading(true);
+      setError("");
+      try {
+        const data = await deleteTable(sessionId, tableKey);
+        setInventory(data.inventory);
+        setPreviews(data.previews || {});
+      } catch (err: any) {
+        setError(err.message || "Failed to delete table");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [sessionId]
+  );
+
+  const handleSetHeaderRow = useCallback(
+    async (
+      tableKey: string,
+      rowIndex: number,
+      customNames?: Record<number, string>
+    ) => {
+      if (!sessionId) return;
+      setLoading(true);
+      setError("");
+      try {
+        const data = await setHeaderRow(sessionId, tableKey, rowIndex, customNames);
+        setInventory(data.inventory);
+        setPreviews(data.previews || {});
+        if (data.columns) setColumns(data.columns);
+      } catch (err: any) {
+        setError(err.message || "Failed to set header row");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [sessionId]
+  );
+
+  const handleDeleteRows = useCallback(
+    async (tableKey: string, rowIds: (string | number)[]) => {
+      if (!sessionId) return;
+      setLoading(true);
+      setError("");
+      try {
+        const data = await deleteRows(sessionId, tableKey, rowIds);
+        if (data.preview)
+          setPreviews((prev) => ({ ...prev, [tableKey]: data.preview }));
+        if (data.inventoryRow)
+          setInventory((prev) =>
+            prev.map((inv) =>
+              inv.table_key === tableKey ? data.inventoryRow : inv
+            )
+          );
+      } catch (err: any) {
+        setError(err.message || "Failed to delete rows");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [sessionId]
+  );
+
+  /* ──── Column mapping (step 3) ──── */
 
   const handleRequestMapping = useCallback(async () => {
     if (!sessionId) throw new Error("No session");
     setLoading(true);
     try {
-      const result = await mapColumns(sessionId, apiKey());
-      return result;
+      return await mapColumns(sessionId, apiKey);
     } finally {
       setLoading(false);
     }
-  }, [sessionId]);
+  }, [sessionId, apiKey]);
 
   const handleConfirmMapping = useCallback(
     async (mapping: Record<string, string | null>) => {
@@ -108,7 +210,7 @@ export default function App() {
         setCastReport(result.castReport);
         const viewsResult = await getAvailableViews(sessionId);
         setAvailableViews(viewsResult.views);
-        setStep(3);
+        setStep(4);
         return result.castReport;
       } finally {
         setLoading(false);
@@ -117,15 +219,17 @@ export default function App() {
     [sessionId]
   );
 
+  /* ──── Compute views (step 4 -> 5) ──── */
+
   const handleComputeViews = useCallback(
     async (selectedViews: string[], config: ViewConfig) => {
       if (!sessionId) throw new Error("No session");
       setLoading(true);
       setError("");
       try {
-        const result = await computeViews(sessionId, selectedViews, config, apiKey());
+        const result = await computeViews(sessionId, selectedViews, config, apiKey);
         setViewResults(result.views);
-        setStep(4);
+        setStep(5);
       } catch (err: any) {
         setError(err.message || "Computation failed");
         throw err;
@@ -133,8 +237,10 @@ export default function App() {
         setLoading(false);
       }
     },
-    [sessionId]
+    [sessionId, apiKey]
   );
+
+  /* ──── Exports ──── */
 
   const handleExportCsv = useCallback(
     async (viewId: string) => {
@@ -162,14 +268,21 @@ export default function App() {
     [sessionId]
   );
 
+  /* ──── Reset ──── */
+
   const handleNewAnalysis = () => {
     localStorage.removeItem(LS_SESSION_KEY);
     setSessionId(null);
+    setFile(null);
     setColumns([]);
     setInventory([]);
+    setPreviews({});
+    setUploadWarnings([]);
     setCastReport(null);
     setAvailableViews([]);
     setViewResults([]);
+    setSavedAiMappings(null);
+    setSavedStandardFields(null);
     setStep(1);
     setError("");
   };
@@ -188,7 +301,7 @@ export default function App() {
       <Header currentStep={step} />
 
       <main className="max-w-[1400px] mx-auto px-6 py-8">
-        {error && step !== 4 && (
+        {error && step !== 5 && (
           <div className="mb-6 px-4 py-3 rounded-xl bg-primary-50 dark:bg-primary-900/20 border border-primary-100 dark:border-primary-900/30 text-sm text-primary">
             {error}
           </div>
@@ -202,18 +315,39 @@ export default function App() {
             exit={{ opacity: 0, y: -12 }}
             transition={{ duration: 0.2, ease: "easeOut" }}
           >
-            {step === 1 && <UploadStep onUpload={handleUpload} loading={loading} />}
+            <ErrorBoundary>
+            {(step === 1 || step === 2) && (
+              <DataLoading
+                step={step}
+                file={file}
+                setFile={setFile}
+                apiKey={apiKey}
+                setApiKey={setApiKey}
+                handleUpload={handleUpload}
+                loading={loading}
+                sessionId={sessionId || ""}
+                inventory={inventory}
+                previews={previews}
+                uploadWarnings={uploadWarnings}
+                onProceedToMapping={() => setStep(3)}
+                onDeleteTable={handleDeleteTable}
+                onSetHeaderRow={handleSetHeaderRow}
+                onDeleteRows={handleDeleteRows}
+              />
+            )}
 
-            {step === 2 && (
+            {step === 3 && (
               <ColumnMappingStep
                 columns={columns}
                 onRequestMapping={handleRequestMapping}
                 onConfirm={handleConfirmMapping}
                 loading={loading}
+                initialMappings={savedAiMappings}
+                initialStandardFields={savedStandardFields}
               />
             )}
 
-            {step === 3 && (
+            {step === 4 && (
               <ViewSelectionStep
                 views={availableViews}
                 onCompute={handleComputeViews}
@@ -221,7 +355,7 @@ export default function App() {
               />
             )}
 
-            {step === 4 && sessionId && (
+            {step === 5 && sessionId && (
               <Dashboard
                 views={viewResults}
                 sessionId={sessionId}
@@ -229,6 +363,7 @@ export default function App() {
                 onExportPdf={handleExportPdf}
               />
             )}
+            </ErrorBoundary>
           </motion.div>
         </AnimatePresence>
 

@@ -1,8 +1,12 @@
+import logging
+
 from flask import Blueprint, jsonify, request
 
 from shared.db import get_session_db, get_meta, set_meta, session_exists
 from services.view_engine import get_available_views, compute_views
 from services.ai_summary import generate_summaries
+
+logger = logging.getLogger(__name__)
 
 views_bp = Blueprint("views", __name__)
 
@@ -48,15 +52,20 @@ def compute():
         if not mapping:
             return jsonify({"error": "No mapping confirmed yet."}), 400
 
+        logger.info("Computing %d view(s) for session %s", len(selected_views), session_id)
         results = compute_views(conn, selected_views, config, mapping)
 
-        if api_key:
-            results = generate_summaries(results, api_key)
+        if api_key and api_key.strip():
+            logger.info("API key provided — generating AI summaries for %d view(s)", len(results))
+            results = generate_summaries(results, api_key.strip())
+        else:
+            logger.warning("No API key provided — skipping AI summaries")
 
         set_meta(conn, "view_results", results)
-        set_meta(conn, "step", 4)
+        set_meta(conn, "step", 5)
         conn.close()
 
         return jsonify({"views": results})
     except Exception as exc:
+        logger.error("compute-views failed: %s", exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500

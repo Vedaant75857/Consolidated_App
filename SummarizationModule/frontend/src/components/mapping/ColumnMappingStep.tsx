@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Loader2, ArrowRight, AlertTriangle, Check, Sparkles } from "lucide-react";
+import { Loader2, ArrowRight, Check, Sparkles } from "lucide-react";
 import type { ColumnInfo, AIMapping, StandardField, CastReport } from "../../types";
 
 interface Props {
@@ -7,6 +7,14 @@ interface Props {
   onRequestMapping: () => Promise<{ mappings: AIMapping[]; standardFields: StandardField[] }>;
   onConfirm: (mapping: Record<string, string | null>) => Promise<CastReport>;
   loading: boolean;
+  initialMappings?: AIMapping[] | null;
+  initialStandardFields?: StandardField[] | null;
+}
+
+function strVal(v: unknown): string | null {
+  if (typeof v === "string") return v;
+  if (v && typeof v === "object") return (v as any).column ?? (v as any).name ?? null;
+  return null;
 }
 
 const TYPE_COLORS: Record<string, string> = {
@@ -15,12 +23,25 @@ const TYPE_COLORS: Record<string, string> = {
   string: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300",
 };
 
-export default function ColumnMappingStep({ columns, onRequestMapping, onConfirm, loading }: Props) {
-  const [aiMappings, setAiMappings] = useState<AIMapping[] | null>(null);
-  const [standardFields, setStandardFields] = useState<StandardField[]>([]);
-  const [userMapping, setUserMapping] = useState<Record<string, string | null>>({});
+export default function ColumnMappingStep({
+  columns, onRequestMapping, onConfirm, loading,
+  initialMappings, initialStandardFields,
+}: Props) {
+  const hasInitial = Array.isArray(initialMappings) && initialMappings.length > 0;
+  const [aiMappings, setAiMappings] = useState<AIMapping[] | null>(hasInitial ? initialMappings! : null);
+  const [standardFields, setStandardFields] = useState<StandardField[]>(
+    Array.isArray(initialStandardFields) ? initialStandardFields : []
+  );
+  const [userMapping, setUserMapping] = useState<Record<string, string | null>>(() => {
+    if (!hasInitial) return {};
+    const init: Record<string, string | null> = {};
+    for (const m of initialMappings!) init[m.fieldKey] = strVal(m.bestMatch);
+    return init;
+  });
   const [castReport, setCastReport] = useState<CastReport | null>(null);
-  const [phase, setPhase] = useState<"idle" | "detecting" | "review" | "confirming" | "done">("idle");
+  const [phase, setPhase] = useState<"idle" | "detecting" | "review" | "confirming" | "done">(
+    hasInitial ? "review" : "idle"
+  );
   const [error, setError] = useState("");
 
   const handleDetect = async () => {
@@ -28,11 +49,18 @@ export default function ColumnMappingStep({ columns, onRequestMapping, onConfirm
     setError("");
     try {
       const result = await onRequestMapping();
-      setAiMappings(result.mappings);
-      setStandardFields(result.standardFields);
+      const mappings = Array.isArray(result.mappings) ? result.mappings : [];
+      const fields = Array.isArray(result.standardFields) ? result.standardFields : [];
+      if (mappings.length === 0) {
+        setError("AI returned no column mappings. Please try again.");
+        setPhase("idle");
+        return;
+      }
+      setAiMappings(mappings);
+      setStandardFields(fields);
       const initial: Record<string, string | null> = {};
-      for (const m of result.mappings) {
-        initial[m.fieldKey] = m.bestMatch || null;
+      for (const m of mappings) {
+        initial[m.fieldKey] = strVal(m.bestMatch);
       }
       setUserMapping(initial);
       setPhase("review");
@@ -53,11 +81,6 @@ export default function ColumnMappingStep({ columns, onRequestMapping, onConfirm
       setError(err.message || "Confirmation failed");
       setPhase("review");
     }
-  };
-
-  const getColumnType = (colName: string | null) => {
-    if (!colName) return null;
-    return columns.find((c) => c.name === colName)?.detectedType || null;
   };
 
   const getField = (fieldKey: string) =>
@@ -132,10 +155,8 @@ export default function ColumnMappingStep({ columns, onRequestMapping, onConfirm
               <tbody>
                 {aiMappings?.map((m) => {
                   const selectedCol = userMapping[m.fieldKey];
-                  const selectedType = getColumnType(selectedCol);
                   const field = standardFields.find((f) => f.fieldKey === m.fieldKey);
                   const expectedType = field?.expectedType || m.expectedType;
-                  const mismatch = selectedCol && selectedType && selectedType !== expectedType && expectedType !== "string";
 
                   return (
                     <tr key={m.fieldKey} className="border-b border-neutral-100 dark:border-neutral-800">
@@ -163,11 +184,10 @@ export default function ColumnMappingStep({ columns, onRequestMapping, onConfirm
                           className="w-full px-3 py-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-sm focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
                         >
                           <option value="">— Not mapped —</option>
-                          {m.bestMatch && (
-                            <option value={m.bestMatch}>⭐ {m.bestMatch} (AI pick)</option>
-                          )}
-                          {m.alternatives
-                            ?.filter((a) => a !== m.bestMatch)
+                          {(() => { const bm = strVal(m.bestMatch); return bm ? <option value={bm}>⭐ {bm} (AI pick)</option> : null; })()}
+                          {(m.alternatives ?? [])
+                            .map((a) => strVal(a) ?? "")
+                            .filter((a): a is string => a.length > 0 && a !== strVal(m.bestMatch))
                             .map((alt) => (
                               <option key={alt} value={alt}>
                                 {alt} (alternative)
@@ -176,20 +196,14 @@ export default function ColumnMappingStep({ columns, onRequestMapping, onConfirm
                           <optgroup label="All columns">
                             {columns.map((c) => (
                               <option key={c.name} value={c.name}>
-                                {c.name} [{c.detectedType}]
+                                {c.name}
                               </option>
                             ))}
                           </optgroup>
                         </select>
-                        {mismatch && (
-                          <div className="flex items-center gap-1 mt-1 text-xs text-amber-600 dark:text-amber-400">
-                            <AlertTriangle className="w-3 h-3" />
-                            Type mismatch: expected {expectedType}, detected {selectedType}
-                          </div>
-                        )}
                       </td>
                       <td className="py-3 px-2">
-                        {m.bestMatch && (
+                        {strVal(m.bestMatch) && (
                           <div className="flex items-center gap-1">
                             <div className="w-16 h-1.5 rounded-full bg-neutral-200 dark:bg-neutral-700 overflow-hidden">
                               <div
