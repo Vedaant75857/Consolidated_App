@@ -93,6 +93,7 @@ export interface ViewResult {
   tableData: any;
   chartData: any;
   aiSummary?: string;
+  metrics?: Record<string, string>;
   excludedRows?: number;
   totalSuppliers?: number;
   suppliersInGroup?: number;
@@ -107,4 +108,19 @@ export interface ViewConfig {
   paretoThreshold?: number;
 }
 
-export type AppStep = 1 | 2 | 3 | 4 | 5;
+export interface NextStep {
+  action: string;
+  owner: string;
+  timeline: string;
+}
+
+export interface EmailContext {
+  recipient_name: string;
+  client_name: string;
+  sender_name: string;
+  sender_role: string;
+  scope_note: string;
+  next_steps: NextStep[];
+}
+
+export type AppStep = 1 | 2 | 3 | 4 | 5 | 6;

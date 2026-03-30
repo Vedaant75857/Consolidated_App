@@ -8,9 +8,11 @@ logger = logging.getLogger(__name__)
 
 _BASE_INTRO = (
     "You are a procurement analyst. Given table data and view metadata, "
-    "write a concise analytical summary (bullet points) highlighting key "
-    "findings, trends, concentrations, and anomalies. Be specific with "
-    "numbers and percentages."
+    "write a concise analytical summary using clean markdown formatting. "
+    "Use **bold** for key figures and metrics. Use short bullet points "
+    "(with - dashes) grouped under ### section headings. "
+    "Be specific with numbers and percentages. Keep it brief — "
+    "3-5 bullet points max per section, no more than 2-3 sections."
 )
 
 VIEW_PROMPTS: dict[str, str] = {
@@ -142,6 +144,7 @@ def generate_summary_for_view(
     payload = {
         "viewTitle": view_result.get("title", ""),
         "chartType": view_result.get("chartType", ""),
+        "metrics": view_result.get("metrics", {}),
         "rowCount": len(rows),
         "columns": list(rows[0].keys()) if rows else [],
         "data": rows,

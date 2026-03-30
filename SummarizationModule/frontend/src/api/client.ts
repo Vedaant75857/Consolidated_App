@@ -8,6 +8,7 @@ import type {
   CastReport,
   ViewDefinition,
   ViewResult,
+  EmailContext,
 } from "../types";
 
 const BASE = "/api";
@@ -154,6 +155,35 @@ export async function deleteRows(
     preview: PreviewData;
     inventoryRow: FileInventoryItem;
   }>("/delete-rows", { sessionId, tableKey, rowIds });
+}
+
+export async function generateEmail(
+  sessionId: string,
+  apiKey: string,
+  context: EmailContext
+) {
+  return post<{
+    email: string | null;
+    subject?: string;
+    error?: string;
+    fallback?: string;
+  }>("/generate-email", { sessionId, apiKey, context });
+}
+
+export function cleanupSession(sessionId: string) {
+  const payload = JSON.stringify({ sessionId });
+  const sent = navigator.sendBeacon(
+    `${BASE}/cleanup-session`,
+    new Blob([payload], { type: "application/json" })
+  );
+  if (!sent) {
+    fetch(`${BASE}/cleanup-session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: payload,
+      keepalive: true,
+    }).catch(() => {});
+  }
 }
 
 export async function exportCsv(sessionId: string, viewId: string) {

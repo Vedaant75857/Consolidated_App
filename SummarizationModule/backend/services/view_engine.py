@@ -3,6 +3,8 @@ from typing import Any
 
 import pandas as pd
 
+from shared.formatting import format_spend, format_pct
+
 VIEW_REGISTRY: list[dict[str, Any]] = [
     {
         "viewId": "spend_over_time",
@@ -434,6 +436,167 @@ def compute_category_drilldown(df: pd.DataFrame, mapping: dict) -> dict[str, Any
     }
 
 
+SKIP_METRICS_VIEWS = {"category_drilldown"}
+
+
+def _extract_spend_over_time_metrics(data: dict) -> dict:
+    monthly = data["tableData"]["monthly"]
+    if not monthly:
+        return {}
+    total = sum(r["Total Spend (USD)"] for r in monthly if r.get("Total Spend (USD)"))
+    avg = total / len(monthly)
+    high = max(monthly, key=lambda r: r.get("Total Spend (USD)") or 0)
+    low = min(monthly, key=lambda r: r.get("Total Spend (USD)") or float("inf"))
+    years = sorted(set(r["Year"] for r in monthly if r.get("Year")))
+    high_val = high.get("Total Spend (USD)") or 0
+    low_val = low.get("Total Spend (USD)") or 0
+    return {
+        "total_spend": format_spend(total),
+        "date_range": f"{years[0]}\u2013{years[-1]}" if years else "",
+        "avg_monthly_spend": format_spend(avg),
+        "highest_month": f"{high.get('Month', '')} {high.get('Year', '')}",
+        "highest_month_spend": format_spend(high_val),
+        "lowest_month": f"{low.get('Month', '')} {low.get('Year', '')}",
+        "lowest_month_spend": format_spend(low_val),
+        "highest_vs_avg_pct": f"+{((high_val - avg) / avg * 100):.0f}%" if avg else "",
+        "lowest_vs_avg_pct": f"-{((avg - low_val) / avg * 100):.0f}%" if avg else "",
+    }
+
+
+def _extract_currency_spend_metrics(data: dict) -> dict:
+    rows = data.get("tableData", [])
+    if not rows:
+        return {}
+    total_currencies = len(rows)
+    top = rows[0]
+    top_pct = top.get("% of Total", 0)
+    foreign_pct = round(100 - top_pct, 1) if total_currencies > 1 else 0
+    return {
+        "total_currencies": str(total_currencies),
+        "top_currency": top.get("Currency", ""),
+        "top_currency_pct": format_pct(top_pct),
+        "foreign_currency_pct": format_pct(foreign_pct),
+        "fx_risk_note": "",
+    }
+
+
+def _extract_country_spend_metrics(data: dict) -> dict:
+    rows = data.get("tableData", [])
+    if not rows:
+        return {}
+    total_countries = len(rows)
+    top = rows[0]
+    top_3_pct = round(sum(r.get("% of Total", 0) for r in rows[:3]), 1)
+    return {
+        "total_countries": str(total_countries),
+        "top_country": top.get("Country", ""),
+        "top_country_pct": format_pct(top.get("% of Total", 0)),
+        "top_3_countries_pct": format_pct(top_3_pct),
+        "geo_risk_note": "",
+    }
+
+
+def _extract_supplier_ranking_metrics(data: dict) -> dict:
+    rows = data.get("tableData", [])
+    total_suppliers = data.get("totalSuppliers", len(rows))
+    if not rows:
+        return {}
+    top_5_pct = round(sum(r.get("% of Total", 0) for r in rows[:5]), 1)
+    top_10_pct = round(sum(r.get("% of Total", 0) for r in rows[:10]), 1)
+    largest = rows[0]
+    return {
+        "total_suppliers": str(total_suppliers),
+        "top_5_pct": format_pct(top_5_pct),
+        "top_10_pct": format_pct(top_10_pct),
+        "largest_supplier": largest.get("Supplier Name", ""),
+        "largest_supplier_pct": format_pct(largest.get("% of Total", 0)),
+        "concentration_note": "",
+    }
+
+
+def _extract_pareto_metrics(data: dict) -> dict:
+    suppliers_in_group = data.get("suppliersInGroup", 0)
+    total_suppliers = data.get("totalSuppliers", 0)
+    long_tail_count = total_suppliers - suppliers_in_group
+    rows = data.get("tableData", [])
+    if not rows:
+        return {}
+    top_group_pct = rows[-1].get("Cumulative %", 0) if rows else 0
+    long_tail_pct = round(100 - top_group_pct, 1)
+    return {
+        "suppliers_top_80_pct": str(suppliers_in_group),
+        "long_tail_count": str(long_tail_count),
+        "long_tail_spend_pct": format_pct(long_tail_pct),
+        "fragmentation": "",
+    }
+
+
+def _extract_l1_spend_metrics(data: dict) -> dict:
+    rows = data.get("tableData", [])
+    if not rows:
+        return {}
+    total_l1 = len(rows)
+    top = rows[0]
+    top_3_pct = round(sum(r.get("% of Total", 0) for r in rows[:3]), 1)
+    return {
+        "total_l1_categories": str(total_l1),
+        "top_l1": top.get("Category L1", ""),
+        "top_l1_pct": format_pct(top.get("% of Total", 0)),
+        "top_3_l1_pct": format_pct(top_3_pct),
+        "concentration": "",
+    }
+
+
+def _extract_l1_vs_l2_metrics(data: dict) -> dict:
+    rows = data.get("tableData", [])
+    if not rows:
+        return {}
+    total_spend = sum(r.get("Total Spend (USD)", 0) for r in rows if r.get("Total Spend (USD)"))
+    top_3 = rows[:3]
+    top_l2_cats = ", ".join(
+        f"{r.get('Category L2', '')} ({format_pct(r['Total Spend (USD)'] / total_spend * 100) if total_spend else ''})"
+        for r in top_3 if r.get("Total Spend (USD)")
+    )
+    top_l1_name = rows[0].get("Category L1", "") if rows else ""
+    l1_l2s = [r for r in rows if r.get("Category L1") == top_l1_name]
+    key_l2 = ", ".join(
+        f"{r.get('Category L2', '')}" for r in l1_l2s[:3]
+    )
+    return {
+        "top_l2_categories": top_l2_cats,
+        "key_l2_within_top_l1": f"{top_l1_name}: {key_l2}",
+        "fragmentation_note": "",
+    }
+
+
+def _extract_l2_vs_l3_metrics(data: dict) -> dict:
+    rows = data.get("tableData", [])
+    if not rows:
+        return {}
+    total_spend = sum(r.get("Total Spend (USD)", 0) for r in rows if r.get("Total Spend (USD)"))
+    top_3 = rows[:3]
+    top_l3_cats = ", ".join(
+        f"{r.get('Category L3', '')} ({format_pct(r['Total Spend (USD)'] / total_spend * 100) if total_spend else ''})"
+        for r in top_3 if r.get("Total Spend (USD)")
+    )
+    return {
+        "top_l3_categories": top_l3_cats,
+        "l3_long_tail_note": "",
+    }
+
+
+_METRICS_EXTRACTORS: dict[str, Any] = {
+    "spend_over_time": _extract_spend_over_time_metrics,
+    "currency_spend": _extract_currency_spend_metrics,
+    "country_spend": _extract_country_spend_metrics,
+    "supplier_ranking": _extract_supplier_ranking_metrics,
+    "pareto_analysis": _extract_pareto_metrics,
+    "l1_spend": _extract_l1_spend_metrics,
+    "l1_vs_l2_mekko": _extract_l1_vs_l2_metrics,
+    "l2_vs_l3_mekko": _extract_l2_vs_l3_metrics,
+}
+
+
 COMPUTE_FUNCS = {
     "spend_over_time": lambda df, cfg: compute_spend_over_time(df),
     "supplier_ranking": lambda df, cfg: compute_supplier_ranking(df, cfg.get("topN", 20)),
@@ -467,12 +630,19 @@ def compute_views(
         cfg = {**config, "mapping": mapping}
         try:
             data = func(df, cfg)
-            results.append({
+            result_entry = {
                 "viewId": view_id,
                 "title": view_def["title"],
                 "chartType": view_def["chartType"],
                 **data,
-            })
+            }
+            extractor = _METRICS_EXTRACTORS.get(view_id)
+            if extractor and view_id not in SKIP_METRICS_VIEWS:
+                try:
+                    result_entry["metrics"] = extractor(data)
+                except Exception:
+                    result_entry["metrics"] = {}
+            results.append(result_entry)
         except Exception as exc:
             results.append({
                 "viewId": view_id,

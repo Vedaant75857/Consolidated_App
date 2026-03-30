@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
   --color-primary: #CC0000;
@@ -91,6 +92,34 @@ input[type="range"]::-webkit-slider-thumb {
   border: 2px solid white;
   box-shadow: 0 1px 3px rgba(0,0,0,0.2);
 }
+
+/* Prose styles for markdown preview */
+.prose { line-height: 1.7; }
+.prose h1, .prose h2, .prose h3, .prose h4 { font-weight: 600; margin-top: 1.5em; margin-bottom: 0.5em; }
+.prose h1 { font-size: 1.5em; }
+.prose h2 { font-size: 1.25em; }
+.prose h3 { font-size: 1.1em; }
+.prose p { margin-bottom: 0.75em; }
+.prose ul, .prose ol { padding-left: 1.5em; margin-bottom: 0.75em; }
+.prose li { margin-bottom: 0.25em; }
+.prose strong { font-weight: 700; }
+.prose a { color: #CC0000; text-decoration: underline; }
+.prose blockquote { border-left: 3px solid #D1D5DB; padding-left: 1em; margin-left: 0; color: #6B7280; }
+.prose-invert { color: #F9FAFB; }
+.prose-invert blockquote { border-left-color: #4B5563; color: #9CA3AF; }
+.prose-invert a { color: #FC8181; }
+
+/* AI Summary markdown formatting */
+.ai-summary-content h3, .ai-summary-content h4 { font-weight: 700; font-size: 0.8rem; margin-top: 0.75rem; margin-bottom: 0.25rem; }
+.ai-summary-content p { margin-bottom: 0.5rem; }
+.ai-summary-content ul, .ai-summary-content ol { padding-left: 1.25rem; margin-bottom: 0.5rem; }
+.ai-summary-content ul { list-style-type: disc; }
+.ai-summary-content ol { list-style-type: decimal; }
+.ai-summary-content li { margin-bottom: 0.2rem; }
+.ai-summary-content li::marker { color: #CC0000; }
+.ai-summary-content strong { font-weight: 700; color: #171717; }
+html.dark .ai-summary-content strong { color: #F5F5F5; }
+html.dark .ai-summary-content li::marker { color: #FC8181; }
 
 /* Selection color */
 ::selection {

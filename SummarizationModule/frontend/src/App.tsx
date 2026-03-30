@@ -1,6 +1,14 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft } from "lucide-react";
+import {
+  ArrowLeft,
+  BarChart3,
+  CheckCircle2,
+  Sun,
+  Moon,
+  AlertCircle,
+} from "lucide-react";
+import { useTheme } from "./theme/ThemeProvider";
 import type {
   AppStep,
   AIMapping,
@@ -13,6 +21,7 @@ import type {
   ViewResult,
   CastReport,
   ViewConfig,
+  EmailContext,
 } from "./types";
 import {
   uploadFile,
@@ -23,18 +32,45 @@ import {
   computeViews,
   recomputeView,
   generateSummary,
+  generateEmail,
+  cleanupSession,
   exportCsv,
   exportPdf,
   deleteTable,
   setHeaderRow,
   deleteRows,
 } from "./api/client";
-import Header from "./components/layout/Header";
 import { ErrorBoundary } from "./components/common/ui";
 import DataLoading from "./components/upload/DataLoading";
 import ColumnMappingStep from "./components/mapping/ColumnMappingStep";
 import ViewSelectionStep from "./components/views/ViewSelectionStep";
 import Dashboard from "./components/dashboard/Dashboard";
+import ContextModal from "./components/email/ContextModal";
+import EmailStep from "./components/email/EmailStep";
+
+const SIDEBAR_ITEMS = [
+  { name: "Upload", steps: [1] as AppStep[] },
+  { name: "Inventory", steps: [2] as AppStep[] },
+  { name: "Map Columns", steps: [3] as AppStep[] },
+  { name: "Select Views", steps: [4] as AppStep[] },
+  { name: "Dashboard", steps: [5] as AppStep[] },
+  { name: "Email", steps: [6] as AppStep[] },
+];
+
+const STEP_META: Record<number, { title: string; description: string }> = {
+  1: { title: "Upload", description: "Upload your procurement data files to begin analysis." },
+  2: { title: "Data Inventory", description: "Review extracted tables, adjust headers, and remove unwanted files." },
+  3: { title: "Map Columns", description: "AI maps your columns to the standard procurement fields." },
+  4: { title: "Select Views", description: "Choose which analyses to generate from your data." },
+  5: { title: "Dashboard", description: "View your procurement analytics and export results." },
+  6: { title: "Email", description: "Generate and edit a client-ready email summary." },
+};
+
+const pageVariants = {
+  initial: (dir: number) => ({ opacity: 0, x: dir > 0 ? 60 : -60, filter: "blur(4px)" }),
+  animate: { opacity: 1, x: 0, filter: "blur(0px)", transition: { duration: 0.3, ease: [0.22, 1, 0.36, 1] as [number, number, number, number] } },
+  exit: (dir: number) => ({ opacity: 0, x: dir > 0 ? -60 : 60, filter: "blur(4px)", transition: { duration: 0.2 } }),
+};
 
 const LS_SESSION_KEY = "summarizer_session_id";
 const LS_API_KEY = "summarizer_api_key";
@@ -49,7 +85,11 @@ function downloadBlob(blob: Blob, filename: string) {
 }
 
 export default function App() {
+  const { theme, toggle: toggleTheme } = useTheme();
   const [step, setStep] = useState<AppStep>(1);
+  const [maxStepReached, setMaxStepReached] = useState<AppStep>(1);
+  const [slideDirection, setSlideDirection] = useState(1);
+  const prevStepRef = useRef<AppStep>(1);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -67,13 +107,33 @@ export default function App() {
   const [savedAiMappings, setSavedAiMappings] = useState<AIMapping[] | null>(null);
   const [savedStandardFields, setSavedStandardFields] = useState<StandardField[] | null>(null);
 
+  const [showContextModal, setShowContextModal] = useState(false);
+  const [emailContext, setEmailContext] = useState<EmailContext | null>(null);
+  const [generatedEmail, setGeneratedEmail] = useState<string | null>(null);
+  const [emailSubject, setEmailSubject] = useState("");
+  const [emailFallback, setEmailFallback] = useState<string | null>(null);
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [emailLoading, setEmailLoading] = useState(false);
+
+  const navigateToStep = useCallback((target: AppStep) => {
+    setSlideDirection(target > step ? 1 : -1);
+    setStep(target);
+  }, [step]);
+
+  useEffect(() => {
+    if (step > maxStepReached) setMaxStepReached(step);
+    prevStepRef.current = step;
+  }, [step, maxStepReached]);
+
   useEffect(() => {
     if (apiKey) localStorage.setItem(LS_API_KEY, apiKey);
     else localStorage.removeItem(LS_API_KEY);
   }, [apiKey]);
 
   useEffect(() => {
-    const savedSession = localStorage.getItem(LS_SESSION_KEY);
+    localStorage.removeItem(LS_SESSION_KEY);
+
+    const savedSession = sessionStorage.getItem(LS_SESSION_KEY);
     if (savedSession) {
       getSessionState(savedSession)
         .then((state) => {
@@ -88,9 +148,21 @@ export default function App() {
           setStep((state.step || 1) as AppStep);
         })
         .catch(() => {
-          localStorage.removeItem(LS_SESSION_KEY);
+          sessionStorage.removeItem(LS_SESSION_KEY);
         });
     }
+  }, []);
+
+  useEffect(() => {
+    const handleUnload = () => {
+      const sid = sessionStorage.getItem(LS_SESSION_KEY);
+      if (sid) {
+        cleanupSession(sid);
+        sessionStorage.removeItem(LS_SESSION_KEY);
+      }
+    };
+    window.addEventListener("beforeunload", handleUnload);
+    return () => window.removeEventListener("beforeunload", handleUnload);
   }, []);
 
   /* ──── Upload (step 1 -> 2) ──── */
@@ -111,7 +183,7 @@ export default function App() {
     try {
       const result = await uploadFile(file);
       setSessionId(result.sessionId);
-      localStorage.setItem(LS_SESSION_KEY, result.sessionId);
+      sessionStorage.setItem(LS_SESSION_KEY, result.sessionId);
       setColumns(result.columns);
       setInventory(result.fileInventory);
       setPreviews(result.previews);
@@ -301,10 +373,57 @@ export default function App() {
     [sessionId]
   );
 
+  /* ──── Email generation (step 5 -> 6) ──── */
+
+  const handleOpenEmailModal = useCallback(() => {
+    setShowContextModal(true);
+  }, []);
+
+  const handleEmailGenerate = useCallback(
+    async (context: EmailContext) => {
+      if (!sessionId) return;
+      setShowContextModal(false);
+      setEmailContext(context);
+      setEmailLoading(true);
+      setEmailError(null);
+      setEmailFallback(null);
+      setGeneratedEmail(null);
+      setStep(6);
+
+      try {
+        const result = await generateEmail(sessionId, apiKey, context);
+        if (result.email) {
+          setGeneratedEmail(result.email);
+          setEmailSubject(result.subject || "");
+        } else {
+          setEmailError(result.error || "Email generation failed");
+          setEmailFallback(result.fallback || null);
+        }
+      } catch (err: any) {
+        setEmailError(err.message || "Email generation failed");
+      } finally {
+        setEmailLoading(false);
+      }
+    },
+    [sessionId, apiKey]
+  );
+
+  const handleEmailRegenerate = useCallback(() => {
+    if (emailContext) {
+      handleEmailGenerate(emailContext);
+    }
+  }, [emailContext, handleEmailGenerate]);
+
+  const handleBackToDashboard = useCallback(() => {
+    setStep(5);
+  }, []);
+
   /* ──── Reset ──── */
 
   const handleNewAnalysis = () => {
-    localStorage.removeItem(LS_SESSION_KEY);
+    const oldSession = sessionStorage.getItem(LS_SESSION_KEY);
+    if (oldSession) cleanupSession(oldSession);
+    sessionStorage.removeItem(LS_SESSION_KEY);
     setSessionId(null);
     setFile(null);
     setColumns([]);
@@ -316,12 +435,23 @@ export default function App() {
     setViewResults([]);
     setSavedAiMappings(null);
     setSavedStandardFields(null);
+    setShowContextModal(false);
+    setEmailContext(null);
+    setGeneratedEmail(null);
+    setEmailSubject("");
+    setEmailFallback(null);
+    setEmailError(null);
     setStep(1);
+    setMaxStepReached(1);
+    setSlideDirection(-1);
     setError("");
   };
 
+  const stepMeta = STEP_META[step] || { title: `Step ${step}`, description: "" };
+
   return (
-    <div className="min-h-screen bg-surface-secondary dark:bg-neutral-950 transition-colors">
+    <div className="h-screen flex flex-col overflow-hidden">
+      {/* Back to Home bar */}
       <div className="h-10 bg-white/90 dark:bg-neutral-900/90 backdrop-blur-sm border-b border-neutral-200/80 dark:border-neutral-700/80 flex items-center px-4 shrink-0 z-50">
         <a
           href="http://localhost:3000"
@@ -331,87 +461,232 @@ export default function App() {
           Back to Home
         </a>
       </div>
-      <Header currentStep={step} />
 
-      <main className="max-w-[1400px] mx-auto px-6 py-8">
-        {error && step !== 5 && (
-          <div className="mb-6 px-4 py-3 rounded-xl bg-primary-50 dark:bg-primary-900/20 border border-primary-100 dark:border-primary-900/30 text-sm text-primary">
-            {error}
+      <div className="flex-1 bg-gradient-to-br from-neutral-50 via-white to-neutral-100 dark:from-neutral-950 dark:via-neutral-900 dark:to-neutral-950 text-neutral-900 dark:text-neutral-100 font-sans flex relative overflow-hidden">
+        {/* Decorative background blurs */}
+        <div className="pointer-events-none fixed inset-0 z-0">
+          <div className="absolute -top-40 -right-40 h-[600px] w-[600px] rounded-full bg-red-100/40 dark:bg-red-950/20 blur-3xl" />
+          <div className="absolute -bottom-60 -left-40 h-[500px] w-[500px] rounded-full bg-rose-100/30 dark:bg-rose-950/15 blur-3xl" />
+        </div>
+
+        {/* Sidebar */}
+        <aside className="w-72 bg-white/90 dark:bg-neutral-900/90 backdrop-blur-xl border-r border-neutral-200/80 dark:border-neutral-700/80 flex-shrink-0 flex flex-col z-10">
+          <div className="p-6 border-b border-neutral-200/80 dark:border-neutral-700/80 flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-600 to-rose-600 flex items-center justify-center shadow-md shadow-red-200/40">
+              <BarChart3 className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <h1 className="text-lg font-semibold tracking-tight text-neutral-900 dark:text-white">Spend Analyzer</h1>
+              <p className="text-[10px] text-neutral-400 dark:text-neutral-500 font-medium tracking-wide">Procurement analytics</p>
+            </div>
           </div>
-        )}
 
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={step}
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -12 }}
-            transition={{ duration: 0.2, ease: "easeOut" }}
-          >
-            <ErrorBoundary>
-            {(step === 1 || step === 2) && (
-              <DataLoading
-                step={step}
-                file={file}
-                setFile={setFile}
-                apiKey={apiKey}
-                setApiKey={setApiKey}
-                handleUpload={handleUpload}
-                loading={loading}
-                sessionId={sessionId || ""}
-                inventory={inventory}
-                previews={previews}
-                uploadWarnings={uploadWarnings}
-                onProceedToMapping={() => setStep(3)}
-                onDeleteTable={handleDeleteTable}
-                onSetHeaderRow={handleSetHeaderRow}
-                onDeleteRows={handleDeleteRows}
-              />
-            )}
+          <div className="flex-1 overflow-y-auto px-4 py-3">
+            <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-400 dark:text-neutral-500 font-semibold mb-4 px-2">Workflow</p>
+            <nav className="relative">
+              <div className="absolute left-[18px] top-5 bottom-5 w-px bg-neutral-200 dark:bg-neutral-700 z-0" />
+              <div className="space-y-1 relative z-10">
+                {SIDEBAR_ITEMS.map((s, idx) => {
+                  const displayNum = idx + 1;
+                  const firstStep = s.steps[0];
+                  const lastStep = s.steps[s.steps.length - 1];
+                  const isActive = s.steps.includes(step);
+                  const isCompleted = step > lastStep;
+                  const isReachable = firstStep <= maxStepReached;
+                  const targetStep = s.steps.filter(st => st <= maxStepReached).pop() || firstStep;
+                  return (
+                    <motion.div
+                      key={displayNum}
+                      whileHover={isReachable ? { x: 2 } : undefined}
+                      className={`flex items-center gap-3 px-3 py-2.5 rounded-2xl transition-all ${
+                        isActive ? "bg-red-50 dark:bg-red-950/30 ring-1 ring-red-200 dark:ring-red-800 shadow-sm cursor-pointer" :
+                        isCompleted ? "text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 cursor-pointer" :
+                        isReachable ? "text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 cursor-pointer" :
+                        "text-neutral-300 dark:text-neutral-600 cursor-not-allowed"
+                      }`}
+                      onClick={() => { if (isReachable) navigateToStep(targetStep as AppStep); }}
+                      title={!isReachable ? "Complete previous steps first" : undefined}
+                    >
+                      <span className={`h-9 w-9 rounded-xl flex items-center justify-center text-xs font-bold shrink-0 ${
+                        isActive ? "bg-red-600 text-white shadow-md shadow-red-200 dark:shadow-red-900/30" :
+                        isCompleted ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400" :
+                        isReachable ? "bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400" :
+                        "bg-neutral-50 text-neutral-300 dark:bg-neutral-800/50 dark:text-neutral-600"
+                      }`}>
+                        {isCompleted ? <CheckCircle2 className="w-4 h-4" /> : displayNum}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className={`text-sm font-semibold truncate ${isActive ? "text-red-700 dark:text-red-400" : ""}`}>{s.name}</p>
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </div>
+            </nav>
+          </div>
 
-            {step === 3 && (
-              <ColumnMappingStep
-                columns={columns}
-                onRequestMapping={handleRequestMapping}
-                onConfirm={handleConfirmMapping}
-                loading={loading}
-                initialMappings={savedAiMappings}
-                initialStandardFields={savedStandardFields}
-              />
-            )}
-
-            {step === 4 && (
-              <ViewSelectionStep
-                views={availableViews}
-                onCompute={handleComputeViews}
-                loading={loading}
-              />
-            )}
-
-            {step === 5 && sessionId && (
-              <Dashboard
-                views={viewResults}
-                sessionId={sessionId}
-                onExportCsv={handleExportCsv}
-                onExportPdf={handleExportPdf}
-                onRecomputeView={handleRecomputeView}
-              />
-            )}
-            </ErrorBoundary>
-          </motion.div>
-        </AnimatePresence>
-
-        {step > 1 && (
-          <div className="mt-8 text-center">
-            <button
+          {step > 1 && (
+            <div
+              className="p-4 border-t border-neutral-200/80 dark:border-neutral-700/80 flex items-center gap-2.5 text-xs font-medium cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors text-neutral-500 dark:text-neutral-400"
               onClick={handleNewAnalysis}
-              className="text-xs text-neutral-400 hover:text-primary transition-colors underline underline-offset-2"
             >
+              <ArrowLeft className="w-4 h-4" />
               Start New Analysis
-            </button>
+            </div>
+          )}
+        </aside>
+
+        {/* Main Content */}
+        <main className="flex-1 flex flex-col min-w-0 overflow-hidden relative z-10">
+          <div className="flex-1 overflow-y-auto p-8">
+            <div className="max-w-6xl mx-auto space-y-6">
+
+              {/* Top-right theme toggle */}
+              <div className="flex justify-end">
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={toggleTheme}
+                  className="p-2.5 rounded-xl bg-white/80 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700 shadow-sm backdrop-blur-sm text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white transition-colors"
+                  title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+                >
+                  <AnimatePresence mode="wait" initial={false}>
+                    {theme === "dark" ? (
+                      <motion.span key="sun" initial={{ rotate: -90, opacity: 0 }} animate={{ rotate: 0, opacity: 1 }} exit={{ rotate: 90, opacity: 0 }} transition={{ duration: 0.2 }}>
+                        <Sun className="w-4 h-4" />
+                      </motion.span>
+                    ) : (
+                      <motion.span key="moon" initial={{ rotate: 90, opacity: 0 }} animate={{ rotate: 0, opacity: 1 }} exit={{ rotate: -90, opacity: 0 }} transition={{ duration: 0.2 }}>
+                        <Moon className="w-4 h-4" />
+                      </motion.span>
+                    )}
+                  </AnimatePresence>
+                </motion.button>
+              </div>
+
+              {/* StepHero banner */}
+              <motion.div
+                key={step}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}
+                className="rounded-3xl border border-red-200/60 dark:border-red-900/60 bg-gradient-to-r from-red-600 to-rose-600 p-7 text-white shadow-xl shadow-red-200/20 dark:shadow-red-900/20"
+              >
+                <div className="flex items-start justify-between gap-6">
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-red-200">
+                      Spend Analyzer
+                    </p>
+                    <h2 className="mt-2 text-2xl font-semibold tracking-tight">{stepMeta.title}</h2>
+                    <p className="mt-2 max-w-2xl text-sm text-red-50/90 leading-relaxed">{stepMeta.description}</p>
+                  </div>
+                  <div className="rounded-2xl bg-white/10 px-4 py-3 backdrop-blur shrink-0">
+                    <p className="text-[10px] uppercase tracking-wider text-red-200">Current step</p>
+                    <p className="mt-1 text-lg font-semibold tabular-nums">
+                      {step} <span className="text-red-200/70 text-sm font-normal">of 6</span>
+                    </p>
+                  </div>
+                </div>
+              </motion.div>
+
+              {/* Error banner */}
+              {error && step !== 5 && step !== 6 && (
+                <motion.div
+                  initial={{ opacity: 0, y: -8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="rounded-2xl border border-red-200 dark:border-red-900/50 bg-gradient-to-r from-red-50 to-white dark:from-red-950/30 dark:to-neutral-900 shadow-sm p-4 flex items-start gap-3"
+                >
+                  <AlertCircle className="w-5 h-5 text-red-500 mt-0.5 shrink-0" />
+                  <p className="text-sm font-medium text-red-700 dark:text-red-400 flex-1">{error}</p>
+                </motion.div>
+              )}
+
+              {/* Step content */}
+              <AnimatePresence mode="wait" custom={slideDirection}>
+                <motion.div
+                  key={step}
+                  custom={slideDirection}
+                  variants={pageVariants}
+                  initial="initial"
+                  animate="animate"
+                  exit="exit"
+                >
+                  <ErrorBoundary>
+                    {(step === 1 || step === 2) && (
+                      <DataLoading
+                        step={step}
+                        file={file}
+                        setFile={setFile}
+                        apiKey={apiKey}
+                        setApiKey={setApiKey}
+                        handleUpload={handleUpload}
+                        loading={loading}
+                        sessionId={sessionId || ""}
+                        inventory={inventory}
+                        previews={previews}
+                        uploadWarnings={uploadWarnings}
+                        onProceedToMapping={() => setStep(3)}
+                        onDeleteTable={handleDeleteTable}
+                        onSetHeaderRow={handleSetHeaderRow}
+                        onDeleteRows={handleDeleteRows}
+                      />
+                    )}
+
+                    {step === 3 && (
+                      <ColumnMappingStep
+                        columns={columns}
+                        onRequestMapping={handleRequestMapping}
+                        onConfirm={handleConfirmMapping}
+                        loading={loading}
+                        initialMappings={savedAiMappings}
+                        initialStandardFields={savedStandardFields}
+                      />
+                    )}
+
+                    {step === 4 && (
+                      <ViewSelectionStep
+                        views={availableViews}
+                        onCompute={handleComputeViews}
+                        loading={loading}
+                      />
+                    )}
+
+                    {step === 5 && sessionId && (
+                      <Dashboard
+                        views={viewResults}
+                        sessionId={sessionId}
+                        onExportCsv={handleExportCsv}
+                        onExportPdf={handleExportPdf}
+                        onRecomputeView={handleRecomputeView}
+                        onGenerateEmail={apiKey.trim() ? handleOpenEmailModal : undefined}
+                      />
+                    )}
+
+                    {step === 6 && (
+                      <EmailStep
+                        email={generatedEmail}
+                        subject={emailSubject}
+                        fallback={emailFallback}
+                        error={emailError}
+                        loading={emailLoading}
+                        onRegenerate={handleEmailRegenerate}
+                        onBack={handleBackToDashboard}
+                      />
+                    )}
+                  </ErrorBoundary>
+                </motion.div>
+              </AnimatePresence>
+            </div>
           </div>
-        )}
-      </main>
+        </main>
+      </div>
+
+      {showContextModal && (
+        <ContextModal
+          onSubmit={handleEmailGenerate}
+          onCancel={() => setShowContextModal(false)}
+        />
+      )}
     </div>
   );
 }

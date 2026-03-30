@@ -16,6 +16,7 @@ from routes.upload_routes import upload_bp
 from routes.mapping_routes import mapping_bp
 from routes.views_routes import views_bp
 from routes.export_routes import export_bp
+from routes.email_routes import email_bp
 
 app = Flask(__name__)
 CORS(app)
@@ -26,11 +27,30 @@ app.register_blueprint(upload_bp, url_prefix="/api")
 app.register_blueprint(mapping_bp, url_prefix="/api")
 app.register_blueprint(views_bp, url_prefix="/api")
 app.register_blueprint(export_bp, url_prefix="/api")
+app.register_blueprint(email_bp, url_prefix="/api")
 
 
 @app.route("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.route("/api/cleanup-session", methods=["POST"])
+def cleanup_session():
+    """Delete the session SQLite file. Called on tab/browser close."""
+    from flask import request, jsonify
+    from shared.db import delete_session, session_exists
+
+    body = request.get_json(force=True, silent=True) or {}
+    session_id = (body.get("sessionId") or "").strip()
+    if not session_id:
+        return jsonify({"error": "sessionId required"}), 400
+    if session_exists(session_id):
+        try:
+            delete_session(session_id)
+        except Exception:
+            pass
+    return jsonify({"status": "ok"})
 
 
 @app.route("/api/test-key", methods=["POST"])

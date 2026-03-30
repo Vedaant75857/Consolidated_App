@@ -1,4 +1,5 @@
 import { useState } from "react";
+import ReactMarkdown from "react-markdown";
 import { ChevronDown, ChevronRight, Sparkles } from "lucide-react";
 
 interface Props {
@@ -36,9 +37,9 @@ export default function AISummary({ summary, loading }: Props) {
               <div className="h-3 bg-primary-100 dark:bg-primary-900/30 rounded w-3/6" />
             </div>
           ) : (
-            <p className="text-sm text-neutral-700 dark:text-neutral-300 leading-relaxed whitespace-pre-line">
-              {summary}
-            </p>
+            <div className="ai-summary-content text-sm text-neutral-700 dark:text-neutral-300 leading-relaxed">
+              <ReactMarkdown>{summary || ""}</ReactMarkdown>
+            </div>
           )}
         </div>
       )}

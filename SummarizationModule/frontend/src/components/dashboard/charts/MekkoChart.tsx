@@ -126,17 +126,6 @@ export default function MekkoChart({ data, title }: Props) {
         className="absolute pointer-events-none opacity-0 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 text-xs px-3 py-2 rounded-lg shadow-lg border border-neutral-200 dark:border-neutral-700 transition-opacity z-20"
         style={{ maxWidth: 200 }}
       />
-      <div className="flex flex-wrap gap-2 px-2 pt-2">
-        {allSegLabels.slice(0, 12).map((label) => (
-          <div key={label} className="flex items-center gap-1.5 text-xs text-neutral-600 dark:text-neutral-400">
-            <div className="w-3 h-3 rounded-sm shrink-0" style={{ backgroundColor: colorScale(label) }} />
-            <span className="truncate max-w-[100px]">{label}</span>
-          </div>
-        ))}
-        {allSegLabels.length > 12 && (
-          <span className="text-xs text-neutral-400">+{allSegLabels.length - 12} more</span>
-        )}
-      </div>
     </div>
   );
 }
