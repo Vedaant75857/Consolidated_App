@@ -158,6 +158,17 @@ def get_preview():
         "rows": df.head(50).fillna("").astype(str).to_dict(orient="records")
     })
 
+@app.route('/api/current-preview', methods=['GET'])
+def get_current_preview():
+    if state.df is None:
+        return jsonify({"error": "No active dataset loaded"}), 400
+
+    preview_df = state.df.head(50).fillna("").astype(str)
+    return jsonify({
+        "columns": [str(c) for c in state.df.columns],
+        "rows": preview_df.to_dict(orient="records")
+    })
+
 @app.route('/api/set-header-row', methods=['POST'])
 def set_header_row():
     data = request.json

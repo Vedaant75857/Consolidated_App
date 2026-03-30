@@ -11,6 +11,8 @@ import re
 import json
 import difflib
 import traceback
+import warnings
+from datetime import datetime, timedelta
 import pandas as pd
 from .helpers import (
     get_client, get_model, CostTracker,
@@ -258,6 +260,26 @@ def _parse_payment_term(val):
     return None
 
 
+def _upsert_adjacent_column(df, source_col, new_col, values):
+    """Insert or move a derived column so it stays immediately after its source column."""
+    insert_at = df.columns.get_loc(source_col) + 1
+
+    if new_col in df.columns:
+        df.pop(new_col)
+
+    df.insert(insert_at, new_col, values)
+
+
+def _upsert_adjacent_columns(df, source_col, column_defs):
+    """Insert multiple derived columns in order immediately after a source column."""
+    insert_at = df.columns.get_loc(source_col) + 1
+    for new_col, values in column_defs:
+        if new_col in df.columns:
+            df.pop(new_col)
+        df.insert(insert_at, new_col, values)
+        insert_at += 1
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  AGENTS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -306,7 +328,8 @@ def normalize_supplier_name_agent(df, api_key=None, **kwargs):
         det_mapping.update(ai_mapping)
 
     new_col = "NORMALIZED SUPPLIER_NAME_BAIN"
-    df[new_col] = df[target_col].astype(str).map(det_mapping).fillna(df[target_col])
+    normalized = df[target_col].astype(str).map(det_mapping).fillna(df[target_col])
+    _upsert_adjacent_column(df, target_col, new_col, normalized)
 
     return df, f"[OK] Normalized {len(det_mapping)} supplier names → **{new_col}**.", cost.summary()
 
@@ -361,7 +384,8 @@ def normalize_supplier_country_agent(df, api_key=None, **kwargs):
 
     full_mapping = {**det_mapping}
     new_col = "SUPPLIER COUNTRY NORMALIZED"
-    df[new_col] = df[target_col].astype(str).map(full_mapping).fillna(df[target_col])
+    normalized = df[target_col].astype(str).map(full_mapping).fillna(df[target_col])
+    _upsert_adjacent_column(df, target_col, new_col, normalized)
 
     return df, f"[OK] Normalized {len(full_mapping)} countries → **{new_col}**.", cost.summary()
 
@@ -374,12 +398,186 @@ def add_record_id_agent(df):
     return df, "[OK] Added 'Record ID' column."
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  DATE NORMALIZATION ENGINE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_DATE_TARGET_FMT = "%d-%m-%Y"
+_EXCEL_EPOCH = datetime(1899, 12, 30)
+_CURRENT_YEAR = datetime.today().year
+
+_MONTH_MAP = {
+    "jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,
+    "jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12,
+    "january":1,"february":2,"march":3,"april":4,"june":6,
+    "july":7,"august":8,"september":9,"october":10,"november":11,"december":12,
+}
+
+_ORDINAL_RE   = re.compile(r'(\d+)(st|nd|rd|th)\b', re.IGNORECASE)
+_COMPACT_8_RE = re.compile(r'^\d{8}$')
+_YEAR_ONLY_RE = re.compile(r'^\d{4}$')
+_TIME_RE      = re.compile(r'\s+\d{1,2}:\d{2}(:\d{2})?(\s*(AM|PM))?$', re.IGNORECASE)
+_ISO_T_RE     = re.compile(r'T\d{2}:\d{2}(:\d{2})?(\..*?)?(Z|[+-]\d{2}:\d{2})?$', re.IGNORECASE)
+
+_DMY_MASKS = ['%d-%m-%Y','%d-%b-%Y','%d-%B-%Y','%d-%m-%y','%d-%b-%y','%d-%B-%y','%Y-%m-%d','%y-%m-%d']
+_MDY_MASKS = ['%m-%d-%Y','%b-%d-%Y','%B-%d-%Y','%m-%d-%y','%b-%d-%y','%B-%d-%y','%Y-%m-%d','%y-%m-%d']
+
+
+def _excel_serial(serial):
+    """Convert an Excel serial number to a datetime."""
+    try:
+        return _EXCEL_EPOCH + timedelta(days=float(serial))
+    except Exception:
+        return None
+
+
+def _date_preprocess(raw):
+    """Clean a raw date string: strip time, ordinals, unify separators."""
+    s = _ISO_T_RE.sub('', str(raw).strip()).strip()
+    s = _TIME_RE.sub('', s).strip()
+    s = _ORDINAL_RE.sub(r'\1', s)
+    return re.sub(r'[/\.\s,]+', '-', s).strip('-')
+
+
+def _parse_partial_date(s):
+    """Handle year-only or month-year partial dates."""
+    if _YEAR_ONLY_RE.match(s):
+        return datetime(int(s), 1, 1)
+    parts = s.split('-')
+    if len(parts) == 2:
+        a, b = parts[0].strip(), parts[1].strip()
+        if a.lower() in _MONTH_MAP and b.isdigit() and len(b) == 4:
+            return datetime(int(b), _MONTH_MAP[a.lower()], 1)
+        if b.lower() in _MONTH_MAP and a.isdigit() and len(a) == 4:
+            return datetime(int(a), _MONTH_MAP[b.lower()], 1)
+        if a.isdigit() and b.lower() in _MONTH_MAP:
+            return datetime(_CURRENT_YEAR, _MONTH_MAP[b.lower()], int(a))
+        if b.isdigit() and a.lower() in _MONTH_MAP:
+            return datetime(_CURRENT_YEAR, _MONTH_MAP[a.lower()], int(b))
+    return None
+
+
+def _try_date_masks(s, masks):
+    """Try parsing with a list of strptime masks."""
+    for fmt in masks:
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _profile_date_series(series):
+    """Profile a series to determine DMY vs MDY order."""
+    score_dmy = score_mdy = 0
+    months_re = re.compile(r'(?i)^(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)')
+    for val in series.dropna():
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            continue
+        s = str(val).strip()
+        if _COMPACT_8_RE.match(s):
+            continue
+        s = re.sub(r'[/\.\s,]+', '-', _ISO_T_RE.sub('', _TIME_RE.sub('', s).strip()).strip())
+        parts = s.split('-')
+        if len(parts) < 2:
+            continue
+        p0, p1 = parts[0], parts[1]
+        try:
+            if int(p0) > 12: score_dmy += 1
+        except ValueError:
+            pass
+        try:
+            if int(p1) > 12: score_mdy += 1
+        except ValueError:
+            pass
+        if months_re.match(p0): score_mdy += 1
+        if months_re.match(p1): score_dmy += 1
+    return 'MDY' if score_mdy > score_dmy else 'DMY'
+
+
+def _parse_one_date(raw, masks):
+    """Parse a single raw value through a multi-gate pipeline."""
+    # Gate 1 — Excel serial (numeric type)
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return _excel_serial(raw)
+    s = str(raw).strip()
+    if not s or s.lower() in ('nan', 'none', 'nat', ''):
+        return None
+    # Gate 1b — Excel serial as string (e.g. '45734' from dtype=str loading)
+    if re.match(r'^\d{5}$', s):
+        serial = int(s)
+        if 18000 <= serial <= 73050:
+            return _excel_serial(serial)
+    # Gate 2 — Compact 8-digit
+    if _COMPACT_8_RE.match(s):
+        for fmt in ('%Y%m%d',
+                    '%d%m%Y' if masks is _DMY_MASKS else '%m%d%Y',
+                    '%m%d%Y' if masks is _DMY_MASKS else '%d%m%Y'):
+            try:
+                return datetime.strptime(s, fmt)
+            except ValueError:
+                continue
+    # Gate 3 — Pre-process
+    clean = _date_preprocess(s)
+    # Gate 4 — ISO year-first fast path
+    if re.match(r'^\d{4}-\d{1,2}-\d{1,2}$', clean):
+        try:
+            return datetime.strptime(clean, '%Y-%m-%d')
+        except ValueError:
+            pass
+    # Gate 5 — Format masks
+    result = _try_date_masks(clean, masks)
+    if result:
+        return result
+    # Gate 6 — Partial date
+    result = _parse_partial_date(clean)
+    if result:
+        return result
+    # Gate 7 — Pandas mixed fallback
+    try:
+        ts = pd.to_datetime(clean, dayfirst=(masks is _DMY_MASKS), format='mixed', errors='coerce')
+        if pd.notna(ts):
+            return ts.to_pydatetime()
+    except Exception:
+        pass
+    return None
+
+
+def _normalize_date_series(series, target_fmt, force_order=None):
+    """Normalize a pandas Series of raw date values. Returns (Series, order_str)."""
+    order = force_order or _profile_date_series(series)
+    masks = _DMY_MASKS if order == 'DMY' else _MDY_MASKS
+    results = [
+        (dt.strftime(target_fmt) if (dt := _parse_one_date(v, masks)) else '')
+        for v in series
+    ]
+    return pd.Series(results, index=series.index, name=series.name), order
+
+
+_FILE_COL_RE = re.compile(
+    r'(?i)(file[_\s]?name|file[_\s]?id|filename|source[_\s]?file|'
+    r'data[_\s]?source|input[_\s]?file|source|origin|src|file)'
+)
+
+
+def _detect_file_column(df):
+    """Return the name of the file/source identity column, or None."""
+    for col in df.columns:
+        if _FILE_COL_RE.search(str(col)):
+            return col
+    return None
+
+
 def date_normalization_agent(df, api_key=None, user_format=None, **kwargs):
-    """Normalize date columns via column profiling (DMY/MDY inference) + stacked mask extraction."""
+    """Normalize date columns to DD-MM-YYYY using per-value multi-gate parsing.
+
+    If a file/source column is detected, normalizes per group for accurate
+    DMY/MDY profiling on stitched datasets.  Otherwise processes as one block.
+    """
     cost = CostTracker()
     custom_sys = kwargs.get('custom_system', '')
     custom_inst = kwargs.get('custom_instructions', '')
-    target_fmt = user_format or "%d-%m-%Y"
+    target_fmt = user_format or _DATE_TARGET_FMT
     log = []
 
     date_cols = [
@@ -390,99 +588,77 @@ def date_normalization_agent(df, api_key=None, user_format=None, **kwargs):
     if not date_cols:
         return df, "No new date columns found.", cost.summary()
 
-    # Predefine the specific masks to sequentially cascade.
-    DMY_MASKS = ['%d-%m-%Y', '%d-%b-%Y', '%d-%B-%Y', '%d-%m-%y', '%d-%b-%y', '%d-%B-%y', '%Y-%m-%d', '%y-%m-%d']
-    MDY_MASKS = ['%m-%d-%Y', '%b-%d-%Y', '%B-%d-%Y', '%m-%d-%y', '%b-%d-%y', '%B-%d-%y', '%Y-%m-%d', '%y-%m-%d']
+    file_col = _detect_file_column(df)
+    print(f"  File/source column : {file_col!r}")
+    print(f"  Date columns       : {date_cols}")
 
-    for col in date_cols:
-        try:
-            series = df[col].dropna().astype(str)
-            series = series[~series.isin(['', 'nan', 'None', 'NaN'])]
-            if series.empty:
-                continue
+    # Build groups
+    if file_col and file_col in df.columns:
+        groups = list(df.groupby(file_col, sort=False))
+    else:
+        groups = [('(all)', df)]
 
-            total_count = series.shape[0]
+    # Prepare normalized buffers
+    norm_buffers = {col: pd.Series('', index=df.index, dtype=str) for col in date_cols}
 
-            # 1. Pre-Processing: Unify separators and whitespace to hyphens.
-            s_clean = series.str.replace(r'[/\.\s]+', '-', regex=True).str.strip()
+    for src_val, grp in groups:
+        for col in date_cols:
+            try:
+                norm_series, order = _normalize_date_series(grp[col], target_fmt)
+                norm_buffers[col].loc[norm_series.index] = norm_series.values
+                total   = grp[col].notna().sum()
+                success = (norm_series != '').sum()
 
-            # 2. Extract parts to Profile Column
-            parts = s_clean.str.split('-', expand=True)
-
-            # Ensure we have at least 2 parts to profile
-            if parts.shape[1] >= 2:
-                # Count Numeric > 12
-                valid_p0 = pd.to_numeric(parts[0], errors='coerce')
-                count_p0_gt_12 = (valid_p0 > 12).sum()
-
-                valid_p1 = pd.to_numeric(parts[1], errors='coerce')
-                count_p1_gt_12 = (valid_p1 > 12).sum()
-
-                # Count Month Names
-                months_pattern = r'(?i)^(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)'
-                count_p0_month = parts[0].str.contains(months_pattern, na=False).sum()
-                count_p1_month = parts[1].str.contains(months_pattern, na=False).sum()
-
-                # Score
-                score_dmy = count_p0_gt_12 + count_p1_month
-                score_mdy = count_p1_gt_12 + count_p0_month
-
-                master_pattern = 'MDY' if score_mdy > score_dmy else 'DMY'
-            else:
-                master_pattern = 'DMY'
-
-            # 3. Stack Format Masks
-            active_masks = DMY_MASKS if master_pattern == 'DMY' else MDY_MASKS
-            parsed = pd.Series(pd.NaT, index=df.index)
-            
-            # Apply all primary masks concurrently
-            for fmt in active_masks:
-                parsed = parsed.combine_first(pd.to_datetime(s_clean, format=fmt, errors='coerce'))
-
-            # Fallback 1: let Pandas automatically try its best on whatever is still failing
-            if parsed.isna().sum() > 0:
-                is_dayfirst = (master_pattern == 'DMY')
-                fallback_parsed = pd.to_datetime(s_clean, dayfirst=is_dayfirst, format='mixed', errors='coerce')
-                parsed = parsed.combine_first(fallback_parsed)
-
-            # 4. AI Backing (Bottom 20% failure case)
-            still_failed = parsed.isna().sum()
-            if still_failed > total_count * 0.2:
-                samples = _diverse_date_samples(df[col], max_samples=30)
-                if samples:
-                    client = get_client(api_key)
-                    prompt = (
-                        f"These date values need parsing: {json.dumps(samples[:20])}\n"
-                        f"Return a Python strptime format string that parses MOST of these.\n"
-                        f"Return JSON ONLY: {{ \"format\": \"%d/%m/%Y\" }}"
-                    )
-                    if custom_inst:
-                        prompt = custom_inst.replace('{sample_dates}', json.dumps(samples)).replace('{target_format}', target_fmt)
-
-                    try:
-                        resp = client.chat.completions.create(
-                            model=get_model(),
-                            messages=[
-                                {"role": "system", "content": custom_sys or "Output JSON only."},
-                                {"role": "user", "content": prompt},
-                            ],
-                            response_format={"type": "json_object"},
+                # AI fallback for > 20% failure within this group
+                failed = total - success
+                if total > 0 and failed > total * 0.2:
+                    samples = _diverse_date_samples(grp[col], max_samples=30)
+                    if samples:
+                        client = get_client(api_key)
+                        prompt = (
+                            f"These date values need parsing: {json.dumps(samples[:20])}\n"
+                            f"Return a Python strptime format string that parses MOST of these.\n"
+                            f"Return JSON ONLY: {{ \"format\": \"%d/%m/%Y\" }}"
                         )
-                        cost.record(resp)
-                        ai_fmt = json.loads(resp.choices[0].message.content).get('format', '')
-                        if ai_fmt:
-                            ai_parsed = pd.to_datetime(s_clean, format=ai_fmt, errors='coerce')
-                            parsed = parsed.combine_first(ai_parsed)
-                    except Exception as e:
-                        cost.record_error(f"Date AI fallback for '{col}': {e}")
+                        if custom_inst:
+                            prompt = custom_inst.replace(
+                                '{sample_dates}', json.dumps(samples)
+                            ).replace('{target_format}', target_fmt)
+                        try:
+                            resp = client.chat.completions.create(
+                                model=get_model(),
+                                messages=[
+                                    {"role": "system", "content": custom_sys or "Output JSON only."},
+                                    {"role": "user", "content": prompt},
+                                ],
+                                response_format={"type": "json_object"},
+                            )
+                            cost.record(resp)
+                            ai_fmt = json.loads(resp.choices[0].message.content).get('format', '')
+                            if ai_fmt:
+                                # Re-parse only the failed values with the AI-suggested format
+                                for idx_val in grp[col].index:
+                                    if norm_buffers[col].loc[idx_val] == '':
+                                        raw = grp[col].loc[idx_val]
+                                        clean = _date_preprocess(str(raw))
+                                        try:
+                                            dt = datetime.strptime(clean, ai_fmt)
+                                            norm_buffers[col].loc[idx_val] = dt.strftime(target_fmt)
+                                        except Exception:
+                                            pass
+                        except Exception as e:
+                            cost.record_error(f"Date AI fallback for '{col}' group '{src_val}': {e}")
 
-            # 5. Output Extraction
-            new_col = f"Norm_Date_{col}"
-            df[new_col] = parsed.dt.strftime(target_fmt).fillna('')
-            success = parsed.notna().sum()
-            log.append(f"'{col}' [{master_pattern} anchor] → '{new_col}': {success}/{total_count} parsed")
-        except Exception as e:
-            log.append(f"Error '{col}': {e}")
+                # Recount after AI fallback
+                success = (norm_buffers[col].loc[grp.index] != '').sum()
+                log.append(f"'{col}' [{order}] group='{src_val}': {success}/{total} parsed")
+            except Exception as e:
+                log.append(f"Error '{col}' group='{src_val}': {e}")
+
+    # Insert normalized columns adjacent to originals
+    for col in date_cols:
+        new_col = f"Norm_Date_{col}"
+        _upsert_adjacent_column(df, col, new_col, norm_buffers[col])
 
     msg = "\n".join(log) if log else "No dates normalized."
     return df, msg, cost.summary()
@@ -575,9 +751,14 @@ def payment_terms_agent(df, api_key=None, **kwargs):
         return r.get(field, '') if isinstance(r, dict) else ''
 
     s = df[target_col].astype(str)
-    df[norm_col] = s.apply(lambda v: _get_field(v, 'days'))
-    df[discount_col] = s.apply(lambda v: _get_field(v, 'discount'))
-    df[doubt_col] = s.apply(lambda v: _get_field(v, 'doubt'))
+    norm_values = s.apply(lambda v: _get_field(v, 'days'))
+    discount_values = s.apply(lambda v: _get_field(v, 'discount'))
+    doubt_values = s.apply(lambda v: _get_field(v, 'doubt'))
+    _upsert_adjacent_columns(df, target_col, [
+        (norm_col, norm_values),
+        (discount_col, discount_values),
+        (doubt_col, doubt_values),
+    ])
 
     discount_count = (df[discount_col] != '').sum()
     doubt_count = (df[doubt_col] == 'Yes').sum()
@@ -649,7 +830,8 @@ def normalize_region_agent(df, api_key=None, **kwargs):
         det_mapping.update(ai_mapping)
 
     new_col = f"Norm_Region_{target_col}"
-    df[new_col] = df[target_col].astype(str).map(det_mapping).fillna(df[target_col])
+    normalized = df[target_col].astype(str).map(det_mapping).fillna(df[target_col])
+    _upsert_adjacent_column(df, target_col, new_col, normalized)
 
     return df, f"[OK] Normalized {len(det_mapping)} regions → **{new_col}**.", cost.summary()
 
@@ -696,7 +878,8 @@ def normalize_plant_agent(df, api_key=None, **kwargs):
         det_mapping.update(ai_mapping)
 
     new_col = f"Norm_Plant_{target_col}"
-    df[new_col] = df[target_col].astype(str).map(det_mapping).fillna(df[target_col])
+    normalized = df[target_col].astype(str).map(det_mapping).fillna(df[target_col])
+    _upsert_adjacent_column(df, target_col, new_col, normalized)
 
     return df, f"[OK] Normalized {len(det_mapping)} plant names → **{new_col}**.", cost.summary()
 
@@ -900,7 +1083,7 @@ def normalize_spend_agent(df, api_key=None, **kwargs):
             converted[idx] = spend_numeric * rate
             conversion_count += 1
         
-        df[new_col] = converted
+        _upsert_adjacent_column(df, spend_col, new_col, converted)
         results.append(
             f"'{spend_col}' → '{new_col}': {conversion_count} converted, "
             f"{no_rate_count} no rate found"

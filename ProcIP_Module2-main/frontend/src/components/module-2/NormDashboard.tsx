@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import {
   Loader2, ArrowRight, CheckCircle2,
   Download, Sparkles, Building2, Globe, Calendar, DollarSign,
@@ -30,6 +30,9 @@ export default function NormDashboard({ apiKey, activeTab = "pipeline", setActiv
   const [activeOp, setActiveOp] = useState<string | null>(null);
   const [opResults, setOpResults] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
+  const [operationPreview, setOperationPreview] = useState<{ columns: string[]; rows: any[] }>({ columns: [], rows: [] });
+  const [operationPreviewLoading, setOperationPreviewLoading] = useState(false);
+  const [operationPreviewError, setOperationPreviewError] = useState<string | null>(null);
   const [selectedPipeline, setSelectedPipeline] = useState<Set<string>>(
     new Set(OPERATIONS.map(op => op.id))
   );
@@ -48,6 +51,24 @@ export default function NormDashboard({ apiKey, activeTab = "pipeline", setActiv
     });
   };
 
+  const fetchOperationPreview = useCallback(async () => {
+    setOperationPreviewLoading(true);
+    setOperationPreviewError(null);
+    try {
+      const res = await fetch("/api/current-preview");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load preview");
+      setOperationPreview({
+        columns: data.columns || [],
+        rows: data.rows || [],
+      });
+    } catch (err: any) {
+      setOperationPreviewError(err.message || "Failed to load preview");
+    } finally {
+      setOperationPreviewLoading(false);
+    }
+  }, []);
+
   const handleRunOperation = useCallback(async (agentId: string) => {
     setActiveOp(agentId);
     const opLabel = OPERATIONS.find(o => o.id === agentId)?.label || agentId;
@@ -63,6 +84,7 @@ export default function NormDashboard({ apiKey, activeTab = "pipeline", setActiv
 
       setOpResults(prev => ({ ...prev, [agentId]: data.message }));
       setCompletedOps(prev => new Set([...prev, agentId]));
+      await fetchOperationPreview();
       log("success", opLabel + ": " + data.message);
     } catch (err: any) {
       setOpResults(prev => ({ ...prev, [agentId]: "Error: " + err.message }));
@@ -70,7 +92,7 @@ export default function NormDashboard({ apiKey, activeTab = "pipeline", setActiv
     } finally {
       setActiveOp(null);
     }
-  }, [apiKey, log]);
+  }, [apiKey, fetchOperationPreview, log]);
 
   const handleRunPipeline = useCallback(async () => {
     if (selectedPipeline.size === 0) return;
@@ -96,13 +118,28 @@ export default function NormDashboard({ apiKey, activeTab = "pipeline", setActiv
           log("error", resItem.agent + ": " + resItem.error);
         }
       });
+      if (data.results?.some((resItem: any) => resItem.message)) {
+        await fetchOperationPreview();
+      }
       log("success", "Pipeline complete.");
     } catch (err: any) {
       log("error", "Pipeline error: " + err.message);
     } finally {
       setLoading(false);
     }
-  }, [selectedPipeline, apiKey, log]);
+  }, [selectedPipeline, apiKey, fetchOperationPreview, log]);
+
+  useEffect(() => {
+    if (
+      activeTab !== "pipeline" &&
+      activeTab !== "download" &&
+      completedOps.has(activeTab) &&
+      operationPreview.columns.length === 0 &&
+      !operationPreviewLoading
+    ) {
+      fetchOperationPreview();
+    }
+  }, [activeTab, completedOps, operationPreview.columns.length, operationPreviewLoading, fetchOperationPreview]);
 
   const handleDownload = useCallback(() => {
     log("info", "Downloading normalised data…");
@@ -141,6 +178,33 @@ export default function NormDashboard({ apiKey, activeTab = "pipeline", setActiv
     const Icon = singleOp.icon;
     const isCompleted = completedOps.has(singleOp.id);
     const isRunning = activeOp === singleOp.id;
+    const showOperationPreview = isCompleted;
+    const highlightedOperationColumns = new Set(
+      operationPreview.columns.filter((col) => {
+        switch (singleOp.id) {
+          case "supplier_name":
+            return col.startsWith("NORMALIZED SUPPLIER_NAME_BAIN");
+          case "supplier_country":
+            return col.startsWith("SUPPLIER COUNTRY NORMALIZED");
+          case "date":
+            return col.startsWith("Norm_Date_");
+          case "payment_terms":
+            return (
+              col.startsWith("PAYMENT TERMS_NORMALIZED") ||
+              col.startsWith("Discount_Payment_Terms") ||
+              col.startsWith("Payment_Terms_Doubt")
+            );
+          case "region":
+            return col.startsWith("Norm_Region_");
+          case "plant":
+            return col.startsWith("Norm_Plant_");
+          case "currency_conversion":
+            return col.startsWith("SPEND AMOUNT CONVERTED_");
+          default:
+            return false;
+        }
+      })
+    );
     return (
       <SurfaceCard
         title={singleOp.label}
@@ -169,6 +233,72 @@ export default function NormDashboard({ apiKey, activeTab = "pipeline", setActiv
                 : "bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-900/50"
             }`}>
               {opResults[singleOp.id]}
+            </div>
+          )}
+          {showOperationPreview && (
+            <div className="rounded-2xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900/60 overflow-hidden">
+              <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-neutral-200 dark:border-neutral-700">
+                <div>
+                  <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">{singleOp.label} Preview</p>
+                  <p className="text-xs text-neutral-500 dark:text-neutral-400">Top rows from the current working dataset after {singleOp.label.toLowerCase()} runs</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={fetchOperationPreview}
+                  disabled={operationPreviewLoading}
+                  className="text-xs font-medium text-red-600 dark:text-red-400 hover:text-red-700 disabled:opacity-50"
+                >
+                  {operationPreviewLoading ? "Refreshing..." : "Refresh"}
+                </button>
+              </div>
+              {operationPreviewError ? (
+                <div className="px-4 py-4 text-sm text-red-600 dark:text-red-400">{operationPreviewError}</div>
+              ) : operationPreviewLoading && operationPreview.columns.length === 0 ? (
+                <div className="px-4 py-6 text-sm text-neutral-500 dark:text-neutral-400">Loading preview...</div>
+              ) : operationPreview.columns.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-neutral-50 dark:bg-neutral-800/80">
+                      <tr>
+                        <th className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400 border-b border-neutral-200 dark:border-neutral-700">#</th>
+                        {operationPreview.columns.map((col) => (
+                          <th
+                            key={col}
+                            className={`px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide border-b border-neutral-200 dark:border-neutral-700 whitespace-nowrap ${
+                              highlightedOperationColumns.has(col)
+                                ? "bg-neutral-200/80 dark:bg-neutral-700/80 text-neutral-700 dark:text-neutral-200"
+                                : "text-neutral-500 dark:text-neutral-400"
+                            }`}
+                          >
+                            {col}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {operationPreview.rows.map((row, index) => (
+                        <tr key={index} className="odd:bg-white even:bg-neutral-50/60 dark:odd:bg-neutral-900/30 dark:even:bg-neutral-800/30">
+                          <td className="px-3 py-2 text-xs text-neutral-400 dark:text-neutral-500 border-b border-neutral-100 dark:border-neutral-800">{index + 1}</td>
+                          {operationPreview.columns.map((col) => (
+                            <td
+                              key={`${index}-${col}`}
+                              className={`px-3 py-2 border-b border-neutral-100 dark:border-neutral-800 text-neutral-700 dark:text-neutral-300 whitespace-nowrap ${
+                                highlightedOperationColumns.has(col)
+                                  ? "bg-neutral-100 dark:bg-neutral-800/80"
+                                  : ""
+                              }`}
+                            >
+                              {row[col] || "—"}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="px-4 py-6 text-sm text-neutral-500 dark:text-neutral-400">No preview data available yet.</div>
+              )}
             </div>
           )}
         </div>
