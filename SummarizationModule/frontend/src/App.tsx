@@ -21,6 +21,8 @@ import {
   confirmMapping,
   getAvailableViews,
   computeViews,
+  recomputeView,
+  generateSummary,
   exportCsv,
   exportPdf,
   deleteTable,
@@ -227,9 +229,26 @@ export default function App() {
       setLoading(true);
       setError("");
       try {
-        const result = await computeViews(sessionId, selectedViews, config, apiKey);
+        const result = await computeViews(sessionId, selectedViews, config);
         setViewResults(result.views);
         setStep(5);
+
+        if (apiKey && apiKey.trim()) {
+          const summaryViews = result.views.filter(
+            (v) => !v.error && v.viewId !== "category_drilldown"
+          );
+          summaryViews.forEach((v) => {
+            generateSummary(sessionId, v.viewId, apiKey)
+              .then(({ viewId, summary }) => {
+                setViewResults((prev) =>
+                  prev.map((vr) =>
+                    vr.viewId === viewId ? { ...vr, aiSummary: summary } : vr
+                  )
+                );
+              })
+              .catch(() => {});
+          });
+        }
       } catch (err: any) {
         setError(err.message || "Computation failed");
         throw err;
@@ -238,6 +257,20 @@ export default function App() {
       }
     },
     [sessionId, apiKey]
+  );
+
+  /* ──── Recompute single view (dashboard slider changes) ──── */
+
+  const handleRecomputeView = useCallback(
+    async (viewId: string, config: ViewConfig): Promise<ViewResult> => {
+      if (!sessionId) throw new Error("No session");
+      const result = await recomputeView(sessionId, viewId, config);
+      setViewResults((prev) =>
+        prev.map((v) => (v.viewId === viewId ? result.view : v))
+      );
+      return result.view;
+    },
+    [sessionId]
   );
 
   /* ──── Exports ──── */
@@ -361,6 +394,7 @@ export default function App() {
                 sessionId={sessionId}
                 onExportCsv={handleExportCsv}
                 onExportPdf={handleExportPdf}
+                onRecomputeView={handleRecomputeView}
               />
             )}
             </ErrorBoundary>

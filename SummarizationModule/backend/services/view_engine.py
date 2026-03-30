@@ -61,16 +61,9 @@ VIEW_REGISTRY: list[dict[str, Any]] = [
         "chartType": "mekko",
     },
     {
-        "viewId": "l3_vs_l4",
-        "title": "Category L3 vs L4",
-        "description": "Breakdown of L3 into L4 subcategories",
-        "requiredFields": ["l2", "l3", "l4", "total_spend"],
-        "chartType": "mekko",
-    },
-    {
         "viewId": "category_drilldown",
         "title": "Category Drill-Down",
-        "description": "Expandable pivot: L1 > L2 > L3 > L4",
+        "description": "Expandable pivot: L1 > L2 > L3",
         "requiredFields": ["l1", "total_spend"],
         "chartType": "tree_pivot",
     },
@@ -390,41 +383,10 @@ def compute_l2_vs_l3_mekko(df: pd.DataFrame) -> dict[str, Any]:
     }
 
 
-def compute_l3_vs_l4(df: pd.DataFrame) -> dict[str, Any]:
-    work = df.dropna(subset=["l2", "l3", "l4", "total_spend"]).copy()
-    work = work[
-        (work["l3"].str.strip() != "")
-        & (work["l4"].str.strip() != "")
-    ]
-    excluded = len(df) - len(work)
-
-    per_l2: dict[str, Any] = {}
-    for l2_val in work["l2"].unique():
-        subset = work[work["l2"] == l2_val]
-        per_l2[str(l2_val)] = _build_mekko_data(subset, "l3", "l4")
-
-    table = (
-        work.groupby(["l2", "l3", "l4"])["total_spend"]
-        .sum()
-        .reset_index()
-        .rename(columns={
-            "l2": "Category L2", "l3": "Category L3",
-            "l4": "Category L4", "total_spend": "Total Spend (USD)",
-        })
-        .sort_values("Total Spend (USD)", ascending=False)
-    )
-
-    return {
-        "tableData": _to_records(table),
-        "chartData": {"perL2": per_l2},
-        "excludedRows": excluded,
-    }
-
-
 def compute_category_drilldown(df: pd.DataFrame, mapping: dict) -> dict[str, Any]:
-    """Build hierarchical tree data for L1 > L2 > L3 > L4."""
+    """Build hierarchical tree data for L1 > L2 > L3."""
     available_levels = []
-    for lvl in ["l1", "l2", "l3", "l4"]:
+    for lvl in ["l1", "l2", "l3"]:
         if mapping.get(lvl) and lvl in df.columns:
             col_data = df[lvl].dropna()
             if (col_data.str.strip() != "").any():
@@ -481,7 +443,6 @@ COMPUTE_FUNCS = {
     "l1_spend": lambda df, cfg: compute_l1_spend(df),
     "l1_vs_l2_mekko": lambda df, cfg: compute_l1_vs_l2_mekko(df),
     "l2_vs_l3_mekko": lambda df, cfg: compute_l2_vs_l3_mekko(df),
-    "l3_vs_l4": lambda df, cfg: compute_l3_vs_l4(df),
     "category_drilldown": lambda df, cfg: compute_category_drilldown(df, cfg.get("mapping", {})),
 }
 

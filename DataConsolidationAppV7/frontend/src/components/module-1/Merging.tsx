@@ -119,6 +119,7 @@ export default function Merging(props: MergingProps) {
   const [sourceColClasses, setSourceColClasses] = useState<Record<string, { category: string; eligibility: string; color: string }>>({});
   const [columnsLoading, setColumnsLoading] = useState(false);
   const [pendingBaseCols, setPendingBaseCols] = useState<string[]>([]);
+  const [recommendLoading, setRecommendLoading] = useState(false);
   const simDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastBasePreviewId = useRef<string>("");
 
@@ -134,15 +135,20 @@ export default function Merging(props: MergingProps) {
 
   const fetchRecommendation = useCallback(async () => {
     if (!sessionId || groupSchema.length === 0) return;
+    setRecommendLoading(true);
     setAiLoading(true);
     setLoadingMessage("AI is recommending the best base table...");
     try {
       const res = await fetch("/api/merge/recommend-base", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, apiKey }),
+        body: JSON.stringify({ sessionId, apiKey: apiKey || "" }),
       });
-      if (!res.ok) throw new Error((await res.json()).error || "Failed to recommend base");
+      if (!res.ok) {
+        let errMsg = "Failed to recommend base";
+        try { errMsg = (await res.json()).error || errMsg; } catch { /* ignore */ }
+        throw new Error(errMsg);
+      }
       const data = await res.json();
       setMergeBaseRecommendation(data);
       if (data.recommended && !mergeBaseGroupId) {
@@ -151,10 +157,12 @@ export default function Merging(props: MergingProps) {
       addLog("Merge", "success", `Recommended base: ${groupNameMap[data.recommended] || data.recommended}`);
     } catch (err: any) {
       addLog("Merge", "error", err.message);
+      setError(err.message);
     } finally {
+      setRecommendLoading(false);
       setAiLoading(false);
     }
-  }, [sessionId, apiKey, groupSchema, mergeBaseGroupId, groupNameMap, addLog, setAiLoading, setLoadingMessage, setMergeBaseGroupId, setMergeBaseRecommendation]);
+  }, [sessionId, apiKey, groupSchema, mergeBaseGroupId, groupNameMap, addLog, setAiLoading, setLoadingMessage, setMergeBaseGroupId, setMergeBaseRecommendation, setError]);
 
   useEffect(() => {
     if (step === 6 && !mergeBaseRecommendation && groupSchema.length > 0) {
@@ -210,7 +218,11 @@ export default function Merging(props: MergingProps) {
           includePreview: true,
         }),
       });
-      if (!res.ok) throw new Error((await res.json()).error || "Failed to analyze columns");
+      if (!res.ok) {
+        let errMsg = "Failed to analyze columns";
+        try { errMsg = (await res.json()).error || errMsg; } catch { /* ignore */ }
+        throw new Error(errMsg);
+      }
       const data = await res.json();
       setMergeCommonColumns(data.common_columns || []);
       setAllBaseColumns(data.base_columns || []);
@@ -740,6 +752,12 @@ export default function Merging(props: MergingProps) {
       <>
       {/* Section A: Base & Source Selection */}
       <SurfaceCard title="Base & Source Selection" icon={Sparkles}>
+        {recommendLoading && (
+          <div className="flex items-center gap-3 rounded-xl bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 px-4 py-3 text-sm text-blue-700 dark:text-blue-300 mb-4">
+            <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+            <span className="text-xs">AI is analyzing your tables to recommend the best base table...</span>
+          </div>
+        )}
         {!hasMultipleGroups && groupSchema.length === 1 && (
           <div className="text-sm text-neutral-500 dark:text-neutral-400 mb-4">
             Only one table available.{" "}

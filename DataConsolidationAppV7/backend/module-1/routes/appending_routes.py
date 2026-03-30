@@ -6,7 +6,7 @@ from flask import Blueprint, jsonify, request
 
 from shared.db import get_session_db
 from appending.service import save_append_groups
-from routes.summary_routes import execute_operation_kernel
+from routes.insights_routes import execute_operation_kernel
 
 appending_bp = Blueprint("appending_bp", __name__)
 

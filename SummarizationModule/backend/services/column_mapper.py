@@ -48,13 +48,7 @@ STANDARD_FIELDS = [
         "fieldKey": "l3",
         "displayName": "Category Level 3",
         "expectedType": "string",
-        "description": "Third-level procurement category",
-    },
-    {
-        "fieldKey": "l4",
-        "displayName": "Category Level 4",
-        "expectedType": "string",
-        "description": "Fourth-level procurement category (most granular, most distinct values)",
+        "description": "Third-level procurement category (most granular)",
     },
     {
         "fieldKey": "currency",
@@ -128,16 +122,16 @@ DISAMBIGUATION HINTS — read carefully before mapping:
      "plant" / "site" / "location" (facilities), "material" / "description"
      / "item" (what was purchased), "contract" / "PO number" (document refs).
 
-4. CATEGORY L1 vs L2 vs L3 vs L4 (HIERARCHY):
+4. CATEGORY L1 vs L2 vs L3 (HIERARCHY):
    - These form a taxonomy hierarchy: L1 is the broadest (fewest distinct values),
-     L4 is the most granular (most distinct values).
+     L3 is the most granular (most distinct values).
    - L1 examples: "Direct Materials", "Indirect Spend", "Services", "IT",
      "Marketing", "Logistics". Typically 5-20 distinct values.
    - L2 examples: "Raw Materials", "Packaging", "MRO", "Professional Services".
      Typically 20-80 distinct values.
-   - L3/L4 are increasingly specific subcategories with more distinct values.
+   - L3 values are increasingly specific subcategories with more distinct values.
    - To distinguish levels: COUNT THE DISTINCT VALUES in the samples — fewer
-     distinct values = higher level (L1), more distinct values = lower level (L4).
+     distinct values = higher level (L1), more distinct values = lower level (L3).
    - Look for "L1", "L2", "level 1", "level 2", "category 1", "cat1", "segment",
      "family", "class", "commodity", "sub-category", "sub-class" in column names.
    - DO NOT confuse with: "GL account" / "account code" (financial codes),
@@ -145,7 +139,7 @@ DISAMBIGUATION HINTS — read carefully before mapping:
      codes, not category names), "material group" (could be a category but verify
      via sample values).
    - If the dataset has columns like "Category" and "Sub-Category" (only 2 levels),
-     map Category -> L1 and Sub-Category -> L2. Leave L3/L4 unmapped.
+     map Category -> L1 and Sub-Category -> L2. Leave L3 unmapped.
 
 5. COUNTRY vs OTHER GEOGRAPHIC COLUMNS:
    - Country is the country associated with the supplier or transaction. Look for

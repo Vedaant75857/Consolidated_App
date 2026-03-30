@@ -2,10 +2,11 @@ import { useState } from "react";
 import { ChevronDown, ChevronRight, Sparkles } from "lucide-react";
 
 interface Props {
-  summary: string;
+  summary?: string;
+  loading?: boolean;
 }
 
-export default function AISummary({ summary }: Props) {
+export default function AISummary({ summary, loading }: Props) {
   const [expanded, setExpanded] = useState(true);
 
   return (
@@ -26,9 +27,19 @@ export default function AISummary({ summary }: Props) {
       </button>
       {expanded && (
         <div className="px-4 pb-4">
-          <p className="text-sm text-neutral-700 dark:text-neutral-300 leading-relaxed">
-            {summary}
-          </p>
+          {loading ? (
+            <div className="space-y-2 animate-pulse">
+              <div className="h-3 bg-primary-100 dark:bg-primary-900/30 rounded w-full" />
+              <div className="h-3 bg-primary-100 dark:bg-primary-900/30 rounded w-5/6" />
+              <div className="h-3 bg-primary-100 dark:bg-primary-900/30 rounded w-4/6" />
+              <div className="h-3 bg-primary-100 dark:bg-primary-900/30 rounded w-full" />
+              <div className="h-3 bg-primary-100 dark:bg-primary-900/30 rounded w-3/6" />
+            </div>
+          ) : (
+            <p className="text-sm text-neutral-700 dark:text-neutral-300 leading-relaxed whitespace-pre-line">
+              {summary}
+            </p>
+          )}
         </div>
       )}
     </div>

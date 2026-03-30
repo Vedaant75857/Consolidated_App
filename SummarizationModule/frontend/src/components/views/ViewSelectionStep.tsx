@@ -17,7 +17,6 @@ const VIEW_ICONS: Record<string, React.ReactNode> = {
   l1_spend: <Layers className="w-4 h-4" />,
   l1_vs_l2_mekko: <Layers className="w-4 h-4" />,
   l2_vs_l3_mekko: <Layers className="w-4 h-4" />,
-  l3_vs_l4: <Layers className="w-4 h-4" />,
   category_drilldown: <Layers className="w-4 h-4" />,
 };
 
@@ -25,8 +24,6 @@ export default function ViewSelectionStep({ views, onCompute, loading }: Props) 
   const [selected, setSelected] = useState<Set<string>>(() => {
     return new Set(views.filter((v) => v.available).map((v) => v.viewId));
   });
-  const [topN, setTopN] = useState(20);
-  const [paretoThreshold, setParetoThreshold] = useState(80);
   const [error, setError] = useState("");
 
   const toggleView = (viewId: string) => {
@@ -46,7 +43,7 @@ export default function ViewSelectionStep({ views, onCompute, loading }: Props) 
     }
     setError("");
     try {
-      await onCompute(sel, { topN, paretoThreshold });
+      await onCompute(sel, {});
     } catch (err: any) {
       setError(err.message || "Computation failed");
     }
@@ -109,52 +106,6 @@ export default function ViewSelectionStep({ views, onCompute, loading }: Props) 
               )}
             </label>
           ))}
-        </div>
-
-        <div className="px-8 pb-6 space-y-4 border-t border-neutral-100 dark:border-neutral-800 pt-6">
-          <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Configuration</h3>
-
-          {selected.has("supplier_ranking") && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-neutral-600 dark:text-neutral-400">Top N Suppliers</span>
-                <span className="font-semibold text-neutral-900 dark:text-neutral-100 tabular-nums">{topN}</span>
-              </div>
-              <input
-                type="range"
-                min={5}
-                max={50}
-                value={topN}
-                onChange={(e) => setTopN(Number(e.target.value))}
-                className="w-full accent-primary"
-              />
-              <div className="flex justify-between text-xs text-neutral-400">
-                <span>5</span>
-                <span>50</span>
-              </div>
-            </div>
-          )}
-
-          {selected.has("pareto_analysis") && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-neutral-600 dark:text-neutral-400">Pareto Threshold</span>
-                <span className="font-semibold text-neutral-900 dark:text-neutral-100 tabular-nums">{paretoThreshold}%</span>
-              </div>
-              <input
-                type="range"
-                min={50}
-                max={95}
-                value={paretoThreshold}
-                onChange={(e) => setParetoThreshold(Number(e.target.value))}
-                className="w-full accent-primary"
-              />
-              <div className="flex justify-between text-xs text-neutral-400">
-                <span>50%</span>
-                <span>95%</span>
-              </div>
-            </div>
-          )}
         </div>
 
         {error && (

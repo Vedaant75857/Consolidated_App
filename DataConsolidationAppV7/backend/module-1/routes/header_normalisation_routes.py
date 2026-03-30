@@ -10,7 +10,7 @@ import sys
 from flask import Blueprint, jsonify, request, send_file
 
 from shared.db import get_session_db, lookup_sql_name, read_table, read_table_columns, table_exists, table_row_count
-from routes.summary_routes import execute_operation_kernel, _session_lock
+from routes.insights_routes import execute_operation_kernel, _session_lock
 
 
 def _load_mod(name: str, path: str):

@@ -110,6 +110,7 @@ export default function App() {
 
   // Step 5: Data Cleaning (per-table)
   const [cleaningConfigs, setCleaningConfigs] = useState<Record<string, any>>({});
+  const [dedupResults, setDedupResults] = useState<Record<string, any>>({});
 
   // Step 6-7: Guided Merge
   const [mergeBaseGroupId, setMergeBaseGroupId] = useState<string>("");
@@ -310,7 +311,18 @@ export default function App() {
     }
     if (patch.headerNormDecisions) setHeaderNormDecisions(patch.headerNormDecisions);
     if (patch.headerNormStandardFields) setHeaderNormStandardFields(patch.headerNormStandardFields);
-    if (patch.appendGroups) setAppendGroups(patch.appendGroups);
+    if (patch.appendGroups) {
+      setAppendGroups((prev) => {
+        const localNames: Record<string, string> = {};
+        for (const g of prev) {
+          if (g.group_id && g.group_name) localNames[g.group_id] = g.group_name;
+        }
+        return (patch.appendGroups as any[]).map((g: any) => ({
+          ...g,
+          group_name: g.group_name || localNames[g.group_id] || "",
+        }));
+      });
+    }
     if (patch.appendGroupMappings) setAppendGroupMappings(patch.appendGroupMappings);
     if (patch.unassigned) setUnassigned(patch.unassigned);
     if (patch.groupSchema) setGroupSchema(patch.groupSchema);
@@ -533,6 +545,48 @@ export default function App() {
     }
   };
 
+  const handleDedupPreview = async (groupId: string, columns: string[]) => {
+    try {
+      const res = await fetch("/api/dedup-preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, groupId, deduplicateColumns: columns }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || "Failed to preview dedup");
+      return await res.json();
+    } catch (err: any) {
+      setError(err.message);
+      addLog("Deduplication", "error", err.message);
+      return null;
+    }
+  };
+
+  const handleDedupApply = async (groupId: string, columns: string[]) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/dedup-apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, groupId, deduplicateColumns: columns }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || "Failed to apply dedup");
+      const data = await res.json();
+      setDedupResults((prev) => ({ ...prev, [groupId]: data }));
+      if (data.rows_after != null) {
+        setGroupSchema((prev) => prev.map((gs) => gs.group_id === groupId ? { ...gs, rows: data.rows_after } : gs));
+      }
+      addLog("Deduplication", "success", `Deduplicated "${groupNameMap[groupId] || groupId}": removed ${data.duplicates_removed} duplicate(s)`);
+      return data;
+    } catch (err: any) {
+      setError(err.message);
+      addLog("Deduplication", "error", err.message);
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const fetchResultsPreviews = async () => {
     if (!sessionId) return;
     try {
@@ -604,8 +658,9 @@ export default function App() {
       const data = exec?.result || {};
       setHeaderNormDecisions(data.tables || []);
       setHeaderNormStandardFields(data.standardFields || []);
-      // Cascade-reset downstream step (cleaning)
+      // Cascade-reset downstream step (cleaning + dedup)
       setCleaningConfigs({});
+      setDedupResults({});
       const totalCols = (data.tables || []).reduce((s: number, t: any) => s + (t.decisions?.length || 0), 0);
       addLog("Header Normalisation", "success", `Mapped ${totalCols} columns across ${data.tables?.length || 0} table(s)`);
       const normGroupIds = (data.tables || []).map((t: any) => t.tableKey);
@@ -633,8 +688,9 @@ export default function App() {
       const applied = data.appliedTables || [];
       const totalMapped = applied.reduce((s: number, t: any) => s + (t.mapped || 0), 0);
       addLog("Header Normalisation", "success", `Applied mappings to ${applied.length} table(s), ${totalMapped} columns renamed`);
-      // Cascade-reset downstream step (cleaning configs reference old column names)
+      // Cascade-reset downstream step (cleaning + dedup configs reference old column names)
       setCleaningConfigs({});
+      setDedupResults({});
       setStep(5);
     } catch (err: any) {
       setError(err.message);
@@ -686,11 +742,12 @@ export default function App() {
       setAppendGroupMappings([]);
       setGroupSchema([]);
       setAppendReport(null);
-      // Cascade-reset downstream steps (header norm, cleaning, merge)
+      // Cascade-reset downstream steps (header norm, cleaning, dedup, merge)
       setHeaderNormDecisions(null);
       setHeaderNormStandardFields([]);
       setGroupPreviewData({});
       setCleaningConfigs({});
+      setDedupResults({});
       setMergeBaseGroupId("");
       setMergeSourceGroupId("");
       setMergeResult(null);
@@ -859,11 +916,12 @@ export default function App() {
       const data = exec?.result || {};
       setGroupSchema(data.groupSchema);
       setAppendReport(data.appendReport || null);
-      // Cascade-reset downstream steps (header norm, cleaning)
+      // Cascade-reset downstream steps (header norm, cleaning, dedup)
       setHeaderNormDecisions(null);
       setHeaderNormStandardFields([]);
       setGroupPreviewData({});
       setCleaningConfigs({});
+      setDedupResults({});
       addLog("Append Execute", "success", `Appended into ${(data.groupSchema || []).length} group(s)`);
     } catch (err: any) {
       setError(err.message);
@@ -1156,8 +1214,11 @@ export default function App() {
                   groupNameMap={groupNameMap}
                   sessionId={sessionId}
                   cleaningConfigs={cleaningConfigs}
+                  dedupResults={dedupResults}
                   loading={loading}
                   onCleanGroup={handleCleanGroup}
+                  onDedupPreview={handleDedupPreview}
+                  onDedupApply={handleDedupApply}
                   onProceed={() => setStep(6)}
                   onSkip={() => setStep(6)}
                 />

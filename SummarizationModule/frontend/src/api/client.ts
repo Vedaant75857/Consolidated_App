@@ -84,13 +84,35 @@ export async function getAvailableViews(sessionId: string) {
 export async function computeViews(
   sessionId: string,
   selectedViews: string[],
-  config: { topN?: number; paretoThreshold?: number },
-  apiKey: string
+  config: { topN?: number; paretoThreshold?: number }
 ) {
   return post<{ views: ViewResult[] }>("/compute-views", {
     sessionId,
     selectedViews,
     config,
+  });
+}
+
+export async function recomputeView(
+  sessionId: string,
+  viewId: string,
+  config: { topN?: number; paretoThreshold?: number }
+) {
+  return post<{ view: ViewResult }>("/recompute-view", {
+    sessionId,
+    viewId,
+    config,
+  });
+}
+
+export async function generateSummary(
+  sessionId: string,
+  viewId: string,
+  apiKey: string
+) {
+  return post<{ viewId: string; summary: string }>("/generate-summary", {
+    sessionId,
+    viewId,
     apiKey,
   });
 }

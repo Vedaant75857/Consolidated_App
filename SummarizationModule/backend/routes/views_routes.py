@@ -4,7 +4,7 @@ from flask import Blueprint, jsonify, request
 
 from shared.db import get_session_db, get_meta, set_meta, session_exists
 from services.view_engine import get_available_views, compute_views
-from services.ai_summary import generate_summaries
+from services.ai_summary import generate_summary_for_view
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,6 @@ def compute():
         session_id = body.get("sessionId")
         selected_views = body.get("selectedViews", [])
         config = body.get("config", {})
-        api_key = body.get("apiKey")
 
         if not session_id or not session_exists(session_id):
             return jsonify({"error": "Invalid session"}), 400
@@ -55,12 +54,6 @@ def compute():
         logger.info("Computing %d view(s) for session %s", len(selected_views), session_id)
         results = compute_views(conn, selected_views, config, mapping)
 
-        if api_key and api_key.strip():
-            logger.info("API key provided — generating AI summaries for %d view(s)", len(results))
-            results = generate_summaries(results, api_key.strip())
-        else:
-            logger.warning("No API key provided — skipping AI summaries")
-
         set_meta(conn, "view_results", results)
         set_meta(conn, "step", 5)
         conn.close()
@@ -68,4 +61,80 @@ def compute():
         return jsonify({"views": results})
     except Exception as exc:
         logger.error("compute-views failed: %s", exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 500
+
+
+@views_bp.route("/recompute-view", methods=["POST"])
+def recompute_view():
+    """Recompute a single view with updated config (e.g. slider change)."""
+    try:
+        body = request.get_json(force=True)
+        session_id = body.get("sessionId")
+        view_id = body.get("viewId")
+        config = body.get("config", {})
+
+        if not session_id or not session_exists(session_id):
+            return jsonify({"error": "Invalid session"}), 400
+        if not view_id:
+            return jsonify({"error": "viewId required"}), 400
+
+        conn = get_session_db(session_id)
+        mapping = get_meta(conn, "mapping")
+        if not mapping:
+            return jsonify({"error": "No mapping confirmed yet."}), 400
+
+        results = compute_views(conn, [view_id], config, mapping)
+        if not results:
+            conn.close()
+            return jsonify({"error": f"View {view_id} not found or could not be computed"}), 404
+
+        view_results = get_meta(conn, "view_results") or []
+        new_view = results[0]
+        view_results = [new_view if v.get("viewId") == view_id else v for v in view_results]
+        if not any(v.get("viewId") == view_id for v in view_results):
+            view_results.append(new_view)
+        set_meta(conn, "view_results", view_results)
+        conn.close()
+
+        return jsonify({"view": new_view})
+    except Exception as exc:
+        logger.error("recompute-view failed: %s", exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 500
+
+
+@views_bp.route("/generate-summary", methods=["POST"])
+def generate_summary():
+    """Generate AI summary for a single view (called async per-view)."""
+    try:
+        body = request.get_json(force=True)
+        session_id = body.get("sessionId")
+        view_id = body.get("viewId")
+        api_key = body.get("apiKey")
+
+        if not session_id or not session_exists(session_id):
+            return jsonify({"error": "Invalid session"}), 400
+        if not view_id:
+            return jsonify({"error": "viewId required"}), 400
+        if not api_key or not api_key.strip():
+            return jsonify({"error": "apiKey required"}), 400
+
+        conn = get_session_db(session_id)
+        view_results = get_meta(conn, "view_results") or []
+        view = next((v for v in view_results if v.get("viewId") == view_id), None)
+        if not view:
+            conn.close()
+            return jsonify({"error": f"View {view_id} not found"}), 404
+
+        summary = generate_summary_for_view(view, api_key.strip())
+
+        for v in view_results:
+            if v.get("viewId") == view_id:
+                v["aiSummary"] = summary
+                break
+        set_meta(conn, "view_results", view_results)
+        conn.close()
+
+        return jsonify({"viewId": view_id, "summary": summary})
+    except Exception as exc:
+        logger.error("generate-summary failed: %s", exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500

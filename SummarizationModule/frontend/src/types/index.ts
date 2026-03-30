@@ -103,8 +103,8 @@ export interface ViewResult {
 }
 
 export interface ViewConfig {
-  topN: number;
-  paretoThreshold: number;
+  topN?: number;
+  paretoThreshold?: number;
 }
 
 export type AppStep = 1 | 2 | 3 | 4 | 5;

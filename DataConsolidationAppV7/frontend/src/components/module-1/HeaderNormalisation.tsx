@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import ReactDOM from "react-dom";
 import { ArrowRight, Columns3, Loader2, SkipForward, Maximize2, Minimize2, Download, Upload, CheckSquare, Square, ChevronDown, ChevronRight } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { PrimaryButton, SecondaryButton, SurfaceCard } from "../common/ui";
@@ -43,24 +44,30 @@ const ACTION_COLORS: Record<Action, string> = {
   DROP: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800",
 };
 
-/* ─── Fullscreen Modal ─── */
-function FullscreenModal({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+/* ─── Fullscreen Modal (portal-based, edge-to-edge like Merge) ─── */
+function FullscreenModal({ title, children, onClose }: { title?: string; children: React.ReactNode; onClose: () => void }) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
   }, [onClose]);
 
-  return (
-    <div className="fixed inset-0 z-50 bg-white dark:bg-neutral-950 overflow-auto">
-      <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-3 bg-white/90 dark:bg-neutral-950/90 backdrop-blur border-b border-neutral-200 dark:border-neutral-800">
-        <span className="text-sm font-bold text-neutral-700 dark:text-neutral-200">Fullscreen View</span>
-        <button onClick={onClose} className="p-2 rounded-lg hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-500 transition-colors">
-          <Minimize2 className="w-4 h-4" />
+  return ReactDOM.createPortal(
+    <div className="fixed inset-0 z-[9999] bg-white dark:bg-neutral-900 flex flex-col overflow-hidden">
+      <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-200 dark:border-neutral-700 shrink-0">
+        <h3 className="text-lg font-bold text-neutral-900 dark:text-white">
+          {title || "Fullscreen View"}
+        </h3>
+        <button
+          onClick={onClose}
+          className="flex items-center gap-2 px-4 py-2 rounded-xl bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-sm font-medium transition-colors"
+        >
+          <Minimize2 className="w-4 h-4" /> Close
         </button>
       </div>
-      <div className="p-4">{children}</div>
-    </div>
+      <div className="flex-1 overflow-auto p-6">{children}</div>
+    </div>,
+    document.body
   );
 }
 
@@ -352,12 +359,10 @@ function GroupPanel({
 
       {/* Fullscreen overlay */}
       {fullscreen && (
-        <FullscreenModal onClose={() => setFullscreen(false)}>
-          <h2 className="text-lg font-bold mb-4 text-neutral-900 dark:text-white flex items-center gap-2">
-            <Columns3 className="w-5 h-5 text-red-500" />
-            {groupName || groupId}
-            <span className="text-xs font-medium text-neutral-500 ml-2">{totalRows.toLocaleString()} rows &middot; {columns.length} columns</span>
-          </h2>
+        <FullscreenModal
+          title={`${groupName || groupId} — ${totalRows.toLocaleString()} rows · ${columns.length} columns`}
+          onClose={() => setFullscreen(false)}
+        >
           {tableContent}
         </FullscreenModal>
       )}

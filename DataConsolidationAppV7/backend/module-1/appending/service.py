@@ -221,6 +221,12 @@ def run_append_execute(
     group_schema: list[dict] = []
     append_report: list[dict] = []
 
+    append_groups = get_meta(conn, "appendGroups") or []
+    group_name_lookup: dict[str, str] = {
+        str(g.get("group_id", "")): str(g.get("group_name", ""))
+        for g in append_groups if g.get("group_name")
+    }
+
     for gm in append_group_mappings:
         group_id = gm.get("group_id")
         canonical: list[str] = list(gm.get("canonical_schema") or [])
@@ -266,6 +272,7 @@ def run_append_execute(
 
         group_schema.append({
             "group_id": group_id,
+            "group_name": group_name_lookup.get(str(group_id), ""),
             "rows": appended_rows,
             "cols": len(all_columns),
             "columns_preview": ", ".join(canonical[:60]) + (" ..." if len(canonical) > 60 else ""),
@@ -294,7 +301,8 @@ def run_append_execute(
         register_table(conn, t, appended_sql)
 
         group_schema.append({
-            "group_id": t, "rows": n_rows, "cols": len(cols),
+            "group_id": t, "group_name": group_name_lookup.get(t, ""),
+            "rows": n_rows, "cols": len(cols),
             "columns_preview": ", ".join(cols[:60]) + (" ..." if len(cols) > 60 else ""),
             "columns": cols, "is_standalone": True,
         })

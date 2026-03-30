@@ -114,12 +114,16 @@ def recommend_base_file(
 
     try:
         result = call_ai_json(SYSTEM_PROMPT_BASE_RECOMMENDATION, tables_meta, api_key)
+        if not result or not result.get("recommended"):
+            raise ValueError("AI returned empty recommendation")
         return result
-    except Exception:
+    except Exception as exc:
+        import logging
+        logging.warning("recommend_base_file AI fallback: %s", exc)
         best = max(tables_meta, key=lambda t: t["rows"] * t["column_count"])
         return {
             "recommended": best["group_id"],
-            "reasoning": f"AI call failed — auto-selected by cell count ({best['rows']} × {best['column_count']}).",
+            "reasoning": f"Auto-selected by cell count ({best['rows']} × {best['column_count']}).",
             "rankings": [
                 {"group_id": t["group_id"], "score": int(100 * (t["rows"] * t["column_count"]) / max(1, best["rows"] * best["column_count"])), "reason": f"{t['rows']} rows × {t['column_count']} cols"}
                 for t in sorted(tables_meta, key=lambda t: t["rows"] * t["column_count"], reverse=True)

@@ -209,6 +209,7 @@
     "START EFFECTIVE DATE"
   ],
   "Vendor Address": [
-    "LONG ADDRESS"
+    "LONG ADDRESS",
+    "ADDRESS LINE 1 - ADD1"
   ]
 }

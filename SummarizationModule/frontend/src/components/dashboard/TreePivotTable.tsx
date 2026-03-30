@@ -10,7 +10,6 @@ const LEVEL_COLORS: Record<string, string> = {
   l1: "bg-primary text-white",
   l2: "bg-primary-200 text-primary-800 dark:bg-primary-900/40 dark:text-primary-200",
   l3: "bg-primary-100 text-primary-700 dark:bg-primary-900/20 dark:text-primary-300",
-  l4: "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400",
 };
 
 function formatCurrency(v: number): string {
@@ -54,7 +53,7 @@ function TreeRow({
             )}
             <span
               className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
-                LEVEL_COLORS[node.level] || LEVEL_COLORS.l4
+                LEVEL_COLORS[node.level] || LEVEL_COLORS.l3
               }`}
             >
               {node.level.toUpperCase()}

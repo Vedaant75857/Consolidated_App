@@ -5,7 +5,7 @@ from __future__ import annotations
 from flask import Blueprint, jsonify, request
 
 from shared.db import get_session_db
-from inventory.service import clean_table_sql, clean_group_sql, delete_rows_sql
+from inventory.service import clean_table_sql, clean_group_sql, delete_rows_sql, dedup_preview_stats, dedup_apply_group
 from inventory.dtype_defaults import STANDARD_FIELD_DTYPES
 
 inventory_bp = Blueprint("inventory_bp", __name__)
@@ -71,3 +71,41 @@ def delete_rows():
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"error": str(exc) or "An error occurred."}), 500
+
+
+@inventory_bp.route("/dedup-preview", methods=["POST"])
+def dedup_preview():
+    try:
+        body = request.get_json(force=True)
+        session_id = body.get("sessionId")
+        group_id = body.get("groupId")
+        dedup_columns = body.get("deduplicateColumns") or []
+        if not session_id or not group_id or not dedup_columns:
+            return jsonify({"error": "Missing sessionId, groupId, or deduplicateColumns."}), 400
+
+        conn = get_session_db(session_id)
+        result = dedup_preview_stats(conn, group_id, dedup_columns)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@inventory_bp.route("/dedup-apply", methods=["POST"])
+def dedup_apply():
+    try:
+        body = request.get_json(force=True)
+        session_id = body.get("sessionId")
+        group_id = body.get("groupId")
+        dedup_columns = body.get("deduplicateColumns") or []
+        if not session_id or not group_id or not dedup_columns:
+            return jsonify({"error": "Missing sessionId, groupId, or deduplicateColumns."}), 400
+
+        conn = get_session_db(session_id)
+        result = dedup_apply_group(conn, group_id, dedup_columns)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500

@@ -142,6 +142,71 @@ def _deduplicate_rows(conn: sqlite3.Connection, table: str, dedup_cols: list[str
     return before - table_row_count(conn, table)
 
 
+def dedup_preview_stats(
+    conn: sqlite3.Connection,
+    group_id: str,
+    dedup_columns: list[str],
+) -> dict[str, Any]:
+    """Return dedup statistics WITHOUT modifying data."""
+    sql_name = lookup_sql_name(conn, group_id)
+    if not sql_name or not table_exists(conn, sql_name):
+        raise ValueError(f"Table not found for group: {group_id}")
+    cols = read_table_columns(conn, sql_name)
+    existing = [c for c in dedup_columns if c in cols]
+    if not existing:
+        raise ValueError("None of the selected columns exist in this table.")
+    total_rows = table_row_count(conn, sql_name)
+    if total_rows == 0:
+        return {
+            "group_id": group_id, "total_rows": 0, "unique_rows": 0,
+            "duplicate_rows": 0, "decrease_pct": 0.0,
+        }
+    tbl = quote_id(sql_name)
+    group_exprs = ", ".join(quote_id(c) for c in existing)
+    row = conn.execute(
+        f"SELECT COUNT(*) FROM (SELECT 1 FROM {tbl} GROUP BY {group_exprs})"
+    ).fetchone()
+    unique_rows = row[0] if row else total_rows
+    duplicate_rows = total_rows - unique_rows
+    decrease_pct = round(100 * duplicate_rows / total_rows, 2) if total_rows else 0.0
+    return {
+        "group_id": group_id,
+        "total_rows": total_rows,
+        "unique_rows": unique_rows,
+        "duplicate_rows": duplicate_rows,
+        "decrease_pct": decrease_pct,
+        "dedup_columns": existing,
+    }
+
+
+def dedup_apply_group(
+    conn: sqlite3.Connection,
+    group_id: str,
+    dedup_columns: list[str],
+) -> dict[str, Any]:
+    """Apply deduplication to a group table, keeping first occurrence."""
+    sql_name = lookup_sql_name(conn, group_id)
+    if not sql_name or not table_exists(conn, sql_name):
+        raise ValueError(f"Table not found for group: {group_id}")
+    before = table_row_count(conn, sql_name)
+    removed = _deduplicate_rows(conn, sql_name, dedup_columns)
+    after = table_row_count(conn, sql_name)
+
+    schema = get_meta(conn, "groupSchemaTableRows") or []
+    for entry in schema:
+        if entry.get("group_id") == group_id:
+            entry["rows"] = after
+    set_meta(conn, "groupSchemaTableRows", schema)
+
+    return {
+        "group_id": group_id,
+        "rows_before": before,
+        "rows_after": after,
+        "duplicates_removed": removed,
+        "decrease_pct": round(100 * removed / before, 2) if before else 0.0,
+    }
+
+
 def delete_rows_sql(
     conn: sqlite3.Connection,
     table_key: str,
