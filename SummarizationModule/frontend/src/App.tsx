@@ -133,11 +133,20 @@ export default function App() {
   useEffect(() => {
     localStorage.removeItem(LS_SESSION_KEY);
 
-    const savedSession = sessionStorage.getItem(LS_SESSION_KEY);
-    if (savedSession) {
-      getSessionState(savedSession)
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlSessionId = urlParams.get("sessionId");
+
+    const restoreTarget = urlSessionId || sessionStorage.getItem(LS_SESSION_KEY);
+
+    if (urlSessionId) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+
+    if (restoreTarget) {
+      getSessionState(restoreTarget)
         .then((state) => {
-          setSessionId(savedSession);
+          setSessionId(restoreTarget);
+          sessionStorage.setItem(LS_SESSION_KEY, restoreTarget);
           if (state.columns) setColumns(state.columns);
           if (state.fileInventory) setInventory(state.fileInventory);
           if (state.previews) setPreviews(state.previews);
@@ -146,6 +155,7 @@ export default function App() {
           if (state.aiMappings) setSavedAiMappings(state.aiMappings);
           if (state.standardFields) setSavedStandardFields(state.standardFields);
           setStep((state.step || 1) as AppStep);
+          setMaxStepReached((state.step || 1) as AppStep);
         })
         .catch(() => {
           sessionStorage.removeItem(LS_SESSION_KEY);
