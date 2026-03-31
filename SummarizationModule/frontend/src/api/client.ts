@@ -9,6 +9,7 @@ import type {
   ViewDefinition,
   ViewResult,
   EmailContext,
+  ProcurementViewAvailability,
 } from "../types";
 
 const BASE = "/api";
@@ -80,6 +81,12 @@ export async function confirmMapping(
 
 export async function getAvailableViews(sessionId: string) {
   return post<{ views: ViewDefinition[] }>("/available-views", { sessionId });
+}
+
+export async function getProcurementViews(sessionId: string) {
+  return post<{ views: ProcurementViewAvailability[] }>("/procurement-views", {
+    sessionId,
+  });
 }
 
 export async function computeViews(

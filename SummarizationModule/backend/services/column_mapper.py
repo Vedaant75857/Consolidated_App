@@ -1,5 +1,7 @@
+import logging
 import re
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import pandas as pd
@@ -7,79 +9,387 @@ import pandas as pd
 from shared.ai_client import call_ai_json
 from shared.db import get_meta, set_meta
 
-STANDARD_FIELDS = [
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# 28 Standard Fields (sorted alphabetically by displayName)
+# ---------------------------------------------------------------------------
+
+STANDARD_FIELDS: list[dict[str, Any]] = [
     {
-        "fieldKey": "total_spend",
-        "displayName": "Total Spend (USD)",
-        "expectedType": "numeric",
-        "description": "Monetary spend amount converted/normalized to USD",
-    },
-    {
-        "fieldKey": "invoice_date",
-        "displayName": "Invoice Date",
-        "expectedType": "datetime",
-        "description": "Date of invoice or transaction",
-    },
-    {
-        "fieldKey": "country",
-        "displayName": "Country",
+        "fieldKey": "business_unit",
+        "displayName": "Business Unit",
         "expectedType": "string",
-        "description": "Country of origin or supplier country",
-    },
-    {
-        "fieldKey": "supplier",
-        "displayName": "Supplier Name",
-        "expectedType": "string",
-        "description": "Vendor/supplier entity name",
+        "description": "Organisational business unit or division",
+        "aliases": ["BU", "Division", "Business Area"],
     },
     {
         "fieldKey": "l1",
         "displayName": "Category Level 1",
         "expectedType": "string",
         "description": "Top-level procurement category (broadest, fewest distinct values)",
+        "aliases": ["Spend Classification Level 1", "L1", "Category 1"],
     },
     {
         "fieldKey": "l2",
         "displayName": "Category Level 2",
         "expectedType": "string",
         "description": "Second-level procurement category",
+        "aliases": ["Spend Classification Level 2", "L2", "Category 2"],
     },
     {
         "fieldKey": "l3",
         "displayName": "Category Level 3",
         "expectedType": "string",
         "description": "Third-level procurement category (most granular)",
+        "aliases": ["Spend Classification Level 3", "L3", "Category 3"],
+    },
+    {
+        "fieldKey": "contract_end_date",
+        "displayName": "Contract End Date",
+        "expectedType": "datetime",
+        "description": "Date the contract expires or ends",
+        "aliases": ["Contract Expiry Date", "Contract Expiration"],
+    },
+    {
+        "fieldKey": "contract_id",
+        "displayName": "Contract ID",
+        "expectedType": "string",
+        "description": "Unique identifier for the contract",
+        "aliases": ["Contract Number", "Contract Ref", "Agreement ID"],
+    },
+    {
+        "fieldKey": "contract_indicator",
+        "displayName": "Contract indicator",
+        "expectedType": "string",
+        "description": "Flag or code indicating whether a contract exists",
+        "aliases": ["Contract Flag", "Has Contract", "Contract Y/N"],
+    },
+    {
+        "fieldKey": "contract_start_date",
+        "displayName": "Contract Start Date",
+        "expectedType": "datetime",
+        "description": "Date the contract became effective",
+        "aliases": ["Contract Effective Date", "Contract Begin Date"],
+    },
+    {
+        "fieldKey": "contract_status",
+        "displayName": "Contract Status",
+        "expectedType": "string",
+        "description": "Current status of the contract (active, expired, etc.)",
+        "aliases": ["Contract State", "Agreement Status"],
+    },
+    {
+        "fieldKey": "goods_receipt_date",
+        "displayName": "Goods Receipt Date",
+        "expectedType": "datetime",
+        "description": "Date goods were received or delivery was confirmed",
+        "aliases": ["GR Date", "Delivery Date", "Receipt Date"],
+    },
+    {
+        "fieldKey": "invoice_date",
+        "displayName": "Invoice Date",
+        "expectedType": "datetime",
+        "description": "Date of invoice or transaction",
+        "aliases": ["Inv Date", "Billing Date", "Transaction Date"],
+    },
+    {
+        "fieldKey": "invoice_line_qty",
+        "displayName": "Invoice Line Number Quantity",
+        "expectedType": "numeric",
+        "description": "Quantity on the invoice line item",
+        "aliases": ["Invoice Quantity", "Line Qty", "Billed Quantity"],
+    },
+    {
+        "fieldKey": "invoice_line_qty_uom",
+        "displayName": "Invoice Line Number Quantity UOM",
+        "expectedType": "string",
+        "description": "Unit of measure for the invoice line quantity",
+        "aliases": ["Invoice UOM", "Line UOM", "Quantity Unit"],
     },
     {
         "fieldKey": "currency",
         "displayName": "Invoice Currency",
         "expectedType": "string",
         "description": "ISO 4217 currency code of the local/original invoice",
+        "aliases": ["Local Currency Code", "Currency Code", "CCY"],
+    },
+    {
+        "fieldKey": "invoice_number",
+        "displayName": "Invoice Number",
+        "expectedType": "string",
+        "description": "Unique invoice document identifier",
+        "aliases": ["Invoice No", "Invoice #", "Invoice ID", "Inv Number"],
+    },
+    {
+        "fieldKey": "invoice_po_number",
+        "displayName": "Invoice PO Number",
+        "expectedType": "string",
+        "description": "Purchase order number referenced on the invoice",
+        "aliases": ["PO Number", "PO #", "Purchase Order Number", "PO Ref"],
+    },
+    {
+        "fieldKey": "payment_terms",
+        "displayName": "Payment Terms",
+        "expectedType": "string",
+        "description": "Payment terms code or description (e.g. NET30, NET60)",
+        "aliases": ["Pay Terms", "Terms of Payment", "Payment Condition"],
+    },
+    {
+        "fieldKey": "plant_code",
+        "displayName": "Plant Code",
+        "expectedType": "string",
+        "description": "Code identifying the plant or facility",
+        "aliases": ["Plant ID", "Plant No", "Facility Code", "Site Code"],
+    },
+    {
+        "fieldKey": "country",
+        "displayName": "Plant Country",
+        "expectedType": "string",
+        "description": "Country of the company or plant",
+        "aliases": ["Country", "Company Country"],
+    },
+    {
+        "fieldKey": "plant_name",
+        "displayName": "Plant Name",
+        "expectedType": "string",
+        "description": "Name of the plant or facility",
+        "aliases": ["Plant Description", "Facility Name", "Site Name"],
+    },
+    {
+        "fieldKey": "po_document_date",
+        "displayName": "PO Document Date",
+        "expectedType": "datetime",
+        "description": "Date the purchase order document was created",
+        "aliases": ["PO Date", "Order Date", "Purchase Order Date"],
+    },
+    {
+        "fieldKey": "po_material_description",
+        "displayName": "PO Material Description",
+        "expectedType": "string",
+        "description": "Description of the material or item on the purchase order",
+        "aliases": ["Material Description", "Item Description", "PO Description"],
+    },
+    {
+        "fieldKey": "po_material_number",
+        "displayName": "PO Material Number",
+        "expectedType": "string",
+        "description": "Material or item number on the purchase order",
+        "aliases": ["Material Number", "Material Code", "Item Number", "Material ID"],
+    },
+    {
+        "fieldKey": "price_per_uom",
+        "displayName": "Price per UOM",
+        "expectedType": "numeric",
+        "description": "Unit price per unit of measure",
+        "aliases": ["Unit Price", "Price per Unit", "PO Unit Price"],
+    },
+    {
+        "fieldKey": "total_spend",
+        "displayName": "Total Amount paid in Reporting Currency",
+        "expectedType": "numeric",
+        "description": "Monetary spend amount converted/normalized to a single reporting currency",
+        "aliases": ["Total Spend (USD)", "Total Spend", "Reporting Currency Amount"],
     },
     {
         "fieldKey": "local_spend",
-        "displayName": "Local Spend Amount",
+        "displayName": "Total Amount paid in Local Currency",
         "expectedType": "numeric",
         "description": "Spend amount in the original/local invoice currency",
+        "aliases": ["Local Spend Amount", "Local Spend", "Invoice Amount"],
+    },
+    {
+        "fieldKey": "vendor_country",
+        "displayName": "Vendor Country",
+        "expectedType": "string",
+        "description": "Country of the vendor/supplier",
+        "aliases": ["Supplier Country", "Vendor Nation"],
+    },
+    {
+        "fieldKey": "supplier",
+        "displayName": "Vendor Name",
+        "expectedType": "string",
+        "description": "Vendor/supplier entity name",
+        "aliases": ["Supplier Name", "Supplier", "Vendor"],
     },
 ]
 
-COLUMN_MAPPING_SYSTEM_PROMPT = """You are a senior procurement data analyst. Given a list of column names with sample
-values from a procurement/spend dataset, map each required field to the most suitable
-column. Each required field has an expected data type (numeric, datetime, or string).
-You must infer the actual data type of each column from its sample values and only map
-columns whose inferred type is compatible with the expected type.
+# ---------------------------------------------------------------------------
+# Per-field disambiguation hints for AI mapping
+# ---------------------------------------------------------------------------
 
-For each field, provide the best match and 2 alternatives. If no suitable column
-exists for a field, set bestMatch to null.
+PER_FIELD_HINTS: dict[str, str] = {
+    "total_spend": """TOTAL SPEND (REPORTING CURRENCY) vs LOCAL SPEND:
+- This is the CONVERTED/NORMALIZED amount in a single reporting currency (usually USD).
+  Look for columns with "USD", "dollar", "converted", "normalized", "standard",
+  "reporting currency", or "Total Amount paid in Reporting Currency" in the name.
+- Sample values are typically all in the same magnitude/scale since they share one currency.
+- If only ONE numeric spend column exists, assign it here.
+- This should NEVER be the same column as Local Spend.""",
 
-Return a JSON object with a single key "mappings" containing an array.
+    "local_spend": """LOCAL SPEND vs TOTAL SPEND:
+- This is the ORIGINAL invoice amount in the vendor's local currency.
+  Look for columns with "local", "original", "invoice value", "native",
+  "LC", "LCY", or "Total Amount paid in Local Currency" in the name.
+- Sample values may vary wildly in magnitude (e.g. 100 USD vs 10,000 JPY vs 85 EUR).
+- This should NEVER be the same column as Total Spend / Reporting Currency Amount.""",
+
+    "invoice_date": """INVOICE DATE vs OTHER DATES:
+- The date the invoice was issued or received. Look for "invoice date", "inv date",
+  "billing date", "transaction date".
+- DO NOT confuse with: "payment date", "PO date", "delivery date", "receipt date",
+  "due date", "posting date", "contract date", "goods receipt date".
+- If ambiguous, prefer the column closest to "invoice" or "transaction" in name.""",
+
+    "supplier": """VENDOR/SUPPLIER NAME:
+- The vendor/seller/provider entity. Look for "vendor", "supplier", "seller",
+  "provider", "payee", "creditor", "Vendor Name" in the name.
+- Samples look like company names: "Inc.", "Ltd.", "LLC", "GmbH", "Corp.".
+- DO NOT confuse with buyer/requestor, cost center, plant, material description.""",
+
+    "country": """PLANT/COMPANY COUNTRY:
+- The country of the company or plant (NOT the vendor/supplier country).
+  Look for "plant country", "company country", or unqualified "country".
+- Sample values are country names or ISO codes ("US", "DE", "USA").
+- DO NOT confuse with "vendor country" / "supplier country" (that's a separate field).""",
+
+    "vendor_country": """VENDOR/SUPPLIER COUNTRY:
+- The country of the vendor or supplier. Look for "vendor country",
+  "supplier country" in the name.
+- Sample values are country names or ISO codes.
+- DO NOT confuse with "plant country" / "company country" (that's a separate field).""",
+
+    "l1": """CATEGORY LEVEL 1 (HIERARCHY):
+- Broadest procurement category with fewest distinct values (typically 5-20).
+  Look for "L1", "level 1", "category 1", "segment", "Spend Classification Level 1".
+- Examples: "Direct Materials", "Indirect Spend", "Services", "IT".
+- Count distinct sample values: fewer = L1, more = L2/L3.""",
+
+    "l2": """CATEGORY LEVEL 2 (HIERARCHY):
+- Second-level category with moderate distinct values (typically 20-80).
+  Look for "L2", "level 2", "category 2", "family", "sub-category".
+- Sits between L1 (broad) and L3 (granular).""",
+
+    "l3": """CATEGORY LEVEL 3 (HIERARCHY):
+- Most granular procurement category with most distinct values.
+  Look for "L3", "level 3", "category 3", "class", "commodity", "sub-class".
+- More distinct values than L1 or L2.""",
+
+    "currency": """INVOICE CURRENCY:
+- ISO 4217 currency code of the local/original invoice. Look for "currency",
+  "ccy", "curr", "FX", "invoice currency", "local currency".
+- Sample values are 3-letter codes: "USD", "EUR", "GBP", "JPY".
+- DO NOT confuse with country codes, UOM codes, or payment terms.""",
+
+    "business_unit": """BUSINESS UNIT:
+- The organisational business unit or division. Look for "business unit",
+  "BU", "division", "business area", "segment".
+- DO NOT confuse with: plant name/code (facility), cost center, department.""",
+
+    "contract_end_date": """CONTRACT END DATE:
+- The date the contract expires. Look for "contract end", "contract expiry",
+  "contract expiration", "agreement end date".
+- DO NOT confuse with: invoice date, PO date, goods receipt date, payment date.""",
+
+    "contract_id": """CONTRACT ID:
+- Unique identifier for the contract. Look for "contract ID", "contract number",
+  "contract ref", "agreement ID", "contract #".
+- Usually alphanumeric codes. DO NOT confuse with PO number or invoice number.""",
+
+    "contract_indicator": """CONTRACT INDICATOR:
+- A flag or code indicating whether a contract exists. Look for "contract indicator",
+  "contract flag", "has contract", "contract Y/N".
+- Values might be "Y"/"N", "Yes"/"No", or short codes.""",
+
+    "contract_start_date": """CONTRACT START DATE:
+- The date the contract became effective. Look for "contract start",
+  "contract effective date", "agreement start", "contract begin".
+- DO NOT confuse with: PO date, invoice date, goods receipt date.""",
+
+    "contract_status": """CONTRACT STATUS:
+- Current status of the contract. Look for "contract status", "agreement status",
+  "contract state".
+- Values like "Active", "Expired", "Pending", "Terminated".""",
+
+    "goods_receipt_date": """GOODS RECEIPT DATE:
+- The date goods were received. Look for "goods receipt date", "GR date",
+  "delivery date", "receipt date".
+- DO NOT confuse with: invoice date, PO date, contract date, payment date.""",
+
+    "invoice_line_qty": """INVOICE LINE QUANTITY:
+- The quantity on the invoice line item. Look for "invoice line quantity",
+  "line qty", "billed quantity", "invoice quantity".
+- This is numeric. DO NOT confuse with PO quantity or price.""",
+
+    "invoice_line_qty_uom": """INVOICE LINE QUANTITY UOM:
+- Unit of measure for the invoice line quantity. Look for "UOM", "unit of measure",
+  "quantity unit", "invoice UOM".
+- Values like "EA", "KG", "LB", "PC", "L", "M". Short codes, NOT currency codes.""",
+
+    "invoice_number": """INVOICE NUMBER:
+- Unique invoice document identifier. Look for "invoice number", "invoice no",
+  "invoice #", "invoice ID", "inv number".
+- Alphanumeric codes. DO NOT confuse with PO number or contract ID.""",
+
+    "invoice_po_number": """INVOICE PO NUMBER:
+- The purchase order number referenced on the invoice. Look for "PO number",
+  "purchase order number", "PO #", "PO ref", "invoice PO number".
+- DO NOT confuse with invoice number or contract ID.""",
+
+    "payment_terms": """PAYMENT TERMS:
+- Payment terms code or description. Look for "payment terms", "pay terms",
+  "terms of payment", "payment condition".
+- Values like "NET30", "NET60", "2/10 NET 30", "Due on Receipt".""",
+
+    "plant_code": """PLANT CODE:
+- Code identifying the plant or facility. Look for "plant code", "plant ID",
+  "plant no", "facility code", "site code".
+- Short alphanumeric codes. DO NOT confuse with plant name or company code.""",
+
+    "plant_name": """PLANT NAME:
+- Name of the plant or facility. Look for "plant name", "plant description",
+  "facility name", "site name".
+- Free-text names. DO NOT confuse with plant code, company name, or vendor name.""",
+
+    "po_document_date": """PO DOCUMENT DATE:
+- The date the purchase order was created. Look for "PO date", "PO document date",
+  "order date", "purchase order date".
+- DO NOT confuse with: invoice date, goods receipt date, contract date.""",
+
+    "po_material_description": """PO MATERIAL DESCRIPTION:
+- Description of the material/item on the PO. Look for "material description",
+  "item description", "PO description", "PO line item description".
+- Free-text. DO NOT confuse with material number/code or vendor name.""",
+
+    "po_material_number": """PO MATERIAL NUMBER:
+- Material or item number on the PO. Look for "material number", "material code",
+  "item number", "material ID", "PO material number".
+- Alphanumeric codes. DO NOT confuse with PO number or invoice number.""",
+
+    "price_per_uom": """PRICE PER UOM:
+- Unit price per unit of measure. Look for "unit price", "price per unit",
+  "price per UOM", "PO unit price".
+- Numeric. DO NOT confuse with total spend or local spend (those are line totals).""",
+}
+
+# ---------------------------------------------------------------------------
+# Per-field AI prompt template
+# ---------------------------------------------------------------------------
+
+_SINGLE_FIELD_SYSTEM_PROMPT = """You are a senior procurement data analyst. You are mapping ONE specific field
+from a procurement dataset.
+
+TARGET FIELD:
+- Name: {display_name}
+- Type: {expected_type}
+- Description: {description}
+
+DISAMBIGUATION HINTS:
+{hints}
 
 TYPE INFERENCE RULES (infer from sample values):
 - numeric: sample values are numbers, possibly with currency symbols/commas
-  (e.g. "1,234.56", "$500", "10000.00")
-- datetime: sample values look like dates (e.g. "2023-01-15", "01/15/2023",
-  "Jan 2023", "15-Mar-2024")
+- datetime: sample values look like dates
 - string: sample values are free-text, codes, or names
 
 TYPE COMPATIBILITY:
@@ -87,127 +397,164 @@ TYPE COMPATIBILITY:
 - datetime fields: only map columns whose samples are parseable as dates
 - string fields: can map any column
 
-DISAMBIGUATION HINTS — read carefully before mapping:
+Given the list of available columns with sample values, find the best match for this field.
+Return a JSON object with keys: "bestMatch" (column name or null), "alternatives" (array of
+up to 2 alternative column names), "reasoning" (brief explanation)."""
 
-1. TOTAL SPEND (USD) vs LOCAL SPEND:
-   - Total Spend (USD) is the CONVERTED/NORMALIZED amount in a single reference
-     currency (usually USD). Look for columns with "USD", "dollar", "converted",
-     "normalized", "standard", or "reporting currency" in the name. Sample values
-     are typically all in the same magnitude/scale since they share one currency.
-   - Local Spend is the ORIGINAL invoice amount in the vendor's local currency.
-     Look for columns with "local", "original", "invoice value", "native", or
-     "LC"/"LCY" in the name. Sample values may vary wildly in magnitude (e.g.
-     100 USD vs 10,000 JPY vs 85 EUR) because they span multiple currencies.
-   - If only ONE numeric spend column exists, assign it to Total Spend (USD) and
-     leave Local Spend unmapped (bestMatch: null).
-   - These two columns should NEVER be the same column.
-
-2. INVOICE DATE vs OTHER DATE COLUMNS:
-   - Invoice Date is the date the invoice was issued or received. Look for
-     "invoice date", "inv date", "billing date", "transaction date".
-   - DO NOT confuse with: "payment date" / "pay date" (when payment was made),
-     "PO date" / "order date" (when the purchase order was created), "delivery
-     date" / "receipt date" (when goods arrived), "due date" (payment deadline),
-     "posting date" / "created date" (ERP system dates), "fiscal period".
-   - If ambiguous, prefer the column closest to "invoice" or "transaction" in name.
-
-3. SUPPLIER NAME vs OTHER NAME/TEXT COLUMNS:
-   - Supplier Name is the vendor/seller/provider entity. Look for "vendor",
-     "supplier", "seller", "provider", "payee", "creditor" in the name.
-   - Sample values typically look like company names: contain "Inc.", "Ltd.",
-     "LLC", "GmbH", "Corp.", "S.A.", "Co.", "PLC", "Pvt" or are well-known
-     brand/company names.
-   - DO NOT confuse with: "buyer" / "requestor" / "approver" (internal people),
-     "cost center" / "department" / "business unit" (organizational units),
-     "plant" / "site" / "location" (facilities), "material" / "description"
-     / "item" (what was purchased), "contract" / "PO number" (document refs).
-
-4. CATEGORY L1 vs L2 vs L3 (HIERARCHY):
-   - These form a taxonomy hierarchy: L1 is the broadest (fewest distinct values),
-     L3 is the most granular (most distinct values).
-   - L1 examples: "Direct Materials", "Indirect Spend", "Services", "IT",
-     "Marketing", "Logistics". Typically 5-20 distinct values.
-   - L2 examples: "Raw Materials", "Packaging", "MRO", "Professional Services".
-     Typically 20-80 distinct values.
-   - L3 values are increasingly specific subcategories with more distinct values.
-   - To distinguish levels: COUNT THE DISTINCT VALUES in the samples — fewer
-     distinct values = higher level (L1), more distinct values = lower level (L3).
-   - Look for "L1", "L2", "level 1", "level 2", "category 1", "cat1", "segment",
-     "family", "class", "commodity", "sub-category", "sub-class" in column names.
-   - DO NOT confuse with: "GL account" / "account code" (financial codes),
-     "UNSPSC" / "HS code" (standard classification codes — these are numeric
-     codes, not category names), "material group" (could be a category but verify
-     via sample values).
-   - If the dataset has columns like "Category" and "Sub-Category" (only 2 levels),
-     map Category -> L1 and Sub-Category -> L2. Leave L3 unmapped.
-
-5. COUNTRY vs OTHER GEOGRAPHIC COLUMNS:
-   - Country is the country associated with the supplier or transaction. Look for
-     "country", "nation", "supplier country", "vendor country".
-   - Sample values are country names ("United States", "Germany") or ISO codes
-     ("US", "DE", "USA", "GBR").
-   - DO NOT confuse with: "city", "state" / "province" / "region" (sub-country),
-     "plant country" / "ship-to country" / "bill-to country" (if multiple country
-     columns exist, prefer "supplier country" or the unqualified "country"),
-     "continent", "market", "zone".
-
-6. CURRENCY vs OTHER SHORT-CODE COLUMNS:
-   - Currency is the ISO 4217 currency code of the local/original invoice. Look
-     for "currency", "ccy", "curr", "FX", "invoice currency", "local currency".
-   - Sample values are 3-letter codes: "USD", "EUR", "GBP", "JPY", "INR", "CNY".
-   - DO NOT confuse with: "country code" (2-letter ISO 3166: "US", "DE"),
-     "unit of measure" / "UOM" ("EA", "KG", "LB", "PC"), "language code"
-     ("EN", "FR"), "payment terms" ("NET30", "NET60").
-   - If multiple currency columns exist (e.g. "Invoice Currency" vs "Payment
-     Currency"), prefer the one tied to the invoice/transaction."""
+# ---------------------------------------------------------------------------
+# Deterministic exact-match pass
+# ---------------------------------------------------------------------------
 
 
-def ai_map_columns(
-    columns: list[dict[str, Any]], api_key: str
-) -> list[dict[str, Any]]:
+def deterministic_match(
+    columns: list[dict[str, Any]],
+) -> tuple[dict[str, str], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Match uploaded columns to standard fields by exact name (case-insensitive).
+
+    Returns:
+        (matched, unmatched_fields, unmatched_columns) where matched is
+        {fieldKey: columnName}, unmatched_fields is a list of STANDARD_FIELDS
+        entries that had no match, and unmatched_columns is columns not consumed.
+    """
+    lookup: dict[str, str] = {}  # lowercase name -> fieldKey
+    for field in STANDARD_FIELDS:
+        lookup[field["displayName"].lower()] = field["fieldKey"]
+        for alias in field.get("aliases", []):
+            lower_alias = alias.lower()
+            if lower_alias not in lookup:
+                lookup[lower_alias] = field["fieldKey"]
+
+    matched: dict[str, str] = {}  # fieldKey -> column name
+    consumed_columns: set[str] = set()
+
+    for col in columns:
+        col_lower = col["name"].strip().lower()
+        if col_lower in lookup:
+            fk = lookup[col_lower]
+            if fk not in matched:
+                matched[fk] = col["name"]
+                consumed_columns.add(col["name"])
+
+    matched_keys = set(matched.keys())
+    unmatched_fields = [f for f in STANDARD_FIELDS if f["fieldKey"] not in matched_keys]
+    unmatched_columns = [c for c in columns if c["name"] not in consumed_columns]
+
+    return matched, unmatched_fields, unmatched_columns
+
+
+# ---------------------------------------------------------------------------
+# Parallel per-field AI mapping
+# ---------------------------------------------------------------------------
+
+
+def _ai_map_single_field(
+    field: dict[str, Any],
+    columns: list[dict[str, Any]],
+    api_key: str,
+) -> dict[str, Any]:
+    """Send a focused AI call for a single standard field."""
+    hints = PER_FIELD_HINTS.get(field["fieldKey"], "No specific hints for this field.")
+    system_prompt = _SINGLE_FIELD_SYSTEM_PROMPT.format(
+        display_name=field["displayName"],
+        expected_type=field["expectedType"],
+        description=field["description"],
+        hints=hints,
+    )
     user_payload = {
-        "requiredFields": STANDARD_FIELDS,
         "columns": [
-            {
-                "name": c["name"],
-                "samples": c["sampleValues"][:50],
-            }
+            {"name": c["name"], "samples": c["sampleValues"][:30]}
             for c in columns
         ],
     }
-    result = call_ai_json(COLUMN_MAPPING_SYSTEM_PROMPT, user_payload, api_key=api_key)
-    mappings = result.get("mappings", [])
+    try:
+        result = call_ai_json(system_prompt, user_payload, api_key=api_key)
+    except Exception as exc:
+        logger.warning("AI mapping failed for %s: %s", field["fieldKey"], exc)
+        return {
+            "fieldKey": field["fieldKey"],
+            "bestMatch": None,
+            "alternatives": [],
+            "reasoning": f"AI call failed: {exc}",
+            "expectedType": field["expectedType"],
+        }
 
-    if isinstance(mappings, dict):
-        mappings = list(mappings.values()) if mappings else []
-    if not isinstance(mappings, list):
-        mappings = []
+    bm = result.get("bestMatch")
+    if isinstance(bm, dict):
+        bm = bm.get("column") or bm.get("name") or None
 
-    for m in mappings:
-        m.setdefault("fieldKey", "")
-        m.setdefault("bestMatch", None)
-        m.setdefault("alternatives", [])
-        m.setdefault("confidence", 0)
-        m.setdefault("reasoning", "")
-        m.setdefault("expectedType", "string")
+    alts = result.get("alternatives", [])
+    if not isinstance(alts, list):
+        alts = []
+    alts = [
+        (a.get("column") or a.get("name") or "") if isinstance(a, dict) else str(a)
+        for a in alts
+    ]
 
-        bm = m.get("bestMatch")
-        if isinstance(bm, dict):
-            m["bestMatch"] = bm.get("column") or bm.get("name") or None
-        if not isinstance(m.get("alternatives"), list):
-            m["alternatives"] = []
-        m["alternatives"] = [
-            (a.get("column") or a.get("name") or "") if isinstance(a, dict) else str(a)
-            for a in m["alternatives"]
+    return {
+        "fieldKey": field["fieldKey"],
+        "bestMatch": bm,
+        "alternatives": alts,
+        "reasoning": result.get("reasoning", ""),
+        "expectedType": field["expectedType"],
+    }
+
+
+def ai_map_columns(
+    unmatched_fields: list[dict[str, Any]],
+    unmatched_columns: list[dict[str, Any]],
+    api_key: str,
+) -> list[dict[str, Any]]:
+    """Map unmatched fields to columns using parallel per-field AI calls."""
+    if not unmatched_fields or not unmatched_columns:
+        return [
+            {
+                "fieldKey": f["fieldKey"],
+                "bestMatch": None,
+                "alternatives": [],
+                "reasoning": "No columns available for AI mapping",
+                "expectedType": f["expectedType"],
+            }
+            for f in unmatched_fields
         ]
 
-    return mappings
+    results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=min(8, len(unmatched_fields))) as executor:
+        futures = {
+            executor.submit(
+                _ai_map_single_field, field, unmatched_columns, api_key
+            ): field["fieldKey"]
+            for field in unmatched_fields
+        }
+        for future in as_completed(futures):
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                fk = futures[future]
+                logger.error("AI mapping thread failed for %s: %s", fk, exc)
+                results.append({
+                    "fieldKey": fk,
+                    "bestMatch": None,
+                    "alternatives": [],
+                    "reasoning": f"Thread error: {exc}",
+                    "expectedType": "string",
+                })
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# build_typed_table
+# ---------------------------------------------------------------------------
+
+_DATETIME_FIELD_KEYS = {
+    f["fieldKey"] for f in STANDARD_FIELDS if f["expectedType"] == "datetime"
+}
 
 
 def build_typed_table(
     conn: sqlite3.Connection, mapping: dict[str, str | None]
 ) -> dict[str, Any]:
-    """Build the `analysis_data` table with enforced types.
+    """Build the ``analysis_data`` table with enforced types.
 
     Args:
         conn: SQLite connection for the session
@@ -292,17 +639,18 @@ def build_typed_table(
             "sampleFailures": [str(s) for s in sample_fails],
         }
 
-    # Store datetime as ISO strings for SQLite compatibility
-    if "invoice_date" in typed_df.columns:
-        dt_col = typed_df["invoice_date"]
-        if hasattr(dt_col, "dt"):
-            nat_mask = dt_col.isna()
-            typed_df["invoice_date"] = dt_col.dt.strftime("%Y-%m-%dT%H:%M:%S")
-            typed_df.loc[nat_mask, "invoice_date"] = None
+    # Store ALL datetime columns as ISO strings for SQLite compatibility
+    for dt_fk in _DATETIME_FIELD_KEYS:
+        if dt_fk in typed_df.columns:
+            dt_col = typed_df[dt_fk]
+            if hasattr(dt_col, "dt"):
+                nat_mask = dt_col.isna()
+                typed_df[dt_fk] = dt_col.dt.strftime("%Y-%m-%dT%H:%M:%S")
+                typed_df.loc[nat_mask, dt_fk] = None
 
     typed_df.to_sql("analysis_data", conn, if_exists="replace", index=False)
 
-    # Store null audit rows (where total_spend or invoice_date failed)
+    # Critical null audit (only total_spend + invoice_date)
     mask = pd.Series(False, index=typed_df.index)
     if "total_spend" in typed_df.columns:
         mask = mask | typed_df["total_spend"].isna()

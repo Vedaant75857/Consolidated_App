@@ -23,12 +23,6 @@ const TYPE_COLORS: Record<string, string> = {
   string: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800",
 };
 
-function confidenceColor(c: number): string {
-  if (c >= 0.8) return "bg-emerald-500";
-  if (c >= 0.5) return "bg-amber-400";
-  return "bg-red-400";
-}
-
 export default function ColumnMappingStep({
   columns, onRequestMapping, onConfirm, loading,
   initialMappings, initialStandardFields,
@@ -160,7 +154,7 @@ export default function ColumnMappingStep({
           </div>
         </div>
 
-        <div className="overflow-x-auto max-h-[520px] overflow-y-auto">
+        <div className="overflow-x-auto max-h-[640px] overflow-y-auto">
           <table className="w-full text-[12px] font-mono border-collapse">
             <thead className="sticky top-0 z-20">
               <tr className="bg-emerald-50 dark:bg-emerald-950/30">
@@ -172,9 +166,6 @@ export default function ColumnMappingStep({
                 </th>
                 <th className="text-left py-2.5 px-3 text-[10px] font-bold text-emerald-800 dark:text-emerald-300 uppercase tracking-wider border-b border-emerald-200 dark:border-emerald-900 min-w-[220px]">
                   Mapped Column
-                </th>
-                <th className="text-left py-2.5 px-3 text-[10px] font-bold text-emerald-800 dark:text-emerald-300 uppercase tracking-wider border-b border-emerald-200 dark:border-emerald-900 w-[140px]">
-                  Confidence
                 </th>
                 <th className="text-center py-2.5 px-3 text-[10px] font-bold text-emerald-800 dark:text-emerald-300 uppercase tracking-wider border-b border-emerald-200 dark:border-emerald-900 w-[70px]">
                   Status
@@ -240,21 +231,6 @@ export default function ColumnMappingStep({
                           ))}
                         </optgroup>
                       </select>
-                    </td>
-                    <td className="py-3 px-3">
-                      {strVal(m.bestMatch) && (
-                        <div className="flex items-center gap-2">
-                          <div className="w-20 h-2 rounded-full bg-neutral-200 dark:bg-neutral-700 overflow-hidden">
-                            <div
-                              className={`h-full rounded-full ${confidenceColor(m.confidence || 0)}`}
-                              style={{ width: `${(m.confidence || 0) * 100}%` }}
-                            />
-                          </div>
-                          <span className="text-[11px] font-bold text-neutral-600 dark:text-neutral-300 tabular-nums w-10 text-right">
-                            {Math.round((m.confidence || 0) * 100)}%
-                          </span>
-                        </div>
-                      )}
                     </td>
                     <td className="py-3 px-3 text-center">
                       {selectedCol ? (

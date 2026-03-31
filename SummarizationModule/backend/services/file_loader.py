@@ -104,6 +104,9 @@ def _parse_excel_bytes(data: bytes, filename: str) -> dict[str, tuple[list[list[
 # Storage: raw + data tables
 # ──────────────────────────────────────────────
 
+_BATCH_SIZE = 5000
+
+
 def _store_raw_table(conn: sqlite3.Connection, table_name: str, raw_grid: list[list[Any]]):
     """Store the raw grid as RAW_0, RAW_1, ... columns (all TEXT)."""
     if not raw_grid:
@@ -113,9 +116,16 @@ def _store_raw_table(conn: sqlite3.Connection, table_name: str, raw_grid: list[l
     conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
     conn.execute(f'CREATE TABLE "{table_name}" ({col_defs})')
     placeholders = ", ".join("?" for _ in range(max_cols))
+    sql = f'INSERT INTO "{table_name}" VALUES ({placeholders})'
+    batch: list[tuple] = []
     for row in raw_grid:
         padded = list(row) + [""] * (max_cols - len(row))
-        conn.execute(f'INSERT INTO "{table_name}" VALUES ({placeholders})', padded)
+        batch.append(tuple(padded))
+        if len(batch) >= _BATCH_SIZE:
+            conn.executemany(sql, batch)
+            batch.clear()
+    if batch:
+        conn.executemany(sql, batch)
 
 
 def _store_data_table(conn: sqlite3.Connection, table_name: str, headers: list[str], data_rows: list[list[Any]]):
@@ -127,17 +137,22 @@ def _store_data_table(conn: sqlite3.Connection, table_name: str, headers: list[s
     conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
     conn.execute(f'CREATE TABLE "{table_name}" ({col_defs})')
     placeholders = ", ".join("?" for _ in all_headers)
+    sql = f'INSERT INTO "{table_name}" VALUES ({placeholders})'
+    num_headers = len(headers)
     record_id = 0
+    batch: list[tuple] = []
     for row in data_rows:
         vals = [str(v).strip() if v is not None and str(v).strip() else "" for v in row]
         if not any(v for v in vals):
             continue
-        padded = vals + [""] * (len(headers) - len(vals))
+        padded = vals + [""] * (num_headers - len(vals))
         record_id += 1
-        conn.execute(
-            f'INSERT INTO "{table_name}" VALUES ({placeholders})',
-            [str(record_id)] + padded[:len(headers)],
-        )
+        batch.append(tuple([str(record_id)] + padded[:num_headers]))
+        if len(batch) >= _BATCH_SIZE:
+            conn.executemany(sql, batch)
+            batch.clear()
+    if batch:
+        conn.executemany(sql, batch)
 
 
 def _build_table_key(zip_path: str, sheet_name: str | None) -> str:
@@ -151,11 +166,22 @@ def _build_table_key(zip_path: str, sheet_name: str | None) -> str:
 # Load ZIP / single file
 # ──────────────────────────────────────────────
 
+def _set_bulk_pragmas(conn: sqlite3.Connection) -> None:
+    conn.execute("PRAGMA synchronous = OFF")
+    conn.execute("PRAGMA cache_size = -64000")
+    conn.execute("PRAGMA temp_store = MEMORY")
+
+
+def _restore_pragmas(conn: sqlite3.Connection) -> None:
+    conn.execute("PRAGMA synchronous = NORMAL")
+
+
 def load_zip_to_session(
     conn: sqlite3.Connection, file_data: bytes
 ) -> tuple[list[str], list[dict[str, str]]]:
     """Extract ZIP, parse files, store raw + data tables. Returns (table_keys, warnings)."""
     _ensure_registry(conn)
+    _set_bulk_pragmas(conn)
     warnings: list[dict[str, str]] = []
     table_keys: list[str] = []
 
@@ -198,6 +224,7 @@ def load_zip_to_session(
                 warnings.append({"file": basename, "message": str(exc)})
 
     conn.commit()
+    _restore_pragmas(conn)
     return table_keys, warnings
 
 
@@ -206,6 +233,7 @@ def load_single_file(
 ) -> tuple[list[str], list[dict[str, str]]]:
     """Parse a single CSV/Excel file. Returns (table_keys, warnings)."""
     _ensure_registry(conn)
+    _set_bulk_pragmas(conn)
     warnings: list[dict[str, str]] = []
     table_keys: list[str] = []
     ext = os.path.splitext(filename)[1].lower()
@@ -238,6 +266,7 @@ def load_single_file(
         warnings.append({"file": filename, "message": str(exc)})
 
     conn.commit()
+    _restore_pragmas(conn)
     return table_keys, warnings
 
 

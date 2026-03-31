@@ -24,6 +24,7 @@ export interface StandardField {
   displayName: string;
   expectedType: "numeric" | "datetime" | "string";
   description: string;
+  aliases?: string[];
 }
 
 export interface AIMapping {
@@ -123,4 +124,12 @@ export interface EmailContext {
   next_steps: NextStep[];
 }
 
-export type AppStep = 1 | 2 | 3 | 4 | 5 | 6;
+export interface ProcurementViewAvailability {
+  viewId: string;
+  title: string;
+  requiredFields: string[];
+  available: boolean;
+  missingFields: string[];
+}
+
+export type AppStep = 1 | 2 | 3 | 4 | 5 | 6 | 7;

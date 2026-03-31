@@ -95,6 +95,11 @@ export default function MergeOutputsPanel({
     if (selectedVersion === null) return;
     setSending(true);
     setSendResult(null);
+
+    // Open a blank tab immediately so the browser treats it as a user gesture
+    // (avoids popup-blocker after long async work).
+    const analyzerTab = window.open("about:blank", "_blank");
+
     try {
       const csvRes = await fetch(
         `/api/merge/download-csv?sessionId=${encodeURIComponent(sessionId)}&version=${selectedVersion}`
@@ -117,11 +122,16 @@ export default function MergeOutputsPanel({
       const data = await uploadRes.json();
       const analyzerSessionId: string = data.sessionId;
 
-      window.open(`${ANALYZER_FE}?sessionId=${encodeURIComponent(analyzerSessionId)}`, "_blank");
+      if (analyzerTab) {
+        analyzerTab.location.href = `${ANALYZER_FE}?sessionId=${encodeURIComponent(analyzerSessionId)}`;
+      } else {
+        window.open(`${ANALYZER_FE}?sessionId=${encodeURIComponent(analyzerSessionId)}`, "_blank");
+      }
       setSendResult({ ok: true, message: "Opened Spend Analyzer in a new tab" });
       setSelectingForAnalyzer(false);
       setSelectedVersion(null);
     } catch (err: any) {
+      if (analyzerTab) analyzerTab.close();
       setSendResult({ ok: false, message: err.message || "Send failed" });
     } finally {
       setSending(false);

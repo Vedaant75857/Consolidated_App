@@ -36,6 +36,17 @@ from merging.column_metadata import (
 )
 
 
+_KNOWN_EXTS = {".xlsx", ".xlsm", ".xltx", ".xltm", ".csv", ".zip"}
+
+
+def _strip_file_ext(name: str) -> str:
+    """Remove a known file extension from a group/file name to avoid double extensions in labels."""
+    dot = name.rfind(".")
+    if dot > 0 and name[dot:].lower() in _KNOWN_EXTS:
+        return name[:dot]
+    return name
+
+
 def _normalize_col(name: str) -> str:
     return name.lower().strip().replace(" ", "_").replace("-", "_")
 
@@ -737,8 +748,8 @@ def finalize_merge(
     # Build auto-name label from group names
     schema = get_meta(conn, "groupSchemaTableRows") or []
     name_map = {g["group_id"]: g.get("group_name", g["group_id"]) for g in schema}
-    base_name = name_map.get(base_group_id, base_group_id)
-    source_names = [name_map.get(m.get("source_group_id", ""), m.get("source_group_id", "")) for m in approved_merges]
+    base_name = _strip_file_ext(name_map.get(base_group_id, base_group_id))
+    source_names = [_strip_file_ext(name_map.get(m.get("source_group_id", ""), m.get("source_group_id", ""))) for m in approved_merges]
     raw_label = f"merge_{base_name}_{'_'.join(source_names)}.xlsx"
     file_label = "".join(c if c.isalnum() or c in "._- " else "_" for c in raw_label)
 
@@ -809,7 +820,7 @@ def skip_merge(conn: sqlite3.Connection, session_id: str, base_group_id: str) ->
 
     schema = get_meta(conn, "groupSchemaTableRows") or []
     name_map = {g["group_id"]: g.get("group_name", g["group_id"]) for g in schema}
-    base_name = name_map.get(base_group_id, base_group_id)
+    base_name = _strip_file_ext(name_map.get(base_group_id, base_group_id))
     raw_label = f"skip_{base_name}.xlsx"
     file_label = "".join(c if c.isalnum() or c in "._- " else "_" for c in raw_label)
 
@@ -896,8 +907,8 @@ def persist_merge_output(
 
     schema = get_meta(conn, "groupSchemaTableRows") or []
     name_map = {g["group_id"]: g.get("group_name", g["group_id"]) for g in schema}
-    base_name = name_map.get(base_group_id, base_group_id)
-    source_name = name_map.get(source_group_id, source_group_id)
+    base_name = _strip_file_ext(name_map.get(base_group_id, base_group_id))
+    source_name = _strip_file_ext(name_map.get(source_group_id, source_group_id))
     raw_label = f"merge_{base_name}_{source_name}.xlsx"
     file_label = "".join(c if c.isalnum() or c in "._- " else "_" for c in raw_label)
 

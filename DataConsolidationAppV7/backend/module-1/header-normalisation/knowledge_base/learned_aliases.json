@@ -2,10 +2,10 @@
   "Vendor Name": [
     "DOC. FORNITORE",
     "FORNITORE_NOME",
-    "FILE_NAME",
     "SUPPLIERNAME",
-    "SUPPLIERTYPE",
-    "CO#_NAME"
+    "VENDORNAME",
+    "VENDORVENDORFAMILY",
+    "VENDORVENDORNAME"
   ],
   "Invoice Number": [
     "FATT DATA DOC.",
@@ -14,7 +14,8 @@
     "DUNSNUMBER"
   ],
   "GL Account Description": [
-    "CONTO_CO_GE_DESC"
+    "CONTO_CO_GE_DESC",
+    "GLACCOUNTDESCRIPTION"
   ],
   "GL Account": [
     "WBE",
@@ -24,7 +25,8 @@
     "MAJORACCOUNTID",
     "MAJORACCOUNTNAME",
     "CHARTOFACCOUNTSID",
-    "CHARTOFACCOUNTSNAME"
+    "CHARTOFACCOUNTSNAME",
+    "GLACCOUNT"
   ],
   "Invoice Line Description": [
     "WBE_DESC",
@@ -38,25 +40,31 @@
     "PARTFLEXTEXT3",
     "COMMODITY DESCRIPTION",
     "DOC TYPE DESC",
-    "SCHTYPE DESC"
+    "SCHTYPE DESC",
+    "INVOICEDESCRIPTION"
   ],
   "Total Amount paid in Reporting Currency": [
     "DIVISA DI GRUPPO",
-    "IMPORTO_EUR"
+    "IMPORTO_EUR",
+    "INVOICESPENDINEUR"
   ],
   "Total Amount paid in Local Currency": [
     "IMPORTO_DIVISA_DOCUMENTO",
     "IMPORTO_DIVISA_LOCALE",
     "AMOUNT IN LOC.CRCY 2",
     "AMOUNT IN LOCAL CRCY",
-    "GROSS AMOUNT"
+    "GROSS AMOUNT",
+    "INVOICEVALUEINLOCALCURRENCY",
+    "UNIFIEDCURRENCYVALUE"
   ],
   "Vendor Code": [
-    "FORNITORE"
+    "FORNITORE",
+    "VENDOR"
   ],
   "Business Unit": [
     "PROFIT CENTER",
-    "BUSA"
+    "BUSA",
+    "BUSINESSUNIT"
   ],
   "Data Source System": [
     "_source_table",
@@ -64,7 +72,9 @@
     "VETERANOWNEDENTERPRISE",
     "DVOENTERPRISE",
     "ETHNICITYENTERPRISE",
-    "DISADVANTAGEDENTERPRISE"
+    "DISADVANTAGEDENTERPRISE",
+    "FILE_NAME",
+    "RECORD_ID"
   ],
   "Debit/ Credit Indicator": [
     "TYPE",
@@ -81,7 +91,9 @@
     "CUR COD",
     "MINORITY CODE",
     "CAT CDE",
-    "SCH TYP"
+    "SCH TYP",
+    "CURRENCYOFINVOICEVALUEINLOCALCURRENCY",
+    "UNIFIEDCURRENCY"
   ],
   "Fiscal Year": [
     "YEAR/MONTH"
@@ -96,7 +108,8 @@
     "DUE DATE"
   ],
   "Invoice Date": [
-    "DOCUMENTNO"
+    "DOCUMENTNO",
+    "UNIFIEDDATE"
   ],
   "Transaction ID": [
     "REFERENCE",
@@ -106,7 +119,8 @@
   "Cost Center Code": [
     "COST CTR",
     "HSN/SAC CODE",
-    "COSTCENTERNAME"
+    "COSTCENTERNAME",
+    "COSTCENTER"
   ],
   "Payment date": [
     "CLEARING",
@@ -124,13 +138,15 @@
     "SITENAME",
     "STREETADDRESS",
     "REQUESTERID",
-    "MAILING NAME"
+    "MAILING NAME",
+    "PLANTNAME"
   ],
   "Company Name": [
     "COMPANYLEVEL0",
     "COMPANYLEVEL1",
     "COMPANYLEVEL2",
-    "COMPANYLEVEL3"
+    "COMPANYLEVEL3",
+    "COMPANYNAME"
   ],
   "Vendor City": [
     "CITY"
@@ -140,7 +156,8 @@
     "REGION"
   ],
   "Vendor Country": [
-    "COUNTRY"
+    "COUNTRY",
+    "VENDORCOUNTRY"
   ],
   "Invoice PO Number": [
     "POSTALCODE",
@@ -156,12 +173,14 @@
     "CONTACTFIRSTNAME"
   ],
   "PO Material Group Code": [
-    "COMMODITYID"
+    "COMMODITYID",
+    "MATERIALGROUPID"
   ],
   "PO Material Group Description": [
     "COMMODITYNAME",
     "COMMODITYTYPE",
-    "COMMODITY ROLL UP"
+    "COMMODITY ROLL UP",
+    "MATERIALGROUPNAME"
   ],
   "PO Manufacturer part number": [
     "REVISIONNUMBER"
@@ -179,13 +198,15 @@
     "FAXNUMBER"
   ],
   "Invoice Line Number": [
-    "ANNUMBER"
+    "ANNUMBER",
+    "INVOICEITEM"
   ],
   "Payment Terms": [
     "PAYMENTTYPE",
     "PYMT TERMS",
     "PAYMENT TERMS - A/P",
-    "PMT TRM"
+    "PMT TRM",
+    "PAYMENTTERMDESCRIPTION"
   ],
   "Vendor Diversity": [
     "MINORITYOWNED",
@@ -211,5 +232,26 @@
   "Vendor Address": [
     "LONG ADDRESS",
     "ADDRESS LINE 1 - ADD1"
+  ],
+  "Company Country": [
+    "COUNTRY"
+  ],
+  "PO Line Item Description 1": [
+    "SHORTTEXT"
+  ],
+  "Spend Classification Level 1": [
+    "CATEGORY1"
+  ],
+  "Spend Classification Level 2": [
+    "CATEGORY2"
+  ],
+  "Spend Classification Level 3": [
+    "CATEGORY3"
+  ],
+  "Spend Classification Level 4": [
+    "CATEGORY4"
+  ],
+  "Cost Center Description": [
+    "COSTCENTERDESCRIPTION"
   ]
 }

@@ -39,12 +39,14 @@ import {
   deleteTable,
   setHeaderRow,
   deleteRows,
+  getProcurementViews,
 } from "./api/client";
 import { ErrorBoundary } from "./components/common/ui";
 import DataLoading from "./components/upload/DataLoading";
 import ColumnMappingStep from "./components/mapping/ColumnMappingStep";
 import ViewSelectionStep from "./components/views/ViewSelectionStep";
 import Dashboard from "./components/dashboard/Dashboard";
+import ProcurementViewsStep from "./components/procurement/ProcurementViewsStep";
 import ContextModal from "./components/email/ContextModal";
 import EmailStep from "./components/email/EmailStep";
 
@@ -54,7 +56,8 @@ const SIDEBAR_ITEMS = [
   { name: "Map Columns", steps: [3] as AppStep[] },
   { name: "Select Views", steps: [4] as AppStep[] },
   { name: "Dashboard", steps: [5] as AppStep[] },
-  { name: "Email", steps: [6] as AppStep[] },
+  { name: "Procurement Views", steps: [6] as AppStep[] },
+  { name: "Email", steps: [7] as AppStep[] },
 ];
 
 const STEP_META: Record<number, { title: string; description: string }> = {
@@ -63,7 +66,8 @@ const STEP_META: Record<number, { title: string; description: string }> = {
   3: { title: "Map Columns", description: "AI maps your columns to the standard procurement fields." },
   4: { title: "Select Views", description: "Choose which analyses to generate from your data." },
   5: { title: "Dashboard", description: "View your procurement analytics and export results." },
-  6: { title: "Email", description: "Generate and edit a client-ready email summary." },
+  6: { title: "Spend X-ray Feasibility", description: "Check which procurement analysis views your data can support." },
+  7: { title: "Email", description: "Generate and edit a client-ready email summary." },
 };
 
 const pageVariants = {
@@ -383,7 +387,18 @@ export default function App() {
     [sessionId]
   );
 
-  /* ──── Email generation (step 5 -> 6) ──── */
+  /* ──── Procurement views (step 5 -> 6) ──── */
+
+  const handleViewProcurementFeasibility = useCallback(() => {
+    setStep(6);
+  }, []);
+
+  const handleFetchProcurementViews = useCallback(async () => {
+    if (!sessionId) throw new Error("No session");
+    return getProcurementViews(sessionId);
+  }, [sessionId]);
+
+  /* ──── Email generation (step 6 -> 7) ──── */
 
   const handleOpenEmailModal = useCallback(() => {
     setShowContextModal(true);
@@ -398,7 +413,7 @@ export default function App() {
       setEmailError(null);
       setEmailFallback(null);
       setGeneratedEmail(null);
-      setStep(6);
+      setStep(7);
 
       try {
         const result = await generateEmail(sessionId, apiKey, context);
@@ -424,8 +439,8 @@ export default function App() {
     }
   }, [emailContext, handleEmailGenerate]);
 
-  const handleBackToDashboard = useCallback(() => {
-    setStep(5);
+  const handleBackToProcurementViews = useCallback(() => {
+    setStep(6);
   }, []);
 
   /* ──── Reset ──── */
@@ -593,14 +608,14 @@ export default function App() {
                   <div className="rounded-2xl bg-white/10 px-4 py-3 backdrop-blur shrink-0">
                     <p className="text-[10px] uppercase tracking-wider text-red-200">Current step</p>
                     <p className="mt-1 text-lg font-semibold tabular-nums">
-                      {step} <span className="text-red-200/70 text-sm font-normal">of 6</span>
+                      {step} <span className="text-red-200/70 text-sm font-normal">of 7</span>
                     </p>
                   </div>
                 </div>
               </motion.div>
 
               {/* Error banner */}
-              {error && step !== 5 && step !== 6 && (
+              {error && step !== 5 && step !== 6 && step !== 7 && (
                 <motion.div
                   initial={{ opacity: 0, y: -8 }}
                   animate={{ opacity: 1, y: 0 }}
@@ -668,11 +683,19 @@ export default function App() {
                         onExportCsv={handleExportCsv}
                         onExportPdf={handleExportPdf}
                         onRecomputeView={handleRecomputeView}
+                        onViewProcurementFeasibility={handleViewProcurementFeasibility}
+                      />
+                    )}
+
+                    {step === 6 && sessionId && (
+                      <ProcurementViewsStep
+                        sessionId={sessionId}
+                        onFetchViews={handleFetchProcurementViews}
                         onGenerateEmail={apiKey.trim() ? handleOpenEmailModal : undefined}
                       />
                     )}
 
-                    {step === 6 && (
+                    {step === 7 && (
                       <EmailStep
                         email={generatedEmail}
                         subject={emailSubject}
@@ -680,7 +703,7 @@ export default function App() {
                         error={emailError}
                         loading={emailLoading}
                         onRegenerate={handleEmailRegenerate}
-                        onBack={handleBackToDashboard}
+                        onBack={handleBackToProcurementViews}
                       />
                     )}
                   </ErrorBoundary>

@@ -41,7 +41,10 @@ def upload():
             table_keys, warnings = load_single_file(conn, filename, file_data)
 
         if not table_keys:
-            return jsonify({"error": "No valid data files found in upload."}), 400
+            return jsonify({
+                "error": "No valid data files found in upload.",
+                "warnings": warnings,
+            }), 400
 
         columns = collect_column_info(conn, table_keys)
         inventory = build_inventory(conn)

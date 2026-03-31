@@ -5,9 +5,11 @@ from flask import Blueprint, jsonify, request
 from shared.db import get_session_db, get_meta, set_meta, session_exists
 from services.column_mapper import (
     STANDARD_FIELDS,
+    deterministic_match,
     ai_map_columns,
     build_typed_table,
 )
+from services.procurement_views import get_procurement_view_availability
 
 logger = logging.getLogger(__name__)
 mapping_bp = Blueprint("mapping", __name__)
@@ -30,10 +32,43 @@ def map_columns():
         if not columns:
             return jsonify({"error": "No columns found. Upload data first."}), 400
 
-        mappings = ai_map_columns(columns, api_key)
-        logger.info("AI returned %d mapping(s): %s",
-                     len(mappings),
-                     [m.get("fieldKey") for m in mappings] if mappings else "EMPTY")
+        # Pass 1: deterministic exact-name matching
+        exact_matched, unmatched_fields, unmatched_cols = deterministic_match(columns)
+        logger.info(
+            "Deterministic pass: %d exact matches, %d fields remaining",
+            len(exact_matched),
+            len(unmatched_fields),
+        )
+
+        # Pass 2: parallel per-field AI calls for remaining fields
+        ai_results = ai_map_columns(unmatched_fields, unmatched_cols, api_key)
+        logger.info("AI pass returned %d mapping(s)", len(ai_results))
+
+        # Merge results into a single mappings list for all 28 fields
+        mappings: list[dict] = []
+        for field in STANDARD_FIELDS:
+            fk = field["fieldKey"]
+            if fk in exact_matched:
+                mappings.append({
+                    "fieldKey": fk,
+                    "bestMatch": exact_matched[fk],
+                    "alternatives": [],
+                    "reasoning": "Exact name match",
+                    "expectedType": field["expectedType"],
+                })
+            else:
+                ai_entry = next((r for r in ai_results if r["fieldKey"] == fk), None)
+                if ai_entry:
+                    mappings.append(ai_entry)
+                else:
+                    mappings.append({
+                        "fieldKey": fk,
+                        "bestMatch": None,
+                        "alternatives": [],
+                        "reasoning": "No match found",
+                        "expectedType": field["expectedType"],
+                    })
+
         set_meta(conn, "ai_mappings", mappings)
         set_meta(conn, "step", 3)
         conn.close()
@@ -42,6 +77,28 @@ def map_columns():
             "mappings": mappings,
             "standardFields": STANDARD_FIELDS,
         })
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@mapping_bp.route("/procurement-views", methods=["POST"])
+def procurement_views():
+    try:
+        body = request.get_json(force=True)
+        session_id = body.get("sessionId")
+
+        if not session_id or not session_exists(session_id):
+            return jsonify({"error": "Invalid session"}), 400
+
+        conn = get_session_db(session_id)
+        mapping = get_meta(conn, "mapping")
+        conn.close()
+
+        if not mapping:
+            return jsonify({"error": "No mapping found. Complete column mapping first."}), 400
+
+        views = get_procurement_view_availability(mapping)
+        return jsonify({"views": views})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
