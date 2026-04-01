@@ -110,6 +110,7 @@ export default function App() {
   const [viewResults, setViewResults] = useState<ViewResult[]>([]);
   const [savedAiMappings, setSavedAiMappings] = useState<AIMapping[] | null>(null);
   const [savedStandardFields, setSavedStandardFields] = useState<StandardField[] | null>(null);
+  const [confirmedMapping, setConfirmedMapping] = useState<Record<string, string | null>>({});
 
   const [showContextModal, setShowContextModal] = useState(false);
   const [emailContext, setEmailContext] = useState<EmailContext | null>(null);
@@ -158,6 +159,7 @@ export default function App() {
           if (state.viewResults) setViewResults(state.viewResults);
           if (state.aiMappings) setSavedAiMappings(state.aiMappings);
           if (state.standardFields) setSavedStandardFields(state.standardFields);
+          if (state.mapping) setConfirmedMapping(state.mapping);
           setStep((state.step || 1) as AppStep);
           setMaxStepReached((state.step || 1) as AppStep);
         })
@@ -294,6 +296,7 @@ export default function App() {
       if (!sessionId) throw new Error("No session");
       setLoading(true);
       try {
+        setConfirmedMapping(mapping);
         const result = await confirmMapping(sessionId, mapping);
         setCastReport(result.castReport);
         const viewsResult = await getAvailableViews(sessionId);
@@ -460,6 +463,7 @@ export default function App() {
     setViewResults([]);
     setSavedAiMappings(null);
     setSavedStandardFields(null);
+    setConfirmedMapping({});
     setShowContextModal(false);
     setEmailContext(null);
     setGeneratedEmail(null);
@@ -690,6 +694,8 @@ export default function App() {
                     {step === 6 && sessionId && (
                       <ProcurementViewsStep
                         sessionId={sessionId}
+                        mapping={confirmedMapping}
+                        apiKey={apiKey}
                         onFetchViews={handleFetchProcurementViews}
                         onGenerateEmail={apiKey.trim() ? handleOpenEmailModal : undefined}
                       />

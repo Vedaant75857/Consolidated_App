@@ -253,5 +253,8 @@
   ],
   "Cost Center Description": [
     "COSTCENTERDESCRIPTION"
+  ],
+  "PO Material Description": [
+    "MATERIAL"
   ]
 }

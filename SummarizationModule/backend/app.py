@@ -17,6 +17,7 @@ from routes.mapping_routes import mapping_bp
 from routes.views_routes import views_bp
 from routes.export_routes import export_bp
 from routes.email_routes import email_bp
+from routes.quality_routes import quality_bp
 
 app = Flask(__name__)
 CORS(app)
@@ -28,6 +29,7 @@ app.register_blueprint(mapping_bp, url_prefix="/api")
 app.register_blueprint(views_bp, url_prefix="/api")
 app.register_blueprint(export_bp, url_prefix="/api")
 app.register_blueprint(email_bp, url_prefix="/api")
+app.register_blueprint(quality_bp, url_prefix="/api")
 
 
 @app.route("/api/health")

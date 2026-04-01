@@ -1,15 +1,20 @@
 import { useEffect, useState } from "react";
 import { CheckCircle2, XCircle, Loader2, ArrowRight } from "lucide-react";
 import type { ProcurementViewAvailability } from "../../types";
+import { QualityAnalysisSection } from "./quality";
 
 interface Props {
   sessionId: string;
+  mapping: Record<string, string | null>;
+  apiKey: string;
   onFetchViews: () => Promise<{ views: ProcurementViewAvailability[] }>;
   onGenerateEmail?: () => void;
 }
 
 export default function ProcurementViewsStep({
   sessionId,
+  mapping,
+  apiKey,
   onFetchViews,
   onGenerateEmail,
 }: Props) {
@@ -115,6 +120,12 @@ export default function ProcurementViewsStep({
           </div>
         ))}
       </div>
+
+      <QualityAnalysisSection
+        sessionId={sessionId}
+        mapping={mapping}
+        apiKey={apiKey}
+      />
 
       {onGenerateEmail && (
         <div className="flex justify-end pt-2">
