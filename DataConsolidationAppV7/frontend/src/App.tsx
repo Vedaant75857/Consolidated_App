@@ -79,7 +79,7 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [aiLoading]);
 
-  // Step 2: Inventory
+  // Step 2: Data Preview
   const [inventory, setInventory] = useState<any[]>([]);
   const [previews, setPreviews] = useState<Record<string, { columns: string[]; rows: any[] }>>({});
   const [showDataPreview, setShowDataPreview] = useState(false);
@@ -441,10 +441,10 @@ export default function App() {
       const data = await res.json();
       setInventory(data.inventory);
       setPreviews(data.previews || {});
-      addLog("Inventory", "success", `Deleted table "${tableKey}"`);
+      addLog("Data Preview", "success", `Deleted table "${tableKey}"`);
     } catch (err: any) {
       setError(err.message);
-      addLog("Inventory", "error", err.message);
+      addLog("Data Preview", "error", err.message);
     } finally {
       setLoading(false);
     }
@@ -465,10 +465,10 @@ export default function App() {
       if (data.inventoryRow) {
         setInventory((prev) => prev.map((inv) => inv.table_key === tableKey ? data.inventoryRow : inv));
       }
-      addLog("Inventory", "success", `Deleted ${data.deletedCount || rowIds.length} row(s) from "${tableKey}"`);
+      addLog("Data Preview", "success", `Deleted ${data.deletedCount || rowIds.length} row(s) from "${tableKey}"`);
     } catch (err: any) {
       setError(err.message);
-      addLog("Inventory", "error", err.message);
+      addLog("Data Preview", "error", err.message);
     } finally {
       setLoading(false);
     }
@@ -487,10 +487,10 @@ export default function App() {
       const data = await res.json();
       setInventory(data.inventory);
       setPreviews(data.previews || {});
-      addLog("Inventory", "success", `Header row set to row ${headerRowIndex} for "${tableKey}"`);
+      addLog("Data Preview", "success", `Header row set to row ${headerRowIndex} for "${tableKey}"`);
     } catch (err: any) {
       setError(err.message);
-      addLog("Inventory", "error", err.message);
+      addLog("Data Preview", "error", err.message);
     } finally {
       setLoading(false);
     }
@@ -968,7 +968,7 @@ export default function App() {
 
   const sidebarItems = [
     { name: "Upload + Settings",     steps: [1],      sub: "Manual" },
-    { name: "Inventory",             steps: [2],      sub: "Manual" },
+    { name: "Data Preview",           steps: [2],      sub: "Manual" },
     { name: "Append Strategy",       steps: [3],      sub: "AI-assisted" },
     { name: "Header Normalisation",  steps: [4],      sub: "AI-assisted" },
     { name: "Data Cleaning",         steps: [5],      sub: "Manual" },

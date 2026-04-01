@@ -121,7 +121,7 @@ export function EmptyState({ icon: Icon, title, description, action }: EmptyStat
 
 const STEP_META: Record<number, { title: string; description: string }> = {
   1: { title: "Upload + Settings", description: "Start by uploading your data files and configuring your API key." },
-  2: { title: "Data Inventory", description: "Review extracted tables, adjust headers, and remove unwanted files." },
+  2: { title: "Data Preview", description: "Review extracted tables, adjust headers, and remove unwanted files." },
   3: { title: "Append Strategy", description: "Group related tables for stacking into unified datasets." },
   4: { title: "Header Normalisation", description: "Map each table's columns to the standard procurement schema." },
   5: { title: "Data Cleaning", description: "Clean and prepare individual tables before grouping." },

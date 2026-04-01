@@ -52,7 +52,7 @@ import EmailStep from "./components/email/EmailStep";
 
 const SIDEBAR_ITEMS = [
   { name: "Upload", steps: [1] as AppStep[] },
-  { name: "Inventory", steps: [2] as AppStep[] },
+  { name: "Data Preview", steps: [2] as AppStep[] },
   { name: "Map Columns", steps: [3] as AppStep[] },
   { name: "Select Views", steps: [4] as AppStep[] },
   { name: "Dashboard", steps: [5] as AppStep[] },
@@ -62,7 +62,7 @@ const SIDEBAR_ITEMS = [
 
 const STEP_META: Record<number, { title: string; description: string }> = {
   1: { title: "Upload", description: "Upload your procurement data files to begin analysis." },
-  2: { title: "Data Inventory", description: "Review extracted tables, adjust headers, and remove unwanted files." },
+  2: { title: "Data Preview", description: "Review extracted tables, adjust headers, and remove unwanted files." },
   3: { title: "Map Columns", description: "AI maps your columns to the standard procurement fields." },
   4: { title: "Select Views", description: "Choose which analyses to generate from your data." },
   5: { title: "Dashboard", description: "View your procurement analytics and export results." },

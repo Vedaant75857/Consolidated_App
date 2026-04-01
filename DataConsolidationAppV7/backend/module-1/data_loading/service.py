@@ -1,4 +1,4 @@
-"""Data-loading service: file parsing, inventory building, previews."""
+"""Data-loading service: file parsing, data preview building, previews."""
 
 from __future__ import annotations
 

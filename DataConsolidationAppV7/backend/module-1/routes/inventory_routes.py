@@ -1,4 +1,4 @@
-"""Inventory routes: clean-table, clean-group, delete-rows."""
+"""Data Preview routes: clean-table, clean-group, delete-rows."""
 
 from __future__ import annotations
 

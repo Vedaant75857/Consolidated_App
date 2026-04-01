@@ -302,7 +302,7 @@ function HeaderRowEditor({
   );
 }
 
-/* ─── DataLoading (Upload step 1 + Inventory step 2) ─── */
+/* ─── DataLoading (Upload step 1 + Data Preview step 2) ─── */
 
 export interface DataLoadingProps {
   step: number;
@@ -735,10 +735,10 @@ export default function DataLoading({
         </SurfaceCard>
       )}
 
-      {/* ──── Step 2: Inventory ──── */}
+      {/* ──── Step 2: Data Preview ──── */}
       {step === 2 && (
         <SurfaceCard
-          title="Data Inventory"
+          title="Data Preview"
           subtitle={`${inventory.length} table${inventory.length !== 1 ? "s" : ""} extracted. Expand to preview, delete unwanted tables, or redefine headers.`}
           icon={Database}
           noPadding

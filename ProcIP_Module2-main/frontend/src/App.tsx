@@ -25,7 +25,7 @@ const NORM_OPS = [
 /* ── Sidebar step descriptor ── */
 const SIDEBAR_STEPS = [
   { num: 1, name: "Upload Data",           ai: false },
-  { num: 2, name: "Inventory",             ai: false },
+  { num: 2, name: "Data Preview",           ai: false },
   { num: 3, name: "Normalization",         ai: true  },
 ];
 

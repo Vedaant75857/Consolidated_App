@@ -343,7 +343,7 @@ export default function DataInventory({ inventory, onProceed, loading, setLoadin
 
   return (
     <motion.section initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
-      <SurfaceCard title="Data Extraction Inventory" subtitle={`${localInventory.length} table${localInventory.length !== 1 ? "s" : ""} securely extracted from upload.`} icon={Database} noPadding>
+      <SurfaceCard title="Data Preview" subtitle={`${localInventory.length} table${localInventory.length !== 1 ? "s" : ""} securely extracted from upload.`} icon={Database} noPadding>
         <div className="divide-y divide-neutral-100 bg-white rounded-b-xl">
           {localInventory.map((inv, i) => {
             const isExpanded = expandedTable === inv.table_key;

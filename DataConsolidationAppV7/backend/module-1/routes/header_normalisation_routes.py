@@ -34,7 +34,7 @@ header_normalisation_bp = Blueprint("header_normalisation_bp", __name__)
 
 
 # ---------------------------------------------------------------------------
-# Per-table header normalisation (new step between Inventory and Append)
+# Per-table header normalisation (new step between Data Preview and Append)
 # ---------------------------------------------------------------------------
 
 @header_normalisation_bp.route("/header-norm-run", methods=["POST"])
