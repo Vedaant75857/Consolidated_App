@@ -291,7 +291,7 @@ def normalize_supplier_name_agent(df, api_key=None, **kwargs):
     target_col = _find_column(
         df,
         ['supplier_name', 'supplier name', 'vendor_name', 'vendor name', 'suppliername', 'vendorname'],
-        ai_client=get_client(api_key), model=get_model(),
+        ai_client=get_client(api_key), model=get_model(api_key),
         ai_description='Supplier Name or Vendor Name',
     )
     if not target_col:
@@ -345,7 +345,7 @@ def normalize_supplier_country_agent(df, api_key=None, **kwargs):
         target_col = _find_column(
             df,
             ['supplier_country', 'supplier country', 'vendor_country', 'vendor country', 'country'],
-            ai_client=get_client(api_key), model=get_model(),
+            ai_client=get_client(api_key), model=get_model(api_key),
             ai_description='Supplier Country or Vendor Country',
         )
     if not target_col:
@@ -385,28 +385,43 @@ def normalize_supplier_country_agent(df, api_key=None, **kwargs):
                 nearest = _lookup_country(cleaned)
                 det_mapping[orig] = nearest if nearest else cleaned
 
+    # Build mapping and track which method resolved each unique value
+    ai_keys = set(det_mapping.keys()) - det_keys  # values added by AI
     full_mapping = {**det_mapping}
+
     new_col = "SUPPLIER COUNTRY NORMALIZED"
-    normalized = df[target_col].astype(str).map(full_mapping).fillna(df[target_col])
+    via_col = "NORMALIZED_VIA"
+    normalized = df[target_col].astype(str).map(full_mapping)
+
+    # Build per-row "Normalized Via" labels
+    raw_vals = df[target_col].astype(str)
+    empty_mask = df[target_col].isna() | raw_vals.str.strip().isin(["", "nan", "None", "<NA>"])
+    via_series = pd.Series("", index=df.index, dtype=object)
+    via_series[~empty_mask & raw_vals.isin(det_keys)] = "ISO Lookup"
+    via_series[~empty_mask & raw_vals.isin(ai_keys)] = "AI"
+
     _upsert_adjacent_column(df, target_col, new_col, normalized)
+    _upsert_adjacent_column(df, new_col, via_col, via_series)
 
     # Row-level metrics
     n_total = len(df)
-    empty_mask = df[target_col].isna() | (df[target_col].astype(str).str.strip() == "")
     n_empty = int(empty_mask.sum())
-    non_empty_vals = df.loc[~empty_mask, target_col].astype(str)
-    n_deterministic = int(non_empty_vals.isin(det_keys).sum())
-    n_in_mapping = int(non_empty_vals.isin(full_mapping.keys()).sum())
-    n_ai = n_in_mapping - n_deterministic
-    n_unresolved = int((~empty_mask).sum()) - n_in_mapping
+    n_deterministic = int((via_series == "ISO Lookup").sum())
+    n_ai = int((via_series == "AI").sum())
+    n_normalized = n_deterministic + n_ai
+    n_unresolved = n_total - n_empty - n_normalized
+    n_distinct = int(normalized.dropna().nunique())
+    ai_errors = cost.summary().get('errors', [])
 
     metrics = {
         "n_total": n_total,
         "n_empty": n_empty,
-        "n_normalized": n_in_mapping,
+        "n_normalized": n_normalized,
         "n_deterministic": n_deterministic,
         "n_ai": n_ai,
         "n_unresolved": n_unresolved,
+        "n_distinct": n_distinct,
+        "ai_errors": ai_errors,
     }
 
     return df, f"[OK] Normalized {len(full_mapping)} countries -> **{new_col}**.", cost.summary(), metrics
@@ -655,7 +670,7 @@ def date_normalization_agent(df, api_key=None, user_format=None, **kwargs):
                             ).replace('{target_format}', target_fmt)
                         try:
                             resp = client.chat.completions.create(
-                                model=get_model(),
+                                model=get_model(api_key),
                                 messages=[
                                     {"role": "system", "content": custom_sys or "Output JSON only."},
                                     {"role": "user", "content": prompt},
@@ -733,7 +748,7 @@ def payment_terms_agent(df, api_key=None, **kwargs):
     target_col = _find_column(
         df,
         ['payment_terms', 'payment terms', 'pay term', 'payment condition', 'payterm'],
-        ai_client=get_client(api_key), model=get_model(),
+        ai_client=get_client(api_key), model=get_model(api_key),
         ai_description='Payment Terms (raw/messy, not already normalized)',
     )
     if not target_col:

@@ -53,6 +53,8 @@ interface CountryNormMetrics {
   n_deterministic: number;
   n_ai: number;
   n_unresolved: number;
+  n_distinct: number;
+  ai_errors: string[];
 }
 
 interface NormDashboardProps {
@@ -201,7 +203,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       agentKwargs.target_currency = "USD";
       const parsedOverrides: Record<string, number> = {};
       Object.entries(fxOverrides).forEach(([ccy, val]) => {
-        const n = parseFloat(val);
+        const n = parseFloat(val as string);
         if (!isNaN(n) && n > 0) parsedOverrides[ccy] = n;
       });
       agentKwargs.fx_overrides = parsedOverrides;
@@ -351,7 +353,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
           case "supplier_name":
             return col.startsWith("NORMALIZED SUPPLIER_NAME_BAIN");
           case "supplier_country":
-            return col.startsWith("SUPPLIER COUNTRY NORMALIZED");
+            return col.startsWith("SUPPLIER COUNTRY NORMALIZED") || col === "NORMALIZED_VIA";
           case "date":
             return col.startsWith("Norm_Date_");
           case "payment_terms":
@@ -504,6 +506,9 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                   <p className="text-emerald-700 dark:text-emerald-400">
                     Rows normalized via AI: <strong>{countryNormMetrics.n_ai}</strong>
                   </p>
+                  <p className="text-emerald-700 dark:text-emerald-400">
+                    Distinct supplier countries: <strong>{countryNormMetrics.n_distinct}</strong>
+                  </p>
                   {(countryNormMetrics.n_empty + countryNormMetrics.n_unresolved) > 0 && (
                     <div className="mt-2 space-y-0.5 text-neutral-600 dark:text-neutral-400">
                       <p className="font-medium">Rows not normalized:</p>
@@ -513,6 +518,17 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                       {countryNormMetrics.n_unresolved > 0 && (
                         <p className="ml-3">• Unrecognized country values: {countryNormMetrics.n_unresolved}</p>
                       )}
+                    </div>
+                  )}
+                  {countryNormMetrics.ai_errors?.length > 0 && (
+                    <div className="flex gap-3 p-3 mt-2 rounded-xl bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800">
+                      <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0 text-amber-500 dark:text-amber-400" />
+                      <div className="space-y-1">
+                        <p className="text-xs font-medium text-amber-700 dark:text-amber-300">AI normalization errors:</p>
+                        {countryNormMetrics.ai_errors.map((err, i) => (
+                          <p key={i} className="text-xs text-amber-600 dark:text-amber-400">{err}</p>
+                        ))}
+                      </div>
                     </div>
                   )}
                   <div className="pt-3 mt-2 border-t border-emerald-200 dark:border-emerald-800">

@@ -21,16 +21,16 @@ except ImportError:
 
 # ─── AI Client ────────────────────────────────────────────────────────────────
 
-def get_client(api_key=None):
+def _resolve_provider_and_key(api_key=None):
     """
-    Get an AI client (Portkey or OpenAI) based on the current app state.
+    Central provider + key resolution used by get_client and get_model.
 
     Resolution order:
-      1. If api_key is explicitly provided, detect provider from key prefix.
-      2. Otherwise read from app_state (set via .env or user input).
-      3. Fall back to environment variables.
+      1. Read provider from app_state / env (default: portkey).
+      2. Resolve key from app_state / env if not explicitly provided.
+      3. If api_key starts with 'sk-', force provider to 'openai'.
 
-    Returns a client with the standard chat.completions.create() interface.
+    Returns (provider, api_key).
     """
     provider = os.getenv('AI_PROVIDER', 'portkey').lower()
 
@@ -48,6 +48,17 @@ def get_client(api_key=None):
         else:
             api_key = os.getenv('OPENAI_API_KEY', '')
 
+    # Detect provider from key prefix — OpenAI keys start with 'sk-'
+    if api_key and api_key.startswith('sk-'):
+        provider = 'openai'
+
+    return provider, api_key or ''
+
+
+def get_client(api_key=None):
+    """Get an AI client (Portkey or OpenAI)."""
+    provider, api_key = _resolve_provider_and_key(api_key)
+
     if not api_key:
         raise ValueError("Missing API Key. Set it in .env or enter it in the app.")
 
@@ -63,14 +74,9 @@ def get_client(api_key=None):
     return openai.OpenAI(api_key=api_key)
 
 
-def get_model():
-    """Get the configured model name."""
-    try:
-        from flask_app.state import app_state
-        return app_state.get('ai_model', '@personal-openai/gpt-5.2')
-    except Exception:
-        pass
-    provider = os.getenv('AI_PROVIDER', 'portkey').lower()
+def get_model(api_key=None):
+    """Get the correct model name for the resolved provider."""
+    provider, _ = _resolve_provider_and_key(api_key)
     if provider == 'portkey':
         return os.getenv('PORTKEY_MODEL', '@personal-openai/gpt-5.2')
     return 'gpt-4o'
@@ -162,7 +168,7 @@ def _batch_ai_mapping(unique_vals, system_prompt, user_prompt_template,
         return {}, cost_tracker
 
     client = get_client(api_key)
-    model = get_model()
+    model = get_model(api_key)
     mapping = {}
     _lock = threading.Lock()
     completed = [0]
