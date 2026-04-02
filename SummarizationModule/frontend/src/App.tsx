@@ -118,6 +118,7 @@ export default function App() {
   const [emailFallback, setEmailFallback] = useState<string | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
   const [emailLoading, setEmailLoading] = useState(false);
+  const [importSource, setImportSource] = useState<string | null>(null);
 
   const navigateToStep = useCallback((target: AppStep) => {
     setSlideDirection(target > step ? 1 : -1);
@@ -139,11 +140,21 @@ export default function App() {
 
     const urlParams = new URLSearchParams(window.location.search);
     const urlSessionId = urlParams.get("sessionId");
+    const urlApiKey = urlParams.get("apiKey");
+    const urlSource = urlParams.get("source");
 
     const restoreTarget = urlSessionId || sessionStorage.getItem(LS_SESSION_KEY);
 
     if (urlSessionId) {
       window.history.replaceState({}, "", window.location.pathname);
+    }
+
+    if (urlApiKey) {
+      setApiKey(urlApiKey);
+      localStorage.setItem(LS_API_KEY, urlApiKey);
+    }
+    if (urlSource) {
+      setImportSource(urlSource);
     }
 
     if (restoreTarget) {
@@ -469,7 +480,7 @@ export default function App() {
       {/* Back to Home bar */}
       <div className="h-10 bg-white/90 dark:bg-neutral-900/90 backdrop-blur-sm border-b border-neutral-200/80 dark:border-neutral-700/80 flex items-center px-4 shrink-0 z-50">
         <a
-          href="http://localhost:3000"
+          href={import.meta.env.VITE_HOME_URL ?? "http://localhost:3000"}
           className="flex items-center gap-2 text-xs font-medium text-neutral-500 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
         >
           <ArrowLeft className="w-3.5 h-3.5" />
@@ -644,6 +655,7 @@ export default function App() {
                         onDeleteTable={handleDeleteTable}
                         onSetHeaderRow={handleSetHeaderRow}
                         onDeleteRows={handleDeleteRows}
+                        importSource={importSource}
                       />
                     )}
 

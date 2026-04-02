@@ -5,7 +5,11 @@
     "SUPPLIERNAME",
     "VENDORNAME",
     "VENDORVENDORFAMILY",
-    "VENDORVENDORNAME"
+    "VENDORVENDORNAME",
+    "VENDOR NAME:1",
+    "VENDOR NAME:2",
+    "VENDOR NAME:3",
+    "VENDOR COUNTRY:1"
   ],
   "Invoice Number": [
     "FATT DATA DOC.",
@@ -74,7 +78,9 @@
     "ETHNICITYENTERPRISE",
     "DISADVANTAGEDENTERPRISE",
     "FILE_NAME",
-    "RECORD_ID"
+    "RECORD_ID",
+    "DATA SOURCE SYSTEM:1",
+    "DATA SOURCE SYSTEM:2"
   ],
   "Debit/ Credit Indicator": [
     "TYPE",
@@ -93,7 +99,9 @@
     "CAT CDE",
     "SCH TYP",
     "CURRENCYOFINVOICEVALUEINLOCALCURRENCY",
-    "UNIFIEDCURRENCY"
+    "UNIFIEDCURRENCY",
+    "LOCAL CURRENCY CODE:1",
+    "TOTAL AMOUNT PAID IN LOCAL CURRENCY:1"
   ],
   "Fiscal Year": [
     "YEAR/MONTH"
@@ -139,7 +147,8 @@
     "STREETADDRESS",
     "REQUESTERID",
     "MAILING NAME",
-    "PLANTNAME"
+    "PLANTNAME",
+    "PLANT NAME:1"
   ],
   "Company Name": [
     "COMPANYLEVEL0",

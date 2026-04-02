@@ -44,6 +44,8 @@ export default function App() {
 
   /* ── Data state ── */
   const [inventory, setInventory]             = useState<any[]>([]);
+  const [importSource, setImportSource]       = useState<string | null>(null);
+  const [importSessionId, setImportSessionId] = useState<string | null>(null);
 
   /* ── Live pipeline activity log ── */
   const [statusLog, setStatusLog] = useState<LogEntry[]>([]);
@@ -67,6 +69,41 @@ export default function App() {
   useEffect(() => {
     if (apiKey) localStorage.setItem("datastitcher_apikey", apiKey);
   }, [apiKey]);
+
+  /* ── Handle cross-module import via URL params ── */
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const imported = params.get("imported");
+    const urlApiKey = params.get("apiKey");
+    const urlSessionId = params.get("sessionId");
+    const source = params.get("source");
+
+    if (imported === "true") {
+      window.history.replaceState({}, "", window.location.pathname);
+
+      const effectiveApiKey = urlApiKey || localStorage.getItem("datastitcher_apikey") || "";
+      if (effectiveApiKey) {
+        setApiKey(effectiveApiKey);
+        localStorage.setItem("datastitcher_apikey", effectiveApiKey);
+      }
+      if (urlSessionId) setImportSessionId(urlSessionId);
+      if (source) setImportSource(source);
+
+      fetch("/api/current-inventory")
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.inventory?.length) {
+            setInventory(data.inventory);
+            setStep(2);
+            setMaxStepReached(2);
+            addLog("IMPORT", "success", `Data imported from ${source === "stitcher" ? "DataStitcher" : "external module"} — ${data.inventory.length} table(s) ready.`);
+          }
+        })
+        .catch(() => {
+          addLog("IMPORT", "error", "Failed to load imported data from backend.");
+        });
+    }
+  }, [addLog]);
 
   useEffect(() => {
     setMaxStepReached((prev) => Math.max(prev, step));
@@ -135,6 +172,7 @@ export default function App() {
           <DataInventory
             inventory={inventory} onProceed={handleProceedFromInventory}
             loading={loading} setLoading={setLoading} setError={setError}
+            importSource={importSource}
           />
         );
       case 3:
@@ -157,7 +195,7 @@ export default function App() {
       {/* Back to Home bar */}
       <div className="h-10 bg-white dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-800 flex items-center px-4 shrink-0 z-50">
         <a
-          href="http://localhost:3000"
+          href={import.meta.env.VITE_HOME_URL ?? "http://localhost:3000"}
           className="flex items-center gap-2 text-xs font-medium text-neutral-500 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
         >
           <ArrowLeft className="w-3.5 h-3.5" />

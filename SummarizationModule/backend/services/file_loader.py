@@ -132,6 +132,14 @@ def _store_data_table(conn: sqlite3.Connection, table_name: str, headers: list[s
     """Store parsed data with proper column names (all TEXT). Adds RECORD_ID."""
     if not headers:
         return
+    # Strip any existing RECORD_ID column to avoid duplicates (cross-module imports)
+    rid_indices = [i for i, h in enumerate(headers) if h == "RECORD_ID"]
+    if rid_indices:
+        headers = [h for i, h in enumerate(headers) if i not in rid_indices]
+        data_rows = [
+            [v for i, v in enumerate(row) if i not in rid_indices]
+            for row in data_rows
+        ]
     all_headers = ["RECORD_ID"] + headers
     col_defs = ", ".join(f'"{h}" TEXT' for h in all_headers)
     conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')

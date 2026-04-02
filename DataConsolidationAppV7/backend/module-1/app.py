@@ -1,10 +1,17 @@
 """Module 1 — Data Stitching API (Flask, port 3001)."""
 
 import atexit
+import logging
 import os
 import threading
 import time
 import uuid
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger("module1")
 
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env.local"))
@@ -41,7 +48,7 @@ def create_app() -> Flask:
             method = request.method
             status = resp.status_code
             rid = getattr(g, "request_id", "")
-            print(f"[Module-1] {method} {path} -> {status} in {elapsed_ms:.1f}ms (rid={rid})")
+            logger.info("[Module-1] %s %s -> %s in %.1fms (rid=%s)", method, path, status, elapsed_ms, rid)
             resp.headers["X-Request-Id"] = rid
             resp.headers["X-Response-Time-Ms"] = f"{elapsed_ms:.1f}"
         except Exception:
@@ -61,7 +68,7 @@ def create_app() -> Flask:
             mod = __import__(mod_path, fromlist=[bp_attr])
             app.register_blueprint(getattr(mod, bp_attr), url_prefix="/api")
         except Exception as exc:
-            print(f"[Module-1] WARN: failed to load {mod_path}.{bp_attr}: {exc}")
+            logger.warning("[Module-1] failed to load %s.%s: %s", mod_path, bp_attr, exc)
 
     return app
 
@@ -72,19 +79,19 @@ def _session_cleanup_loop() -> None:
         time.sleep(60 * 60)
         cleaned = cleanup_stale_sessions()
         if cleaned:
-            print(f"Cleaned up {cleaned} stale session(s).")
+            logger.info("Cleaned up %d stale session(s).", cleaned)
 
 
 app = create_app()
 
 _startup_cleaned = cleanup_all_sessions()
 if _startup_cleaned:
-    print(f"[Module-1] Startup: cleared {_startup_cleaned} leftover session(s).")
+    logger.info("[Module-1] Startup: cleared %d leftover session(s).", _startup_cleaned)
 
 
 def _on_exit():
     cleaned = cleanup_all_sessions()
-    print(f"[Module-1] Shutdown: deleted {cleaned} session(s).")
+    logger.info("[Module-1] Shutdown: deleted %d session(s).", cleaned)
 
 
 atexit.register(_on_exit)
@@ -94,5 +101,5 @@ if __name__ == "__main__":
     t.start()
 
     port = int(os.environ.get("NODE_PORT", "3001"))
-    print(f"[Module-1] Data Stitching API running on http://localhost:{port}")
+    logger.info("[Module-1] Data Stitching API running on http://localhost:%d", port)
     app.run(host="0.0.0.0", port=port, debug=False)

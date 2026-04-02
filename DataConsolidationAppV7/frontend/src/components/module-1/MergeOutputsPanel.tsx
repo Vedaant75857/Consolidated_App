@@ -1,15 +1,19 @@
 import { useState } from "react";
 import { motion } from "motion/react";
-import { Download, Package, Trash2, X, Loader2, FileSpreadsheet, BarChart3, CheckCircle2, AlertCircle } from "lucide-react";
+import { Download, Package, Trash2, X, Loader2, FileSpreadsheet, BarChart3, Database, CheckCircle2, AlertCircle } from "lucide-react";
 
 import type { MergeOutput } from "../../types";
+import TransferOverlay from "../common/TransferOverlay";
 
-const ANALYZER_BE = "http://localhost:3005";
-const ANALYZER_FE = "http://localhost:3004";
+const NORMALIZER_FE = import.meta.env.VITE_NORMALIZER_FE ?? "http://localhost:3003";
+const ANALYZER_FE = import.meta.env.VITE_ANALYZER_FE ?? "http://localhost:3004";
+
+type SelectionTarget = "analyzer" | "normalizer";
 
 interface MergeOutputsPanelProps {
   mergeOutputs: MergeOutput[];
   sessionId: string;
+  apiKey: string;
   onClose: () => void;
   onDeleteOutput: (version: number) => Promise<void>;
 }
@@ -17,6 +21,7 @@ interface MergeOutputsPanelProps {
 export default function MergeOutputsPanel({
   mergeOutputs,
   sessionId,
+  apiKey,
   onClose,
   onDeleteOutput,
 }: MergeOutputsPanelProps) {
@@ -25,10 +30,13 @@ export default function MergeOutputsPanel({
   const [deletingVersion, setDeletingVersion] = useState<number | null>(null);
   const [confirmDeleteVersion, setConfirmDeleteVersion] = useState<number | null>(null);
 
-  const [selectingForAnalyzer, setSelectingForAnalyzer] = useState(false);
+  const [selectionTarget, setSelectionTarget] = useState<SelectionTarget | null>(null);
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [transferOverlay, setTransferOverlay] = useState<{ visible: boolean; destination: string } | null>(null);
+
+  const isSelecting = selectionTarget !== null;
 
   const handleDownloadCsv = async (version: number) => {
     setDownloadingVersion(version);
@@ -91,52 +99,108 @@ export default function MergeOutputsPanel({
     }
   };
 
+  const handleFallbackDownload = () => {
+    if (selectedVersion !== null) handleDownloadCsv(selectedVersion);
+  };
+
   const handleSendToAnalyzer = async () => {
     if (selectedVersion === null) return;
     setSending(true);
     setSendResult(null);
-
-    // Open a blank tab immediately so the browser treats it as a user gesture
-    // (avoids popup-blocker after long async work).
-    const analyzerTab = window.open("about:blank", "_blank");
+    setTransferOverlay({ visible: true, destination: "Spend Analyzer" });
 
     try {
-      const csvRes = await fetch(
-        `/api/merge/download-csv?sessionId=${encodeURIComponent(sessionId)}&version=${selectedVersion}`
-      );
-      if (!csvRes.ok) throw new Error("Failed to download merge output");
-      const blob = await csvRes.blob();
+      const res = await fetch("/api/merge/transfer-to-analyzer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, version: selectedVersion }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Transfer failed");
 
-      const output = mergeOutputs.find((o) => o.version === selectedVersion);
-      const safeName = (output?.label || `merge_v${selectedVersion}`)
-        .replace(/[^a-zA-Z0-9._\- ]/g, "_");
-      const file = new File([blob], `${safeName}.csv`, { type: "text/csv" });
-
-      const fd = new FormData();
-      fd.append("file", file);
-      const uploadRes = await fetch(`${ANALYZER_BE}/api/upload`, { method: "POST", body: fd });
-      if (!uploadRes.ok) {
-        const err = await uploadRes.json().catch(() => ({ error: uploadRes.statusText }));
-        throw new Error(err.error || "Upload to Spend Analyzer failed");
+      const analyzerSessionId: string = data.analyzerSessionId;
+      if (!analyzerSessionId || typeof analyzerSessionId !== "string") {
+        throw new Error("Transfer succeeded but no session ID was returned by the Analyzer.");
       }
-      const data = await uploadRes.json();
-      const analyzerSessionId: string = data.sessionId;
-
-      if (analyzerTab) {
-        analyzerTab.location.href = `${ANALYZER_FE}?sessionId=${encodeURIComponent(analyzerSessionId)}`;
-      } else {
-        window.open(`${ANALYZER_FE}?sessionId=${encodeURIComponent(analyzerSessionId)}`, "_blank");
-      }
-      setSendResult({ ok: true, message: "Opened Spend Analyzer in a new tab" });
-      setSelectingForAnalyzer(false);
+      localStorage.setItem("summarizer_api_key", apiKey);
+      const url = `${ANALYZER_FE}?sessionId=${encodeURIComponent(analyzerSessionId)}&source=stitcher`;
+      window.open(url, "_blank");
+      setSendResult({ ok: true, message: "Opened Data Analyzer in a new tab" });
+      setSelectionTarget(null);
       setSelectedVersion(null);
     } catch (err: any) {
-      if (analyzerTab) analyzerTab.close();
       setSendResult({ ok: false, message: err.message || "Send failed" });
     } finally {
       setSending(false);
+      setTransferOverlay(null);
     }
   };
+
+  const handleSendToNormalizer = async () => {
+    if (selectedVersion === null) return;
+    setSending(true);
+    setSendResult(null);
+    setTransferOverlay({ visible: true, destination: "Data Normalizer" });
+
+    try {
+      const res = await fetch("/api/merge/transfer-to-normalizer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, version: selectedVersion }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Transfer failed");
+
+      const normalizerSessionId: string = data.normalizerSessionId || "";
+      localStorage.setItem("datastitcher_apikey", apiKey);
+      const url = `${NORMALIZER_FE}?imported=true&source=stitcher${normalizerSessionId ? `&sessionId=${encodeURIComponent(normalizerSessionId)}` : ""}`;
+      window.open(url, "_blank");
+      setSendResult({ ok: true, message: "Opened Data Normalizer in a new tab" });
+      setSelectionTarget(null);
+      setSelectedVersion(null);
+    } catch (err: any) {
+      setSendResult({ ok: false, message: err.message || "Send failed" });
+    } finally {
+      setSending(false);
+      setTransferOverlay(null);
+    }
+  };
+
+  const handleSend = () => {
+    if (selectionTarget === "analyzer") handleSendToAnalyzer();
+    else if (selectionTarget === "normalizer") handleSendToNormalizer();
+  };
+
+  const cancelSelection = () => {
+    setSelectionTarget(null);
+    setSelectedVersion(null);
+    setSendResult(null);
+  };
+
+  const accentColor = selectionTarget === "normalizer" ? "blue" : "red";
+
+  const accentClasses = {
+    banner: accentColor === "blue"
+      ? "bg-blue-50 dark:bg-blue-950/30 border-b border-blue-200/80 dark:border-blue-800/60"
+      : "bg-red-50 dark:bg-red-950/30 border-b border-red-200/80 dark:border-red-800/60",
+    bannerText: accentColor === "blue"
+      ? "text-blue-700 dark:text-blue-300"
+      : "text-red-700 dark:text-red-300",
+    selectedCard: accentColor === "blue"
+      ? "border-blue-400 dark:border-blue-600 bg-blue-50 dark:bg-blue-950/30 ring-1 ring-blue-300 dark:ring-blue-700 cursor-pointer"
+      : "border-red-400 dark:border-red-600 bg-red-50 dark:bg-red-950/30 ring-1 ring-red-300 dark:ring-red-700 cursor-pointer",
+    hoverCard: accentColor === "blue"
+      ? "border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 hover:border-blue-300 dark:hover:border-blue-700 cursor-pointer"
+      : "border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 hover:border-red-300 dark:hover:border-red-700 cursor-pointer",
+    radio: accentColor === "blue"
+      ? "border-blue-500 bg-blue-500"
+      : "border-red-500 bg-red-500",
+    sendBtn: accentColor === "blue"
+      ? "bg-blue-600 text-white hover:bg-blue-700"
+      : "bg-red-600 text-white hover:bg-red-700",
+  };
+
+  const targetLabel = selectionTarget === "normalizer" ? "Data Normalizer" : "Data Analyzer";
 
   return (
     <motion.aside
@@ -146,6 +210,11 @@ export default function MergeOutputsPanel({
       transition={{ type: "spring", damping: 26, stiffness: 300 }}
       className="w-96 bg-white/95 dark:bg-neutral-900/95 backdrop-blur-xl border-l border-neutral-200/80 dark:border-neutral-700/80 flex flex-col z-10 shrink-0"
     >
+      <TransferOverlay
+        visible={!!transferOverlay?.visible}
+        destinationName={transferOverlay?.destination ?? ""}
+        sourceName="Data Stitcher"
+      />
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-4 border-b border-neutral-200/80 dark:border-neutral-700/80">
         <div className="flex items-center gap-2.5">
@@ -161,13 +230,21 @@ export default function MergeOutputsPanel({
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          {!selectingForAnalyzer && (
+        <div className="flex items-center gap-1.5">
+          {!isSelecting && (
             <>
               <button
-                onClick={() => { setSelectingForAnalyzer(true); setSendResult(null); }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors"
-                title="Send an output to the Spend Analyzer"
+                onClick={() => { setSelectionTarget("normalizer"); setSendResult(null); }}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors"
+                title="Send an output to the Data Normalizer"
+              >
+                <Database className="w-3.5 h-3.5" />
+                Send to Normalizer
+              </button>
+              <button
+                onClick={() => { setSelectionTarget("analyzer"); setSendResult(null); }}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors"
+                title="Send an output to the Data Analyzer"
               >
                 <BarChart3 className="w-3.5 h-3.5" />
                 Send to Analyzer
@@ -175,7 +252,7 @@ export default function MergeOutputsPanel({
               <button
                 onClick={handleDownloadAll}
                 disabled={downloadingAll}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition-colors disabled:opacity-50"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition-colors disabled:opacity-50"
                 title="Download all outputs as ZIP of CSVs"
               >
                 {downloadingAll ? (
@@ -197,10 +274,10 @@ export default function MergeOutputsPanel({
       </div>
 
       {/* Selection mode banner */}
-      {selectingForAnalyzer && (
-        <div className="px-5 py-2.5 bg-red-50 dark:bg-red-950/30 border-b border-red-200/80 dark:border-red-800/60">
-          <p className="text-xs font-medium text-red-700 dark:text-red-300">
-            Select an output to send to the Spend Analyzer
+      {isSelecting && (
+        <div className={`px-5 py-2.5 ${accentClasses.banner}`}>
+          <p className={`text-xs font-medium ${accentClasses.bannerText}`}>
+            Select an output to send to the {targetLabel}
           </p>
         </div>
       )}
@@ -214,6 +291,14 @@ export default function MergeOutputsPanel({
         }`}>
           {sendResult.ok ? <CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> : <AlertCircle className="w-3.5 h-3.5 shrink-0" />}
           <span className="truncate">{sendResult.message}</span>
+          {!sendResult.ok && (
+            <button
+              onClick={handleFallbackDownload}
+              className="ml-1 underline whitespace-nowrap hover:no-underline"
+            >
+              Download instead
+            </button>
+          )}
           <button onClick={() => setSendResult(null)} className="ml-auto p-0.5 rounded hover:bg-black/5 dark:hover:bg-white/5">
             <X className="w-3 h-3" />
           </button>
@@ -225,21 +310,21 @@ export default function MergeOutputsPanel({
         {mergeOutputs.map((output) => (
           <div
             key={output.version}
-            onClick={selectingForAnalyzer ? () => setSelectedVersion(output.version) : undefined}
+            onClick={isSelecting ? () => setSelectedVersion(output.version) : undefined}
             className={`rounded-xl border p-3.5 transition-colors ${
-              selectingForAnalyzer
+              isSelecting
                 ? selectedVersion === output.version
-                  ? "border-red-400 dark:border-red-600 bg-red-50 dark:bg-red-950/30 ring-1 ring-red-300 dark:ring-red-700 cursor-pointer"
-                  : "border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 hover:border-red-300 dark:hover:border-red-700 cursor-pointer"
+                  ? accentClasses.selectedCard
+                  : accentClasses.hoverCard
                 : "border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 hover:border-emerald-300 dark:hover:border-emerald-700"
             }`}
           >
             <div className="flex items-start justify-between gap-2">
               <div className="flex items-start gap-2 min-w-0 flex-1">
-                {selectingForAnalyzer && (
+                {isSelecting && (
                   <span className={`mt-0.5 w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${
                     selectedVersion === output.version
-                      ? "border-red-500 bg-red-500"
+                      ? accentClasses.radio
                       : "border-neutral-300 dark:border-neutral-600"
                   }`}>
                     {selectedVersion === output.version && (
@@ -268,7 +353,7 @@ export default function MergeOutputsPanel({
                   </p>
                 </div>
               </div>
-              {!selectingForAnalyzer && (
+              {!isSelecting && (
                 <div className="flex items-center gap-1 shrink-0">
                   <button
                     onClick={() => handleDownloadCsv(output.version)}
@@ -319,22 +404,24 @@ export default function MergeOutputsPanel({
       </div>
 
       {/* Selection mode footer */}
-      {selectingForAnalyzer && (
+      {isSelecting && (
         <div className="px-5 py-3 border-t border-neutral-200/80 dark:border-neutral-700/80 flex items-center gap-2">
           <button
-            onClick={handleSendToAnalyzer}
+            onClick={handleSend}
             disabled={selectedVersion === null || sending}
-            className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${accentClasses.sendBtn}`}
           >
             {sending ? (
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : selectionTarget === "normalizer" ? (
+              <Database className="w-3.5 h-3.5" />
             ) : (
               <BarChart3 className="w-3.5 h-3.5" />
             )}
             {sending ? "Sending..." : "Send"}
           </button>
           <button
-            onClick={() => { setSelectingForAnalyzer(false); setSelectedVersion(null); setSendResult(null); }}
+            onClick={cancelSelection}
             disabled={sending}
             className="px-4 py-2 rounded-xl text-xs font-medium border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors disabled:opacity-50"
           >

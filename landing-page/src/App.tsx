@@ -14,7 +14,7 @@ const APPS = [
     title: "Data Stitcher",
     description:
       "Consolidate and merge multiple data sources into a unified dataset. Upload, append, normalize headers, clean, and merge — all in one guided pipeline.",
-    url: "http://localhost:3002",
+    url: import.meta.env.VITE_STITCHER_FE ?? "http://localhost:3002",
     icon: Database,
     gradient: "from-red-600 to-rose-600",
     shadowColor: "shadow-red-200/40 dark:shadow-red-900/30",
@@ -27,7 +27,7 @@ const APPS = [
     title: "Data Normalizer",
     description:
       "Normalize supplier names, countries, dates, payment terms, regions, plants, and currencies with AI-powered transformations.",
-    url: "http://localhost:3003",
+    url: import.meta.env.VITE_NORMALIZER_FE ?? "http://localhost:3003",
     icon: Layers,
     gradient: "from-rose-600 to-red-700",
     shadowColor: "shadow-rose-200/40 dark:shadow-rose-900/30",
@@ -40,7 +40,7 @@ const APPS = [
     title: "Spend Analyzer",
     description:
       "Upload procurement data, map columns with AI, and generate interactive spend dashboards with charts, Pareto analysis, and exportable PDF reports.",
-    url: "http://localhost:3004",
+    url: import.meta.env.VITE_ANALYZER_FE ?? "http://localhost:3004",
     icon: BarChart3,
     gradient: "from-amber-600 to-orange-600",
     shadowColor: "shadow-amber-200/40 dark:shadow-amber-900/30",

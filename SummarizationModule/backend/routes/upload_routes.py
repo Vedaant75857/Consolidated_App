@@ -67,6 +67,45 @@ def upload():
         return jsonify({"error": str(exc)}), 500
 
 
+@upload_bp.route("/import", methods=["POST"])
+def import_from_module():
+    """Backend-to-backend import: accept a raw CSV from Module 1 or Module 2.
+    Creates a session, loads the data, and returns sessionId so the frontend
+    can open Module 3 at step 2 (Column Mapping) via ?sessionId=...
+    """
+    try:
+        f = request.files.get("file")
+        if not f:
+            return jsonify({"error": "No file provided"}), 400
+
+        filename = f.filename or "imported.csv"
+        file_data = f.read()
+
+        session_id = str(int(time.time() * 1000)) + hex(random.getrandbits(32))[2:]
+        conn = get_session_db(session_id)
+
+        table_keys, load_warnings = load_single_file(conn, filename, file_data)
+
+        if not table_keys:
+            error_detail = "; ".join(w.get("message", "") for w in load_warnings) if load_warnings else "File could not be parsed"
+            return jsonify({"error": f"Import failed: {error_detail}"}), 400
+
+        columns = collect_column_info(conn, table_keys)
+        inventory = build_inventory(conn)
+
+        set_meta(conn, "table_keys", table_keys)
+        set_meta(conn, "inventory", inventory)
+        set_meta(conn, "columns", columns)
+        set_meta(conn, "step", 2)
+
+        conn.close()
+        return jsonify({"sessionId": session_id})
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(exc)}), 500
+
+
 @upload_bp.route("/session/<session_id>/state", methods=["GET"])
 def get_session_state(session_id: str):
     if not session_exists(session_id):

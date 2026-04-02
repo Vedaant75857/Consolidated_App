@@ -2,11 +2,14 @@ import React, { useState, useCallback, useEffect } from "react";
 import {
   Loader2, ArrowRight, CheckCircle2,
   Download, Sparkles, Building2, Globe, Calendar, DollarSign,
-  MapPin, ClipboardList, Info, AlertTriangle
+  MapPin, ClipboardList, Info, AlertTriangle, BarChart3, AlertCircle, X
 } from "lucide-react";
-import { motion } from "motion/react";
+import { motion, AnimatePresence } from "motion/react";
 import { SurfaceCard, PrimaryButton } from "../common/ui";
+import TransferOverlay from "../common/TransferOverlay";
 import type { LogEntry } from "../module-1/StatusLog";
+
+const ANALYZER_FE = import.meta.env.VITE_ANALYZER_FE ?? "http://localhost:3004";
 
 const OPERATIONS = [
   { id: "supplier_name", label: "Supplier Names", icon: Building2, desc: "Clean & deduplicate supplier names" },
@@ -314,6 +317,54 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
     window.location.href = "/api/download";
   }, [log]);
 
+  // Send to Analyzer state
+  const [showAnalyzerConfirm, setShowAnalyzerConfirm] = useState(false);
+  const [sendingToAnalyzer, setSendingToAnalyzer] = useState(false);
+  const [analyzerSendResult, setAnalyzerSendResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [showTransferOverlay, setShowTransferOverlay] = useState(false);
+
+  const handleSendToAnalyzer = useCallback(async () => {
+    setSendingToAnalyzer(true);
+    setAnalyzerSendResult(null);
+    setShowAnalyzerConfirm(false);
+    setShowTransferOverlay(true);
+
+    try {
+      const res = await fetch("/api/transfer-to-analyzer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Transfer failed");
+
+      const analyzerSessionId: string = data.analyzerSessionId;
+      if (!analyzerSessionId || typeof analyzerSessionId !== "string") {
+        throw new Error("Transfer succeeded but no session ID was returned by the Analyzer.");
+      }
+      localStorage.setItem("summarizer_api_key", apiKey);
+      const url = `${ANALYZER_FE}?sessionId=${encodeURIComponent(analyzerSessionId)}&source=normalizer`;
+      window.open(url, "_blank");
+      setAnalyzerSendResult({ ok: true, message: "Opened Data Analyzer in a new tab" });
+      log("success", "Data sent to Data Analyzer successfully.");
+    } catch (err: any) {
+      setAnalyzerSendResult({ ok: false, message: err.message || "Send failed" });
+      log("error", "Failed to send to Data Analyzer: " + (err.message || "Unknown error"));
+    } finally {
+      setSendingToAnalyzer(false);
+      setShowTransferOverlay(false);
+    }
+  }, [apiKey, log]);
+
+  /* ── Transfer overlay (shows during Module 2 → Module 3 transfer) ── */
+  const transferOverlayEl = (
+    <TransferOverlay
+      visible={showTransferOverlay}
+      destinationName="Spend Analyzer"
+      sourceName="Data Normalizer"
+    />
+  );
+
   /* ── Render based on activeTab from sidebar ── */
 
   // If a specific operation tab is selected from the sidebar, show just that one
@@ -321,24 +372,100 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
 
   if (activeTab === "download") {
     return (
-      <SurfaceCard title="Download Normalized Data" subtitle="Export your cleaned and standardized dataset" icon={Download}>
-        <div className="space-y-4">
-          <p className="text-sm text-neutral-600 dark:text-neutral-400">
-            Download your fully normalized dataset as an Excel file. All completed normalizations will be included.
-          </p>
-          <div className="flex items-center gap-3">
-            <PrimaryButton onClick={handleDownload} disabled={loading || activeOp !== null}>
-              <Download className="w-4 h-4 mr-2" />
-              Download Excel
-            </PrimaryButton>
-            {completedOps.size > 0 && (
-              <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">
-                {completedOps.size} / {OPERATIONS.length} normalizations complete
-              </span>
+      <>{transferOverlayEl}
+      <div className="space-y-4">
+        <SurfaceCard title="Download Normalized Data" subtitle="Export your cleaned and standardized dataset" icon={Download}>
+          <div className="space-y-4">
+            <p className="text-sm text-neutral-600 dark:text-neutral-400">
+              Download your fully normalized dataset as an Excel file. All completed normalizations will be included.
+            </p>
+            <div className="flex items-center gap-3">
+              <PrimaryButton onClick={handleDownload} disabled={loading || activeOp !== null}>
+                <Download className="w-4 h-4 mr-2" />
+                Download Excel
+              </PrimaryButton>
+              {completedOps.size > 0 && (
+                <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+                  {completedOps.size} / {OPERATIONS.length} normalizations complete
+                </span>
+              )}
+            </div>
+          </div>
+        </SurfaceCard>
+
+        <SurfaceCard title="Send to Data Analyzer" subtitle="Transfer your normalized data to the Summarization Module" icon={BarChart3}>
+          <div className="space-y-4">
+            <p className="text-sm text-neutral-600 dark:text-neutral-400">
+              Send the current normalized dataset directly to the Data Analyzer for procurement analysis, views, and email generation.
+            </p>
+
+            {/* Confirmation / action area */}
+            <AnimatePresence mode="wait">
+              {showAnalyzerConfirm ? (
+                <motion.div
+                  key="confirm"
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -4 }}
+                  className="flex items-center gap-3 p-3 rounded-xl bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800"
+                >
+                  <p className="text-sm font-medium text-red-700 dark:text-red-300 flex-1">
+                    Send normalized data to Data Analyzer?
+                  </p>
+                  <button
+                    onClick={handleSendToAnalyzer}
+                    disabled={sendingToAnalyzer}
+                    className="px-4 py-1.5 rounded-lg text-xs font-semibold bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50"
+                  >
+                    {sendingToAnalyzer ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Send"}
+                  </button>
+                  <button
+                    onClick={() => setShowAnalyzerConfirm(false)}
+                    disabled={sendingToAnalyzer}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                </motion.div>
+              ) : (
+                <motion.div key="button" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                  <PrimaryButton
+                    onClick={() => { setShowAnalyzerConfirm(true); setAnalyzerSendResult(null); }}
+                    disabled={sendingToAnalyzer}
+                  >
+                    {sendingToAnalyzer ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <BarChart3 className="w-4 h-4 mr-2" />}
+                    {sendingToAnalyzer ? "Sending..." : "Send to Analyzer"}
+                  </PrimaryButton>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Result feedback */}
+            {analyzerSendResult && (
+              <div className={`flex items-center gap-2 p-3 rounded-xl text-sm font-medium ${
+                analyzerSendResult.ok
+                  ? "bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300"
+                  : "bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300"
+              }`}>
+                {analyzerSendResult.ok ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+                <span className="flex-1">{analyzerSendResult.message}</span>
+                {!analyzerSendResult.ok && (
+                  <button
+                    onClick={handleDownload}
+                    className="underline text-xs whitespace-nowrap hover:no-underline"
+                  >
+                    Download instead
+                  </button>
+                )}
+                <button onClick={() => setAnalyzerSendResult(null)} className="p-0.5 rounded hover:bg-black/5 dark:hover:bg-white/5">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
             )}
           </div>
-        </div>
-      </SurfaceCard>
+        </SurfaceCard>
+      </div>
+      </>
     );
   }
 
@@ -374,6 +501,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       })
     );
     return (
+      <>{transferOverlayEl}
       <SurfaceCard
         title={singleOp.label}
         subtitle={singleOp.desc}
@@ -536,6 +664,14 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                       <Download className="w-4 h-4 mr-2" />
                       Download Excel
                     </PrimaryButton>
+                    <button
+                      onClick={handleSendToAnalyzer}
+                      disabled={sendingToAnalyzer}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors disabled:opacity-50"
+                    >
+                      {sendingToAnalyzer ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <BarChart3 className="w-3.5 h-3.5" />}
+                      Send to Analyzer
+                    </button>
                   </div>
                 </div>
               )}
@@ -754,11 +890,19 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                       )}
                     </div>
                   )}
-                  <div className="pt-3 mt-2 border-t border-emerald-200 dark:border-emerald-800">
+                  <div className="pt-3 mt-2 border-t border-emerald-200 dark:border-emerald-800 flex items-center gap-3">
                     <PrimaryButton onClick={handleDownload}>
                       <Download className="w-4 h-4 mr-2" />
                       Download Excel
                     </PrimaryButton>
+                    <button
+                      onClick={handleSendToAnalyzer}
+                      disabled={sendingToAnalyzer}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors disabled:opacity-50"
+                    >
+                      {sendingToAnalyzer ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <BarChart3 className="w-3.5 h-3.5" />}
+                      Send to Analyzer
+                    </button>
                   </div>
                 </div>
               )}
@@ -775,10 +919,20 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                 {opResults[singleOp.id]}
               </div>
               {!opResults[singleOp.id].startsWith("Error") && (
-                <PrimaryButton onClick={handleDownload}>
-                  <Download className="w-4 h-4 mr-2" />
-                  Download Excel
-                </PrimaryButton>
+                <div className="flex items-center gap-3">
+                  <PrimaryButton onClick={handleDownload}>
+                    <Download className="w-4 h-4 mr-2" />
+                    Download Excel
+                  </PrimaryButton>
+                  <button
+                    onClick={handleSendToAnalyzer}
+                    disabled={sendingToAnalyzer}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors disabled:opacity-50"
+                  >
+                    {sendingToAnalyzer ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <BarChart3 className="w-3.5 h-3.5" />}
+                    Send to Analyzer
+                  </button>
+                </div>
               )}
             </div>
           )}
@@ -850,11 +1004,13 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
           )}
         </div>
       </SurfaceCard>
+      </>
     );
   }
 
   /* ── Default: Download view (fallback) ── */
   return (
+    <>{transferOverlayEl}
     <div className="space-y-6">
       <SurfaceCard title="Download Normalized Data" subtitle="Export your cleaned and standardized dataset" icon={Download}>
         <div className="space-y-4">
@@ -867,5 +1023,6 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
         </div>
       </SurfaceCard>
     </div>
+    </>
   );
 }
