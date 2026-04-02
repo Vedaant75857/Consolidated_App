@@ -28,7 +28,7 @@ Your task is to write a professional, concise data-quality assessment in
 ### Directional rules (use as guidance, not rigid thresholds — weigh all
 metrics holistically and exercise professional judgement):
 
-- **Row count > 250 000** → Creatives is recommended regardless of other
+- **Row count > 400 000** → Creatives is recommended regardless of other
   metrics (highest-priority signal).
 - **B∩D (single-word AND ≤10 chars) < 50 %** → descriptions are generally
   of good quality; an L3/L4-granularity spend cube is feasible.  Also

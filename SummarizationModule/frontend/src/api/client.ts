@@ -10,6 +10,7 @@ import type {
   ViewResult,
   EmailContext,
   ProcurementViewAvailability,
+  ExecSummaryRow,
 } from "../types";
 
 const BASE = "/api";
@@ -193,6 +194,10 @@ export function cleanupSession(sessionId: string) {
   }
 }
 
+export async function fetchExecutiveSummary(sessionId: string) {
+  return post<{ rows: ExecSummaryRow[] }>("/executive-summary", { sessionId });
+}
+
 export async function exportCsv(sessionId: string, viewId: string) {
   const res = await fetch(`${BASE}/export/csv/${viewId}`, {
     method: "POST",
@@ -200,18 +205,5 @@ export async function exportCsv(sessionId: string, viewId: string) {
     body: JSON.stringify({ sessionId }),
   });
   if (!res.ok) throw new Error("CSV export failed");
-  return res.blob();
-}
-
-export async function exportPdf(
-  sessionId: string,
-  chartImages: Record<string, string>
-) {
-  const res = await fetch(`${BASE}/export/pdf`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId, chartImages }),
-  });
-  if (!res.ok) throw new Error("PDF export failed");
   return res.blob();
 }

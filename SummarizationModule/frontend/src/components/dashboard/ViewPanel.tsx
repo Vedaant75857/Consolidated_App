@@ -1,7 +1,6 @@
 import { useRef, useState, useEffect } from "react";
 import {
   Download,
-  Image as ImageIcon,
   ChevronLeft,
   ChevronRight,
   ChevronDown,
@@ -9,7 +8,6 @@ import {
   Loader2,
   Table2,
 } from "lucide-react";
-import html2canvas from "html2canvas";
 import type { ViewResult, ViewConfig, MekkoData } from "../../types";
 import AISummary from "./AISummary";
 import DataTable from "./DataTable";
@@ -22,7 +20,6 @@ import MekkoChart from "./charts/MekkoChart";
 interface Props {
   view: ViewResult;
   onExportCsv: () => void;
-  chartRef?: (viewId: string, ref: HTMLDivElement | null) => void;
   onRecomputeView?: (viewId: string, config: ViewConfig) => Promise<ViewResult>;
 }
 
@@ -48,7 +45,7 @@ function useDebounce<T>(value: T, delay: number): T {
   return debounced;
 }
 
-export default function ViewPanel({ view, onExportCsv, chartRef, onRecomputeView }: Props) {
+export default function ViewPanel({ view, onExportCsv, onRecomputeView }: Props) {
   const chartDivRef = useRef<HTMLDivElement>(null);
   const [summaryExpanded, setSummaryExpanded] = useState(true);
   const [tableExpanded, setTableExpanded] = useState(false);
@@ -88,21 +85,6 @@ export default function ViewPanel({ view, onExportCsv, chartRef, onRecomputeView
   useEffect(() => {
     if (view.threshold != null) setParetoThreshold(view.threshold);
   }, [view.threshold]);
-
-  const handlePng = async () => {
-    if (!chartDivRef.current) return;
-    const canvas = await html2canvas(chartDivRef.current, { backgroundColor: "#ffffff" });
-    const url = canvas.toDataURL("image/png");
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${view.viewId}.png`;
-    a.click();
-  };
-
-  const setRef = (el: HTMLDivElement | null) => {
-    (chartDivRef as any).current = el;
-    chartRef?.(view.viewId, el);
-  };
 
   const tableRows = getTableRows(view);
 
@@ -168,20 +150,12 @@ export default function ViewPanel({ view, onExportCsv, chartRef, onRecomputeView
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-100 dark:border-neutral-800">
         <h3 className="font-semibold text-neutral-900 dark:text-neutral-100">{view.title}</h3>
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={onExportCsv}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
-          >
-            <Download className="w-3 h-3" /> CSV
-          </button>
-          <button
-            onClick={handlePng}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
-          >
-            <ImageIcon className="w-3 h-3" /> PNG
-          </button>
-        </div>
+        <button
+          onClick={onExportCsv}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
+        >
+          <Download className="w-3 h-3" /> CSV
+        </button>
       </div>
 
       {/* Controls bar for interactive views */}
@@ -283,7 +257,7 @@ export default function ViewPanel({ view, onExportCsv, chartRef, onRecomputeView
 
         {/* Chart + table area */}
         <div className="flex-1 min-w-0 p-4 space-y-4">
-          <div ref={setRef} className="bg-white dark:bg-neutral-900 rounded-lg relative">
+          <div ref={chartDivRef} className="bg-white dark:bg-neutral-900 rounded-lg relative">
             {recomputing && (
               <div className="absolute inset-0 bg-white/60 dark:bg-neutral-900/60 flex items-center justify-center z-10 rounded-lg">
                 <Loader2 className="w-6 h-6 text-primary animate-spin" />

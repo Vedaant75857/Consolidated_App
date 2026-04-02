@@ -35,7 +35,6 @@ import {
   generateEmail,
   cleanupSession,
   exportCsv,
-  exportPdf,
   deleteTable,
   setHeaderRow,
   deleteRows,
@@ -377,19 +376,6 @@ export default function App() {
     [sessionId]
   );
 
-  const handleExportPdf = useCallback(
-    async (chartImages: Record<string, string>) => {
-      if (!sessionId) return;
-      try {
-        const blob = await exportPdf(sessionId, chartImages);
-        downloadBlob(blob, "procurement_analysis.pdf");
-      } catch (err: any) {
-        setError(err.message || "PDF export failed");
-      }
-    },
-    [sessionId]
-  );
-
   /* ──── Procurement views (step 5 -> 6) ──── */
 
   const handleViewProcurementFeasibility = useCallback(() => {
@@ -685,7 +671,6 @@ export default function App() {
                         views={viewResults}
                         sessionId={sessionId}
                         onExportCsv={handleExportCsv}
-                        onExportPdf={handleExportPdf}
                         onRecomputeView={handleRecomputeView}
                         onViewProcurementFeasibility={handleViewProcurementFeasibility}
                       />
