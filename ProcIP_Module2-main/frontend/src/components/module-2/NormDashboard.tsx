@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect } from "react";
 import {
   Loader2, ArrowRight, CheckCircle2,
   Download, Sparkles, Building2, Globe, Calendar, DollarSign,
-  MapPin, ClipboardList, CheckSquare, Square
+  MapPin, ClipboardList, Info, AlertTriangle
 } from "lucide-react";
 import { motion } from "motion/react";
 import { SurfaceCard, PrimaryButton } from "../common/ui";
@@ -12,11 +12,48 @@ const OPERATIONS = [
   { id: "supplier_name", label: "Supplier Names", icon: Building2, desc: "Clean & deduplicate supplier names" },
   { id: "supplier_country", label: "Supplier Country", icon: Globe, desc: "Standardize country names" },
   { id: "date", label: "Dates", icon: Calendar, desc: "Normalize date formats" },
+  { id: "currency_conversion", label: "Currency Conversion", icon: DollarSign, desc: "Convert local spend to USD" },
   { id: "payment_terms", label: "Payment Terms", icon: ClipboardList, desc: "Extract numeric payment terms" },
   { id: "region", label: "Regions", icon: MapPin, desc: "Classify into NA/EMEA/APAC/LATAM" },
   { id: "plant", label: "Plant/Site", icon: Building2, desc: "Standardize plant codes & names" },
-  { id: "currency_conversion", label: "Currency Conversion", icon: DollarSign, desc: "Convert local spend to USD" },
 ];
+
+interface PopulationInfo {
+  n_populated: number;
+  n_total: number;
+  pct_populated: number;
+  warn: boolean;
+}
+interface UnsupportedCurrency {
+  code: string;
+  row_count: number;
+}
+interface AssessResult {
+  needs_confirmation: boolean;
+  warnings: string[];
+  population: PopulationInfo | null;
+  unsupported_currencies: UnsupportedCurrency[];
+}
+interface ConversionMetrics {
+  spend_col: string;
+  status_col: string;
+  n_converted: number;
+  n_fallback: number;
+  n_currency_missing: number;
+  n_unsupported: number;
+  n_spend_invalid: number;
+  n_date_unparseable: number;
+  unsupported: string[];
+}
+
+interface CountryNormMetrics {
+  n_total: number;
+  n_empty: number;
+  n_normalized: number;
+  n_deterministic: number;
+  n_ai: number;
+  n_unresolved: number;
+}
 
 interface NormDashboardProps {
   apiKey: string;
@@ -25,7 +62,7 @@ interface NormDashboardProps {
   addLog?: (stepName: string, type: LogEntry["type"], message: string) => void;
 }
 
-export default function NormDashboard({ apiKey, activeTab = "pipeline", setActiveTab, addLog }: NormDashboardProps) {
+export default function NormDashboard({ apiKey, activeTab = "supplier_name", setActiveTab, addLog }: NormDashboardProps) {
   const [completedOps, setCompletedOps] = useState<Set<string>>(new Set());
   const [activeOp, setActiveOp] = useState<string | null>(null);
   const [opResults, setOpResults] = useState<Record<string, string>>({});
@@ -33,23 +70,92 @@ export default function NormDashboard({ apiKey, activeTab = "pipeline", setActiv
   const [operationPreview, setOperationPreview] = useState<{ columns: string[]; rows: any[] }>({ columns: [], rows: [] });
   const [operationPreviewLoading, setOperationPreviewLoading] = useState(false);
   const [operationPreviewError, setOperationPreviewError] = useState<string | null>(null);
-  const [selectedPipeline, setSelectedPipeline] = useState<Set<string>>(
-    new Set(OPERATIONS.map(op => op.id))
-  );
+  const [dateFormat, setDateFormat] = useState("%d-%m-%Y");
+  const [currencySpendColumn, setCurrencySpendColumn] = useState("");
+  const [currencyCodeColumn, setCurrencyCodeColumn] = useState("");
+  const [currencyDateColumn, setCurrencyDateColumn] = useState("No date col");
+  const [scopeYear, setScopeYear] = useState("2024");
+
+  // Supplier country assess state
+  const [supplierCountryColumn, setSupplierCountryColumn] = useState("");
+  const [scAssessLoading, setScAssessLoading] = useState(false);
+  const [scAssessResult, setScAssessResult] = useState<{ population: PopulationInfo | null } | null>(null);
+  const [scAssessError, setScAssessError] = useState<string | null>(null);
+  const [countryNormMetrics, setCountryNormMetrics] = useState<CountryNormMetrics | null>(null);
+
+  // Currency conversion assess state
+  const [assessLoading, setAssessLoading] = useState(false);
+  const [assessResult, setAssessResult] = useState<AssessResult | null>(null);
+  const [assessError, setAssessError] = useState<string | null>(null);
+  const [fxOverrides, setFxOverrides] = useState<Record<string, string>>({});
+  const [conversionMetrics, setConversionMetrics] = useState<ConversionMetrics | null>(null);
+
+  // Smart column auto-selection: call backend scoring endpoint when columns load.
+  // Uses functional state updates so the effect only depends on operationPreview.columns,
+  // avoiding stale-closure issues and preventing re-runs on every user dropdown change.
+  useEffect(() => {
+    const cols = operationPreview.columns;
+    if (!cols.length) return;
+
+    const apply = async () => {
+      try {
+        const res = await fetch("/api/suggest-columns");
+        if (!res.ok) throw new Error("suggest-columns failed");
+        const s = await res.json();
+
+        setCurrencyCodeColumn(prev => {
+          if (prev && cols.includes(prev)) return prev; // keep valid user selection
+          return s.currency_col && cols.includes(s.currency_col) ? s.currency_col : "";
+        });
+
+        setCurrencySpendColumn(prev => {
+          if (prev && cols.includes(prev)) return prev;
+          return s.spend_col && cols.includes(s.spend_col) ? s.spend_col : "";
+        });
+
+        setCurrencyDateColumn(prev => {
+          if (prev === "No date col" || (prev && cols.includes(prev))) return prev;
+          if (s.date_col && cols.includes(s.date_col)) return s.date_col;
+          return "No date col";
+        });
+
+        // Auto-detect supplier country column (client-side keyword match)
+        setSupplierCountryColumn(prev => {
+          if (prev && cols.includes(prev)) return prev;
+          return cols.find(c => /(supplier.?country|vendor.?country|^country$)/i.test(c)) ?? "";
+        });
+      } catch {
+        // Fallback: replicate previous header-only logic so the UI is never left blank
+        // if the backend is unavailable or /api/suggest-columns returns an error.
+        setSupplierCountryColumn(prev => {
+          if (prev && cols.includes(prev)) return prev;
+          return cols.find(c => /(supplier.?country|vendor.?country|^country$)/i.test(c)) ?? "";
+        });
+        setCurrencyCodeColumn(prev => {
+          if (prev && cols.includes(prev)) return prev;
+          return cols.find(c => /(currency|curr|ccy)/i.test(c)) ?? "";
+        });
+        setCurrencySpendColumn(prev => {
+          if (prev && cols.includes(prev)) return prev;
+          return cols.find(c => /(spend|amount|cost|price|total|value|charge|fee|payment|invoice)/i.test(c)) ?? "";
+        });
+        setCurrencyDateColumn(prev => {
+          if (prev === "No date col" || (prev && cols.includes(prev))) return prev;
+          const fallback = cols.find(c =>
+            (c.toLowerCase().includes("date") || c.toLowerCase().includes("dob") || c.toLowerCase().includes("time"))
+            && !c.startsWith("Norm_Date_")
+          );
+          return fallback ?? "No date col";
+        });
+      }
+    };
+
+    apply();
+  }, [operationPreview.columns]);
 
   const log = useCallback((type: LogEntry["type"], message: string) => {
     addLog?.("NORMALIZE", type, message);
   }, [addLog]);
-
-  const togglePipelineSelect = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setSelectedPipeline(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
 
   const fetchOperationPreview = useCallback(async () => {
     setOperationPreviewLoading(true);
@@ -70,20 +176,54 @@ export default function NormDashboard({ apiKey, activeTab = "pipeline", setActiv
   }, []);
 
   const handleRunOperation = useCallback(async (agentId: string) => {
+    if (agentId === "currency_conversion") {
+      if (!currencySpendColumn || !currencyCodeColumn) {
+        log("error", "Select both a currency column and a spend column before running Currency Conversion.");
+        return;
+      }
+    }
     setActiveOp(agentId);
     const opLabel = OPERATIONS.find(o => o.id === agentId)?.label || agentId;
     log("info", "Running " + opLabel + "…");
+
+    const agentKwargs: any = {};
+    if (agentId === "supplier_country" && supplierCountryColumn) {
+      agentKwargs.country_col = supplierCountryColumn;
+    }
+    if (agentId === "date") {
+      agentKwargs.user_format = dateFormat;
+    }
+    if (agentId === "currency_conversion") {
+      agentKwargs.spend_cols = [currencySpendColumn];
+      agentKwargs.currency_col = currencyCodeColumn;
+      agentKwargs.date_col = currencyDateColumn;
+      agentKwargs.scope_year = scopeYear;
+      agentKwargs.target_currency = "USD";
+      const parsedOverrides: Record<string, number> = {};
+      Object.entries(fxOverrides).forEach(([ccy, val]) => {
+        const n = parseFloat(val);
+        if (!isNaN(n) && n > 0) parsedOverrides[ccy] = n;
+      });
+      agentKwargs.fx_overrides = parsedOverrides;
+    }
+
     try {
       const res = await fetch("/api/run-normalization", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agent_id: agentId, kwargs: {}, apiKey }),
+        body: JSON.stringify({ agent_id: agentId, kwargs: agentKwargs, apiKey }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
 
       setOpResults(prev => ({ ...prev, [agentId]: data.message }));
       setCompletedOps(prev => new Set([...prev, agentId]));
+      if (data.conversion_metrics?.length > 0) {
+        setConversionMetrics(data.conversion_metrics[0]);
+      }
+      if (data.country_norm_metrics) {
+        setCountryNormMetrics(data.country_norm_metrics);
+      }
       await fetchOperationPreview();
       log("success", opLabel + ": " + data.message);
     } catch (err: any) {
@@ -92,54 +232,80 @@ export default function NormDashboard({ apiKey, activeTab = "pipeline", setActiv
     } finally {
       setActiveOp(null);
     }
-  }, [apiKey, fetchOperationPreview, log]);
+  }, [apiKey, fetchOperationPreview, log, supplierCountryColumn, dateFormat, currencySpendColumn, currencyCodeColumn, currencyDateColumn, scopeYear, fxOverrides]);
 
-  const handleRunPipeline = useCallback(async () => {
-    if (selectedPipeline.size === 0) return;
-    setLoading(true);
-    const agentIds = Array.from(selectedPipeline);
-    log("info", "Running pipeline with " + agentIds.length + " agents…");
+  const handleAssess = useCallback(async () => {
+    if (!currencyCodeColumn) {
+      setAssessError("Select a currency column first.");
+      return;
+    }
+    setAssessLoading(true);
+    setAssessResult(null);
+    setAssessError(null);
+    setConversionMetrics(null);
+    setFxOverrides({});
     try {
-      const res = await fetch("/api/run-pipeline", {
+      const res = await fetch("/api/assess-currency-conversion", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agent_ids: agentIds, kwargs: {}, apiKey }),
+        body: JSON.stringify({
+          kwargs: {
+            currency_col: currencyCodeColumn,
+            spend_col: currencySpendColumn || undefined,
+            date_col: currencyDateColumn !== "No date col" ? currencyDateColumn : undefined,
+          },
+        }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-
-      data.results?.forEach((resItem: any) => {
-        if (resItem.message) {
-          setOpResults(prev => ({ ...prev, [resItem.agent]: resItem.message }));
-          setCompletedOps(prev => new Set([...prev, resItem.agent]));
-          log("success", resItem.agent + ": " + resItem.message);
-        } else if (resItem.error) {
-          setOpResults(prev => ({ ...prev, [resItem.agent]: "Error: " + resItem.error }));
-          log("error", resItem.agent + ": " + resItem.error);
-        }
+      if (!res.ok) throw new Error(data.error || "Assessment failed");
+      setAssessResult(data as AssessResult);
+      const initialOverrides: Record<string, string> = {};
+      (data.unsupported_currencies || []).forEach((u: UnsupportedCurrency) => {
+        initialOverrides[u.code] = "";
       });
-      if (data.results?.some((resItem: any) => resItem.message)) {
-        await fetchOperationPreview();
-      }
-      log("success", "Pipeline complete.");
+      setFxOverrides(initialOverrides);
     } catch (err: any) {
-      log("error", "Pipeline error: " + err.message);
+      setAssessError(err.message || "Assessment failed");
     } finally {
-      setLoading(false);
+      setAssessLoading(false);
     }
-  }, [selectedPipeline, apiKey, fetchOperationPreview, log]);
+  }, [currencyCodeColumn, currencySpendColumn, currencyDateColumn]);
+
+  const handleAssessSupplierCountry = useCallback(async () => {
+    if (!supplierCountryColumn) {
+      setScAssessError("Select a supplier country column first.");
+      return;
+    }
+    setScAssessLoading(true);
+    setScAssessResult(null);
+    setScAssessError(null);
+    setCountryNormMetrics(null);
+    try {
+      const res = await fetch("/api/assess-supplier-country", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kwargs: { country_col: supplierCountryColumn } }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Assessment failed");
+      setScAssessResult(data);
+    } catch (err: any) {
+      setScAssessError(err.message || "Assessment failed");
+    } finally {
+      setScAssessLoading(false);
+    }
+  }, [supplierCountryColumn]);
 
   useEffect(() => {
     if (
       activeTab !== "pipeline" &&
       activeTab !== "download" &&
-      completedOps.has(activeTab) &&
       operationPreview.columns.length === 0 &&
       !operationPreviewLoading
     ) {
       fetchOperationPreview();
     }
-  }, [activeTab, completedOps, operationPreview.columns.length, operationPreviewLoading, fetchOperationPreview]);
+  }, [activeTab, operationPreview.columns.length, operationPreviewLoading, fetchOperationPreview]);
 
   const handleDownload = useCallback(() => {
     log("info", "Downloading normalised data…");
@@ -199,7 +365,7 @@ export default function NormDashboard({ apiKey, activeTab = "pipeline", setActiv
           case "plant":
             return col.startsWith("Norm_Plant_");
           case "currency_conversion":
-            return col.startsWith("SPEND AMOUNT CONVERTED_");
+            return col.includes("FX_rate_used_") || col.includes("_converted_inUSD") || col.includes("_conversion_status");
           default:
             return false;
         }
@@ -212,27 +378,392 @@ export default function NormDashboard({ apiKey, activeTab = "pipeline", setActiv
         icon={Icon}
       >
         <div className="space-y-4">
-          <div className="flex items-center gap-3">
-            <PrimaryButton
-              onClick={() => handleRunOperation(singleOp.id)}
-              disabled={isRunning || loading}
-            >
-              {isRunning ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ArrowRight className="w-4 h-4 mr-2" />}
-              {isRunning ? "Running…" : isCompleted ? "Re-run" : "Run"} {singleOp.label}
-            </PrimaryButton>
-            {isCompleted && (
-              <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
-                <CheckCircle2 className="w-3.5 h-3.5" /> Completed
-              </span>
-            )}
-          </div>
-          {opResults[singleOp.id] && (
-            <div className={`rounded-xl p-3 text-sm ${
-              opResults[singleOp.id].startsWith("Error")
-                ? "bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-400 border border-red-100 dark:border-red-900/50"
-                : "bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-900/50"
-            }`}>
-              {opResults[singleOp.id]}
+          {/* Generic Run button — hidden for currency_conversion and supplier_country which use Assess flow */}
+          {singleOp.id !== "currency_conversion" && singleOp.id !== "supplier_country" && (
+            <div className="flex items-center gap-3">
+              <PrimaryButton
+                onClick={() => handleRunOperation(singleOp.id)}
+                disabled={isRunning || loading}
+              >
+                {isRunning ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ArrowRight className="w-4 h-4 mr-2" />}
+                {isRunning ? "Running…" : isCompleted ? "Re-run" : "Run"} {singleOp.label}
+              </PrimaryButton>
+              {isCompleted && (
+                <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
+                  <CheckCircle2 className="w-3.5 h-3.5" /> Completed
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Date format selector — shown only for the date agent */}
+          {singleOp.id === "date" && (
+            <div className="flex items-center gap-3 p-3 rounded-xl bg-neutral-50 dark:bg-neutral-800/60 border border-neutral-200 dark:border-neutral-700">
+              <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300 whitespace-nowrap">Target format</label>
+              <select
+                value={dateFormat}
+                onChange={(e) => setDateFormat(e.target.value)}
+                disabled={isRunning || loading}
+                className="text-sm rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-red-500/40"
+              >
+                <option value="%d-%m-%Y">dd-mm-yyyy</option>
+                <option value="%m-%d-%Y">mm-dd-yyyy</option>
+              </select>
+            </div>
+          )}
+
+          {/* Supplier Country — Assess-first workflow */}
+          {singleOp.id === "supplier_country" && (
+            <div className="space-y-4">
+              {/* Column selection */}
+              <div className="flex flex-col gap-3 p-4 rounded-xl bg-neutral-50 dark:bg-neutral-800/60 border border-neutral-200 dark:border-neutral-700">
+                <div className="flex-1 space-y-1">
+                  <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Supplier Country Column <span className="text-red-500">*</span></label>
+                  <select
+                    value={supplierCountryColumn}
+                    onChange={(e) => { setSupplierCountryColumn(e.target.value); setScAssessResult(null); setScAssessError(null); }}
+                    disabled={isRunning || loading}
+                    className="w-full text-sm rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-red-500/40"
+                  >
+                    <option value="" disabled>Select Column</option>
+                    {operationPreview.columns.map(col => (
+                      <option key={col} value={col}>{col}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Assess button */}
+              <div className="flex items-center gap-3">
+                <PrimaryButton onClick={handleAssessSupplierCountry} disabled={scAssessLoading || isRunning || loading}>
+                  {scAssessLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Sparkles className="w-4 h-4 mr-2" />}
+                  {scAssessLoading ? "Assessing…" : "Assess"}
+                </PrimaryButton>
+                {isCompleted && (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Completed
+                  </span>
+                )}
+              </div>
+
+              {/* Assess error */}
+              {scAssessError && (
+                <div className="flex gap-3 p-3 rounded-xl bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800">
+                  <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0 text-red-500 dark:text-red-400" />
+                  <p className="text-xs text-red-700 dark:text-red-300">{scAssessError}</p>
+                </div>
+              )}
+
+              {/* Assessment panel */}
+              {scAssessResult && scAssessResult.population && (
+                <div className="rounded-xl border border-neutral-200 dark:border-neutral-700 p-4 space-y-4 bg-neutral-50 dark:bg-neutral-800/60">
+                  {/* Population */}
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <span className="font-medium text-neutral-700 dark:text-neutral-300">Country column population:</span>
+                    <span className={`font-semibold ${scAssessResult.population.warn ? "text-amber-600" : "text-emerald-600"}`}>
+                      {scAssessResult.population.pct_populated}%
+                    </span>
+                    <span className="text-neutral-500">
+                      ({scAssessResult.population.n_populated} / {scAssessResult.population.n_total} rows populated)
+                    </span>
+                    {scAssessResult.population.warn && (
+                      <span className="text-xs text-amber-600 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 px-2 py-0.5 rounded-full">
+                        Below 60% threshold
+                      </span>
+                    )}
+                  </div>
+
+                  {!scAssessResult.population.warn && (
+                    <div className="flex gap-3 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800">
+                      <CheckCircle2 className="w-4 h-4 mt-0.5 flex-shrink-0 text-emerald-500 dark:text-emerald-400" />
+                      <p className="text-sm text-emerald-700 dark:text-emerald-300">Column is well populated. Ready to normalize.</p>
+                    </div>
+                  )}
+
+                  {/* Confirm & Run */}
+                  <PrimaryButton
+                    onClick={() => handleRunOperation(singleOp.id)}
+                    disabled={isRunning || loading}
+                  >
+                    {isRunning ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ArrowRight className="w-4 h-4 mr-2" />}
+                    {isRunning ? "Normalizing…" : "Confirm & Run"}
+                  </PrimaryButton>
+                </div>
+              )}
+
+              {/* Post-normalization summary */}
+              {countryNormMetrics && (
+                <div className="rounded-xl border border-emerald-200 dark:border-emerald-800 p-4 bg-emerald-50 dark:bg-emerald-950/20 space-y-1 text-sm">
+                  <p className="font-semibold text-emerald-800 dark:text-emerald-300 mb-2">Normalization Summary</p>
+                  <p className="text-emerald-700 dark:text-emerald-400">
+                    Total rows normalized: <strong>{countryNormMetrics.n_normalized}</strong> / {countryNormMetrics.n_total}
+                  </p>
+                  <p className="text-emerald-700 dark:text-emerald-400">
+                    Rows via direct ISO lookup: <strong>{countryNormMetrics.n_deterministic}</strong>
+                  </p>
+                  <p className="text-emerald-700 dark:text-emerald-400">
+                    Rows normalized via AI: <strong>{countryNormMetrics.n_ai}</strong>
+                  </p>
+                  {(countryNormMetrics.n_empty + countryNormMetrics.n_unresolved) > 0 && (
+                    <div className="mt-2 space-y-0.5 text-neutral-600 dark:text-neutral-400">
+                      <p className="font-medium">Rows not normalized:</p>
+                      {countryNormMetrics.n_empty > 0 && (
+                        <p className="ml-3">• Missing or empty values: {countryNormMetrics.n_empty}</p>
+                      )}
+                      {countryNormMetrics.n_unresolved > 0 && (
+                        <p className="ml-3">• Unrecognized country values: {countryNormMetrics.n_unresolved}</p>
+                      )}
+                    </div>
+                  )}
+                  <div className="pt-3 mt-2 border-t border-emerald-200 dark:border-emerald-800">
+                    <PrimaryButton onClick={handleDownload}>
+                      <Download className="w-4 h-4 mr-2" />
+                      Download Excel
+                    </PrimaryButton>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Currency Conversion — Assess-first workflow */}
+          {singleOp.id === "currency_conversion" && (
+            <div className="space-y-4">
+              {/* Recommendation callout */}
+              <div className="flex gap-3 p-3 rounded-xl bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 text-sm text-blue-700 dark:text-blue-300">
+                <Info className="w-4 h-4 mt-0.5 flex-shrink-0 text-blue-500 dark:text-blue-400" />
+                <p>We recommend applying the <strong>Date Normalization</strong> step before currency conversion, as standardized date formats improve FX rate mapping accuracy.</p>
+              </div>
+
+              {/* Column selection */}
+              <div className="flex flex-col gap-3 p-4 rounded-xl bg-neutral-50 dark:bg-neutral-800/60 border border-neutral-200 dark:border-neutral-700">
+                <div className="flex flex-col sm:flex-row gap-4">
+                  <div className="flex-1 space-y-1">
+                    <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Currency Column <span className="text-red-500">*</span></label>
+                    <select
+                      value={currencyCodeColumn}
+                      onChange={(e) => { setCurrencyCodeColumn(e.target.value); setAssessResult(null); setConversionMetrics(null); setFxOverrides({}); }}
+                      disabled={isRunning || loading}
+                      className="w-full text-sm rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-red-500/40"
+                    >
+                      <option value="" disabled>Select Column</option>
+                      {operationPreview.columns.map(col => (
+                        <option key={col} value={col}>{col}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex-1 space-y-1">
+                    <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Spend Column <span className="text-red-500">*</span></label>
+                    <select
+                      value={currencySpendColumn}
+                      onChange={(e) => { setCurrencySpendColumn(e.target.value); setAssessResult(null); setConversionMetrics(null); setFxOverrides({}); }}
+                      disabled={isRunning || loading}
+                      className="w-full text-sm rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-red-500/40"
+                    >
+                      <option value="" disabled>Select Column</option>
+                      {operationPreview.columns.map(col => (
+                        <option key={col} value={col}>{col}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-4">
+                  <div className="flex-1 space-y-1">
+                    <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Date Column</label>
+                    <select
+                      value={currencyDateColumn}
+                      onChange={(e) => { setCurrencyDateColumn(e.target.value); setAssessResult(null); setConversionMetrics(null); setFxOverrides({}); }}
+                      disabled={isRunning || loading}
+                      className="w-full text-sm rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-red-500/40"
+                    >
+                      {operationPreview.columns.map(col => (
+                        <option key={col} value={col}>{col}</option>
+                      ))}
+                      <option value="No date col">No Date col</option>
+                    </select>
+                  </div>
+
+                  {currencyDateColumn === "No date col" && (
+                    <div className="flex-1 space-y-1">
+                      <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Scope Year <span className="text-red-500">*</span></label>
+                      <select
+                        value={scopeYear}
+                        onChange={(e) => setScopeYear(e.target.value)}
+                        disabled={isRunning || loading}
+                        className="w-full text-sm rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-red-500/40"
+                      >
+                        <option value="2023">2023</option>
+                        <option value="2024">2024</option>
+                        <option value="2025">2025</option>
+                        <option value="2026">2026</option>
+                      </select>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Assess button */}
+              <div className="flex items-center gap-3">
+                <PrimaryButton onClick={handleAssess} disabled={assessLoading || isRunning || loading}>
+                  {assessLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Sparkles className="w-4 h-4 mr-2" />}
+                  {assessLoading ? "Assessing…" : "Assess"}
+                </PrimaryButton>
+                {isCompleted && (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Completed
+                  </span>
+                )}
+              </div>
+
+              {/* Assess error */}
+              {assessError && (
+                <div className="flex gap-3 p-3 rounded-xl bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800">
+                  <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0 text-red-500 dark:text-red-400" />
+                  <p className="text-xs text-red-700 dark:text-red-300">{assessError}</p>
+                </div>
+              )}
+
+              {/* Assessment panel */}
+              {assessResult && (
+                <div className="rounded-xl border border-neutral-200 dark:border-neutral-700 p-4 space-y-4 bg-neutral-50 dark:bg-neutral-800/60">
+                  {/* Population */}
+                  {assessResult.population && (
+                    <div className="flex flex-wrap items-center gap-2 text-sm">
+                      <span className="font-medium text-neutral-700 dark:text-neutral-300">Currency column population:</span>
+                      <span className={`font-semibold ${assessResult.population.warn ? "text-amber-600" : "text-emerald-600"}`}>
+                        {assessResult.population.pct_populated}%
+                      </span>
+                      <span className="text-neutral-500">
+                        ({assessResult.population.n_populated} / {assessResult.population.n_total} rows populated)
+                      </span>
+                      {assessResult.population.warn && (
+                        <span className="text-xs text-amber-600 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 px-2 py-0.5 rounded-full">
+                          Below 60% threshold
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Warnings */}
+                  {assessResult.warnings.length > 0 && (
+                    <div className="flex gap-3 p-3 rounded-xl bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800">
+                      <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0 text-amber-500 dark:text-amber-400" />
+                      <ul className="space-y-1">
+                        {assessResult.warnings.map((w, i) => (
+                          <li key={i} className="text-xs text-amber-700 dark:text-amber-300">{w}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Unsupported currencies table */}
+                  {assessResult.unsupported_currencies.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                        Unsupported currencies — enter rate (1 USD = X) or leave blank to skip those rows:
+                      </p>
+                      <div className="overflow-x-auto rounded-lg border border-neutral-200 dark:border-neutral-700">
+                        <table className="w-full text-sm">
+                          <thead className="bg-neutral-100 dark:bg-neutral-800">
+                            <tr className="text-left text-xs text-neutral-500">
+                              <th className="px-3 py-2 font-medium border-b border-neutral-200 dark:border-neutral-700">Currency</th>
+                              <th className="px-3 py-2 font-medium border-b border-neutral-200 dark:border-neutral-700">Rows Affected</th>
+                              <th className="px-3 py-2 font-medium border-b border-neutral-200 dark:border-neutral-700">Rate (1 USD = X)</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {assessResult.unsupported_currencies.map(u => (
+                              <tr key={u.code} className="border-b border-neutral-100 dark:border-neutral-800 last:border-0">
+                                <td className="px-3 py-2 font-mono font-semibold text-neutral-800 dark:text-neutral-200">{u.code}</td>
+                                <td className="px-3 py-2 text-neutral-600 dark:text-neutral-400">{u.row_count}</td>
+                                <td className="px-3 py-2">
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="any"
+                                    value={fxOverrides[u.code] ?? ""}
+                                    onChange={e => setFxOverrides(prev => ({ ...prev, [u.code]: e.target.value }))}
+                                    placeholder="e.g. 3.67"
+                                    className="w-32 text-sm rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 px-2 py-1 focus:outline-none focus:ring-2 focus:ring-red-500/40"
+                                  />
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {assessResult.unsupported_currencies.length === 0 && assessResult.warnings.length === 0 && (
+                    <div className="flex gap-3 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800">
+                      <CheckCircle2 className="w-4 h-4 mt-0.5 flex-shrink-0 text-emerald-500 dark:text-emerald-400" />
+                      <p className="text-sm text-emerald-700 dark:text-emerald-300">All currencies are supported. Ready to convert.</p>
+                    </div>
+                  )}
+
+                  {/* Confirm & Run */}
+                  <PrimaryButton
+                    onClick={() => handleRunOperation(singleOp.id)}
+                    disabled={isRunning || loading}
+                  >
+                    {isRunning ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ArrowRight className="w-4 h-4 mr-2" />}
+                    {isRunning ? "Converting…" : "Confirm & Run"}
+                  </PrimaryButton>
+                </div>
+              )}
+
+              {/* Post-conversion summary */}
+              {conversionMetrics && (
+                <div className="rounded-xl border border-emerald-200 dark:border-emerald-800 p-4 bg-emerald-50 dark:bg-emerald-950/20 space-y-1 text-sm">
+                  <p className="font-semibold text-emerald-800 dark:text-emerald-300 mb-2">Conversion Summary</p>
+                  <p className="text-emerald-700 dark:text-emerald-400">Rows converted: <strong>{conversionMetrics.n_converted}</strong></p>
+                  <p className="text-emerald-700 dark:text-emerald-400">Rows via fallback: <strong>{conversionMetrics.n_fallback}</strong></p>
+                  {(conversionMetrics.n_currency_missing + conversionMetrics.n_unsupported + conversionMetrics.n_spend_invalid + conversionMetrics.n_date_unparseable) > 0 && (
+                    <div className="mt-2 space-y-0.5 text-neutral-600 dark:text-neutral-400">
+                      <p className="font-medium">Rows not converted:</p>
+                      {conversionMetrics.n_currency_missing > 0 && (
+                        <p className="ml-3">• Currency missing: {conversionMetrics.n_currency_missing}</p>
+                      )}
+                      {conversionMetrics.n_unsupported > 0 && (
+                        <p className="ml-3">• Unsupported currency (no rate provided): {conversionMetrics.n_unsupported}</p>
+                      )}
+                      {conversionMetrics.n_spend_invalid > 0 && (
+                        <p className="ml-3">• Spend value invalid: {conversionMetrics.n_spend_invalid}</p>
+                      )}
+                      {conversionMetrics.n_date_unparseable > 0 && (
+                        <p className="ml-3">• Date unparseable: {conversionMetrics.n_date_unparseable}</p>
+                      )}
+                    </div>
+                  )}
+                  <div className="pt-3 mt-2 border-t border-emerald-200 dark:border-emerald-800">
+                    <PrimaryButton onClick={handleDownload}>
+                      <Download className="w-4 h-4 mr-2" />
+                      Download Excel
+                    </PrimaryButton>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {opResults[singleOp.id] && singleOp.id !== "currency_conversion" && singleOp.id !== "supplier_country" && (
+            <div className="space-y-3">
+              <div className={`whitespace-pre-wrap rounded-xl p-3 text-sm ${
+                opResults[singleOp.id].startsWith("Error")
+                  ? "bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800"
+                  : "bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800"
+              }`}>
+                {opResults[singleOp.id]}
+              </div>
+              {!opResults[singleOp.id].startsWith("Error") && (
+                <PrimaryButton onClick={handleDownload}>
+                  <Download className="w-4 h-4 mr-2" />
+                  Download Excel
+                </PrimaryButton>
+              )}
             </div>
           )}
           {showOperationPreview && (
@@ -306,77 +837,9 @@ export default function NormDashboard({ apiKey, activeTab = "pipeline", setActiv
     );
   }
 
-  /* ── Default: Pipeline view (all operations grid) ── */
+  /* ── Default: Download view (fallback) ── */
   return (
     <div className="space-y-6">
-      <SurfaceCard title="Normalization Dashboard" subtitle="Run AI-powered data cleaning agents individually or as a pipeline." icon={Sparkles}>
-
-        <div className="flex justify-between items-center mb-4 p-4 bg-red-50 dark:bg-red-950/20 rounded-xl border border-red-100 dark:border-red-900/50">
-          <div className="text-sm font-semibold text-red-900 dark:text-red-300">
-            Pipeline Mode: Select agents to run sequentially
-          </div>
-          <PrimaryButton onClick={handleRunPipeline} disabled={loading || selectedPipeline.size === 0}>
-            {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ArrowRight className="w-4 h-4 mr-2" />}
-            Run Pipeline ({selectedPipeline.size} selected)
-          </PrimaryButton>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {OPERATIONS.map(op => {
-            const Icon = op.icon;
-            const isCompleted = completedOps.has(op.id);
-            const isRunning = activeOp === op.id;
-            const isSelected = selectedPipeline.has(op.id);
-
-            return (
-              <motion.button
-                key={op.id}
-                whileHover={{ scale: 1.02 }}
-                whileTap={{ scale: 0.98 }}
-                onClick={() => !isRunning && handleRunOperation(op.id)}
-                disabled={isRunning || loading}
-                className={`relative p-4 rounded-2xl border text-left transition-all ${
-                  isCompleted
-                    ? "border-emerald-200 dark:border-emerald-800 bg-emerald-50/50 dark:bg-emerald-950/20"
-                    : isRunning
-                    ? "border-amber-200 dark:border-amber-800 bg-amber-50/50 dark:bg-amber-950/20"
-                    : "border-neutral-200 dark:border-neutral-700 hover:border-red-200 dark:hover:border-red-800 hover:shadow-sm bg-white dark:bg-neutral-800/50"
-                }`}
-              >
-                <div
-                  className="absolute top-4 right-4 text-neutral-400 hover:text-red-500 z-10"
-                  onClick={(e) => togglePipelineSelect(op.id, e)}
-                  title="Select for Pipeline"
-                >
-                  {isSelected ? <CheckSquare className="w-5 h-5 text-red-500" /> : <Square className="w-5 h-5" />}
-                </div>
-
-                <div className="flex items-start gap-3 mt-1">
-                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
-                    isCompleted ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400" :
-                    isRunning ? "bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400" :
-                    "bg-neutral-100 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400"
-                  }`}>
-                    {isRunning ? <Loader2 className="w-4 h-4 animate-spin" /> :
-                     isCompleted ? <CheckCircle2 className="w-4 h-4" /> :
-                     <Icon className="w-4 h-4" />}
-                  </div>
-                  <div className="min-w-0 pr-6">
-                    <p className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">{op.label}</p>
-                    <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">{op.desc}</p>
-                  </div>
-                </div>
-                {opResults[op.id] && (
-                  <p className={`text-xs mt-2 pl-12 ${opResults[op.id].startsWith('Error') ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
-                    {opResults[op.id]}
-                  </p>
-                )}
-              </motion.button>
-            );
-          })}
-        </div>
-      </SurfaceCard>
-
       <SurfaceCard title="Download Normalized Data" subtitle="Export your cleaned and standardized dataset" icon={Download}>
         <div className="space-y-4">
           <div className="flex gap-3">

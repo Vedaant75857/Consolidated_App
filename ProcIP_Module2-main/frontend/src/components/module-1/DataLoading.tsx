@@ -57,6 +57,7 @@ interface DataLoadingProps {
   step: number;
   file: File | null;
   setFile: (file: File | null) => void;
+  setFilename: (name: string | null) => void;
   apiKey: string;
   setApiKey: (key: string) => void;
   handleUpload: () => void;
@@ -68,6 +69,7 @@ export default function DataLoading({
   step,
   file,
   setFile,
+  setFilename,
   apiKey,
   setApiKey,
   handleUpload,
@@ -184,6 +186,7 @@ export default function DataLoading({
 
   const clearFile = () => {
     setFile(null);
+    setFilename(null);
     setFileLabel(null);
     if (zipInputRef.current) zipInputRef.current.value = "";
     if (folderInputRef.current) folderInputRef.current.value = "";

@@ -1,9 +1,11 @@
 import os
 import io
+import re as _re
 import warnings
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import pandas as pd
+import numpy as np
 from dotenv import load_dotenv
 
 from agents.normalization import (
@@ -136,7 +138,7 @@ def get_raw_preview():
         return jsonify({"error": "Table not found"}), 404
     
     df = state.data_vault[table_key]
-    preview_df = df.head(50).fillna("").astype(str)
+    preview_df = df.head(50).astype(str).replace(["<NA>", "nan", "NaT", "None"], "")
     raw_list = preview_df.values.tolist()
     
     # If columns were explicitly set, inject them at row 0 so the editor can preview them natively
@@ -155,7 +157,7 @@ def get_preview():
     df = state.data_vault[table_key]
     return jsonify({
         "columns": list(df.columns),
-        "rows": df.head(50).fillna("").astype(str).to_dict(orient="records")
+        "rows": df.head(50).astype(str).replace(["<NA>", "nan", "NaT", "None"], "").to_dict(orient="records")
     })
 
 @app.route('/api/current-preview', methods=['GET'])
@@ -163,11 +165,167 @@ def get_current_preview():
     if state.df is None:
         return jsonify({"error": "No active dataset loaded"}), 400
 
-    preview_df = state.df.head(50).fillna("").astype(str)
+    preview_df = state.df.head(50).astype(str).replace(["<NA>", "nan", "NaT", "None"], "")
     return jsonify({
         "columns": [str(c) for c in state.df.columns],
         "rows": preview_df.to_dict(orient="records")
     })
+
+def _suggest_columns(df: pd.DataFrame, sample_size: int = 100) -> dict:
+    """
+    Analyze the first `sample_size` rows of df and return the best candidate
+    columns for date, currency code, and spend amount.
+    Returns None for each field when no confident match is found.
+    """
+    sample = df.head(sample_size)
+    cols = list(df.columns)
+
+    # ── Helpers ──────────────────────────────────────────────────────────────
+    def col_lower(c):
+        return str(c).lower().strip()
+
+    def pct_populated(series):
+        """Fraction of non-null, non-empty string rows."""
+        s = series.astype(str).str.strip()
+        valid = (series.notna()) & (s != "") & (s != "nan") & (s != "None") & (s != "<NA>")
+        return valid.sum() / len(series) if len(series) > 0 else 0.0
+
+    # ── DATE ─────────────────────────────────────────────────────────────────
+    # Same detection keywords as date_normalization_agent
+    DATE_KEYWORDS = ("date", "dob", "time")
+    date_candidates = [
+        c for c in cols
+        if any(kw in col_lower(c) for kw in DATE_KEYWORDS)
+        and not str(c).startswith("Norm_Date_")
+    ]
+
+    best_date, best_date_pct = None, 0.0
+    for c in date_candidates:
+        s = sample[c]
+        pop = pct_populated(s)
+        if pop == 0:
+            continue
+        s_clean = s.dropna()
+        s_clean = s_clean[s_clean.astype(str).str.strip().isin(["", "nan", "None", "<NA>"]) == False]
+        if len(s_clean) == 0:
+            continue
+        parsed = pd.to_datetime(s_clean, errors="coerce", dayfirst=False)
+        pct = parsed.notna().sum() / len(s_clean)
+        # Retry with dayfirst=True for DD/MM/YYYY formats
+        if pct < 0.60:
+            parsed2 = pd.to_datetime(s_clean, errors="coerce", dayfirst=True)
+            pct = max(pct, parsed2.notna().sum() / len(s_clean))
+        if pct >= 0.60 and pct > best_date_pct:
+            best_date_pct = pct
+            best_date = c
+
+    # ── CURRENCY CODE ────────────────────────────────────────────────────────
+    # Header keywords with weights (higher = stronger signal)
+    CCY_HEADER_WEIGHTS = {
+        "currency code": 1.0, "currency_code": 1.0,
+        "currency": 0.95,
+        "curr code": 0.90, "curr_code": 0.90,
+        "ccy code": 0.90, "ccy_code": 0.90,
+        "curr": 0.85, "ccy": 0.85,
+        "fx code": 0.70, "fx_code": 0.70,
+        "iso code": 0.65, "iso_code": 0.65,
+        "iso": 0.55,
+        "fx": 0.50,
+    }
+    CCY_CODE_RE = _re.compile(r'^[A-Z]{3}$')
+
+    best_ccy, best_ccy_score = None, 0.0
+    for c in cols:
+        cl = col_lower(c)
+        # Find best matching keyword weight
+        header_w = 0.0
+        for kw, wt in CCY_HEADER_WEIGHTS.items():
+            if kw in cl:
+                header_w = max(header_w, wt)
+        if header_w == 0.0:
+            continue
+        # Sample up to 20 non-null values, check for 3-letter uppercase codes
+        s = sample[c].dropna().astype(str).str.strip().str.upper()
+        s = s[s.isin(["", "NAN", "NONE", "<NA>"]) == False].head(20)
+        if len(s) == 0:
+            continue
+        pct_valid_codes = s.apply(lambda v: bool(CCY_CODE_RE.match(v))).mean()
+        pop = pct_populated(sample[c])
+        score = header_w * pct_valid_codes * pop
+        if pct_valid_codes >= 0.70 and score > best_ccy_score:
+            best_ccy_score = score
+            best_ccy = c
+
+    # ── SPEND AMOUNT ─────────────────────────────────────────────────────────
+    SPEND_HEADER_WEIGHTS = {
+        "spend":    1.00,
+        "amount":   0.90,
+        "cost":     0.85,
+        "price":    0.80,
+        "payment":  0.75,
+        "invoice":  0.75,
+        "charge":   0.70,
+        "fee":      0.65,
+        "total":    0.60,
+        "value":    0.55,
+    }
+    STRIP_RE   = _re.compile(r"[$€£,\s]")
+    PARENS_RE  = _re.compile(r"^\((.+)\)$")
+
+    best_spend, best_spend_score = None, 0.0
+    for c in cols:
+        cl = col_lower(c)
+        header_w = 0.0
+        for kw, wt in SPEND_HEADER_WEIGHTS.items():
+            if kw in cl:
+                header_w = max(header_w, wt)
+        if header_w == 0.0:
+            continue
+
+        s_str = sample[c].astype(str).str.strip()
+        total = len(s_str)
+        pop = pct_populated(sample[c])
+
+        # Strip currency symbols and handle parentheses negatives
+        cleaned = s_str.str.replace(STRIP_RE, "", regex=True)
+        paren_mask = cleaned.str.match(r"^\(.+\)$")
+        cleaned = cleaned.where(~paren_mask, "-" + cleaned.str[1:-1])
+        numeric = pd.to_numeric(cleaned, errors="coerce")
+
+        pct_numeric = numeric.notna().sum() / total if total > 0 else 0.0
+        # Monetary bonus: most values positive (not a ratio or index column)
+        n_valid = numeric.notna().sum()
+        pct_positive = float((numeric > 0).sum()) / n_valid if n_valid > 0 else 0.0
+        monetary_bonus = 1.2 if pct_positive >= 0.50 else 1.0
+
+        score = header_w * pct_numeric * pop * monetary_bonus
+        if pct_numeric >= 0.70 and score > best_spend_score:
+            best_spend_score = score
+            best_spend = c
+
+    return {
+        "date_col":     best_date,
+        "currency_col": best_ccy,
+        "spend_col":    best_spend,
+        "scores": {
+            "date_pct":    round(best_date_pct,   3) if best_date    else None,
+            "ccy_score":   round(best_ccy_score,  3) if best_ccy     else None,
+            "spend_score": round(best_spend_score, 3) if best_spend  else None,
+        },
+    }
+
+
+@app.route('/api/suggest-columns', methods=['GET'])
+def suggest_columns():
+    if state.df is None:
+        return jsonify({"error": "No active dataset loaded"}), 400
+    try:
+        result = _suggest_columns(state.df, sample_size=100)
+        return jsonify(result)
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/set-header-row', methods=['POST'])
 def set_header_row():
@@ -247,6 +405,40 @@ def select_table():
         "previewData": preview_df.to_dict(orient='records')
     })
 
+@app.route('/api/assess-supplier-country', methods=['POST'])
+def assess_supplier_country_api():
+    if state.df is None:
+        return jsonify({"error": "No file loaded"}), 400
+
+    data = request.json
+    kwargs = data.get('kwargs', {})
+
+    try:
+        from agents.normalization import assess_supplier_country
+        result = assess_supplier_country(state.df, **kwargs)
+        return jsonify(result)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/assess-currency-conversion', methods=['POST'])
+def assess_currency_conversion_api():
+    if state.df is None:
+        return jsonify({"error": "No file loaded"}), 400
+        
+    data = request.json
+    kwargs = data.get('kwargs', {})
+    
+    try:
+        from agents.normalization import assess_currency_conversion
+        result = assess_currency_conversion(state.df, **kwargs)
+        return jsonify(result)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/run-normalization', methods=['POST'])
 def run_normalization():
     if state.df is None:
@@ -269,44 +461,18 @@ def run_normalization():
         if isinstance(result, tuple) and len(result) >= 2:
             modified_df, message = result[0], result[1]
             state.df = modified_df
-            return jsonify({
-                "message": message,
-                "columns": list(state.df.columns)
-            })
+            response = {"message": message, "columns": list(state.df.columns)}
+            if len(result) >= 4 and result[3] is not None:
+                if agent_id == "currency_conversion":
+                    response["conversion_metrics"] = result[3]
+                elif agent_id == "supplier_country":
+                    response["country_norm_metrics"] = result[3]
+            return jsonify(response)
         else:
             return jsonify({"error": "Unexpected return format from agent"}), 500
             
     except Exception as e:
          return jsonify({"error": str(e)}), 500
-
-@app.route('/api/run-pipeline', methods=['POST'])
-def run_pipeline():
-    if state.df is None:
-        return jsonify({"error": "No file loaded"}), 400
-        
-    data = request.json
-    agent_ids = data.get('agent_ids', [])
-    api_key = get_api_key()
-    
-    results = []
-    
-    for agent_id in agent_ids:
-        if agent_id in AGENT_MAPPING:
-            agent_func = AGENT_MAPPING[agent_id]
-            kwargs = data.get('kwargs', {}).get(agent_id, {})
-            try:
-                result = agent_func(state.df, api_key=api_key, **kwargs)
-                if isinstance(result, tuple) and len(result) >= 2:
-                    state.df = result[0]
-                    results.append({"agent": agent_id, "message": result[1]})
-            except Exception as e:
-                results.append({"agent": agent_id, "error": str(e)})
-                
-    return jsonify({
-        "message": "Pipeline completed",
-        "results": results,
-        "columns": list(state.df.columns)
-    })
 
 @app.route('/api/download', methods=['GET'])
 def download():

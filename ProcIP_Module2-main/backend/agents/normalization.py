@@ -18,9 +18,7 @@ from .helpers import (
     get_client, get_model, CostTracker,
     _batch_ai_mapping, _find_column,
 )
-from .fx_rates import (
-    detect_currency_columns, detect_spend_columns, fetch_grouped_fx_rates,
-)
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -306,7 +304,7 @@ def normalize_supplier_name_agent(df, api_key=None, **kwargs):
     det_mapping = _fuzzy_dedup(det_mapping)
 
     unchanged = [v for v, cleaned in det_mapping.items() if cleaned == v]
-    print(f"  Deterministic: {len(all_unique) - len(unchanged)} resolved, {len(unchanged)} → AI")
+    print(f"  Deterministic: {len(all_unique) - len(unchanged)} resolved, {len(unchanged)} -> AI")
 
     if unchanged and not custom_inst:
         sys_msg = custom_sys or "Output JSON only."
@@ -331,7 +329,7 @@ def normalize_supplier_name_agent(df, api_key=None, **kwargs):
     normalized = df[target_col].astype(str).map(det_mapping).fillna(df[target_col])
     _upsert_adjacent_column(df, target_col, new_col, normalized)
 
-    return df, f"[OK] Normalized {len(det_mapping)} supplier names → **{new_col}**.", cost.summary()
+    return df, f"[OK] Normalized {len(det_mapping)} supplier names -> **{new_col}**.", cost.summary()
 
 
 def normalize_supplier_country_agent(df, api_key=None, **kwargs):
@@ -340,12 +338,16 @@ def normalize_supplier_country_agent(df, api_key=None, **kwargs):
     custom_sys = kwargs.get('custom_system', '')
     custom_inst = kwargs.get('custom_instructions', '')
 
-    target_col = _find_column(
-        df,
-        ['supplier_country', 'supplier country', 'vendor_country', 'vendor country', 'country'],
-        ai_client=get_client(api_key), model=get_model(),
-        ai_description='Supplier Country or Vendor Country',
-    )
+    target_col = kwargs.get('country_col')
+    if target_col and target_col in df.columns:
+        pass  # use user-selected column
+    else:
+        target_col = _find_column(
+            df,
+            ['supplier_country', 'supplier country', 'vendor_country', 'vendor country', 'country'],
+            ai_client=get_client(api_key), model=get_model(),
+            ai_description='Supplier Country or Vendor Country',
+        )
     if not target_col:
         return df, "[WARN] Could not identify a 'Supplier Country' column.", cost.summary()
 
@@ -361,13 +363,14 @@ def normalize_supplier_country_agent(df, api_key=None, **kwargs):
         else:
             unresolved.append(v)
 
-    print(f"  ISO lookup: {len(det_mapping)} resolved, {len(unresolved)} → AI")
+    print(f"  ISO lookup: {len(det_mapping)} resolved, {len(unresolved)} -> AI")
+    det_keys = set(det_mapping.keys())  # snapshot before AI merges in
 
     if unresolved:
         sys_msg = custom_sys or "Output JSON only."
         prompt_tmpl = custom_inst if custom_inst else (
             "Standardize these country names to their **Full English Name** (Title Case).\n"
-            "- Expand abbreviations: 'US' → 'United States', 'DE' → 'Germany'.\n"
+            "- Expand abbreviations: 'US' -> 'United States', 'DE' -> 'Germany'.\n"
             "- Fix misspellings.\n\n"
             "Input: {batch}\nReturn JSON ONLY: {{ \"Original\": \"Standardized\" }}"
         )
@@ -387,7 +390,26 @@ def normalize_supplier_country_agent(df, api_key=None, **kwargs):
     normalized = df[target_col].astype(str).map(full_mapping).fillna(df[target_col])
     _upsert_adjacent_column(df, target_col, new_col, normalized)
 
-    return df, f"[OK] Normalized {len(full_mapping)} countries → **{new_col}**.", cost.summary()
+    # Row-level metrics
+    n_total = len(df)
+    empty_mask = df[target_col].isna() | (df[target_col].astype(str).str.strip() == "")
+    n_empty = int(empty_mask.sum())
+    non_empty_vals = df.loc[~empty_mask, target_col].astype(str)
+    n_deterministic = int(non_empty_vals.isin(det_keys).sum())
+    n_in_mapping = int(non_empty_vals.isin(full_mapping.keys()).sum())
+    n_ai = n_in_mapping - n_deterministic
+    n_unresolved = int((~empty_mask).sum()) - n_in_mapping
+
+    metrics = {
+        "n_total": n_total,
+        "n_empty": n_empty,
+        "n_normalized": n_in_mapping,
+        "n_deterministic": n_deterministic,
+        "n_ai": n_ai,
+        "n_unresolved": n_unresolved,
+    }
+
+    return df, f"[OK] Normalized {len(full_mapping)} countries -> **{new_col}**.", cost.summary(), metrics
 
 
 def add_record_id_agent(df):
@@ -569,7 +591,7 @@ def _detect_file_column(df):
 
 
 def date_normalization_agent(df, api_key=None, user_format=None, **kwargs):
-    """Normalize date columns to DD-MM-YYYY using per-value multi-gate parsing.
+    """Normalize date columns using per-value multi-gate parsing.
 
     If a file/source column is detected, normalizes per group for accurate
     DMY/MDY profiling on stitched datasets.  Otherwise processes as one block.
@@ -579,6 +601,13 @@ def date_normalization_agent(df, api_key=None, user_format=None, **kwargs):
     custom_inst = kwargs.get('custom_instructions', '')
     target_fmt = user_format or _DATE_TARGET_FMT
     log = []
+
+    # Derive a human-readable label and a column-safe suffix from the target format
+    _FMT_LABELS = {
+        "%d-%m-%Y": ("dd-mm-yyyy", "ddmmyyyy"),
+        "%m-%d-%Y": ("mm-dd-yyyy", "mmddyyyy"),
+    }
+    fmt_label, fmt_suffix = _FMT_LABELS.get(target_fmt, (target_fmt, target_fmt.replace('%', '').replace('-', '')))
 
     date_cols = [
         c for c in df.columns
@@ -649,18 +678,19 @@ def date_normalization_agent(df, api_key=None, user_format=None, **kwargs):
                         except Exception as e:
                             cost.record_error(f"Date AI fallback for '{col}' group '{src_val}': {e}")
 
-                # Recount after AI fallback
-                success = (norm_buffers[col].loc[grp.index] != '').sum()
-                log.append(f"'{col}' [{order}] group='{src_val}': {success}/{total} parsed")
             except Exception as e:
-                log.append(f"Error '{col}' group='{src_val}': {e}")
+                print(f"  [ERR] '{col}' group='{src_val}': {e}")
 
     # Insert normalized columns adjacent to originals
     for col in date_cols:
-        new_col = f"Norm_Date_{col}"
+        new_col = f"Norm_Date_{col}_{fmt_suffix}"
         _upsert_adjacent_column(df, col, new_col, norm_buffers[col])
 
-    msg = "\n".join(log) if log else "No dates normalized."
+    # Build a single user-friendly summary line
+    if date_cols:
+        msg = ", ".join(date_cols) + f" -> normalized to {fmt_label}"
+    else:
+        msg = "No dates normalized."
     return df, msg, cost.summary()
 
 
@@ -722,7 +752,7 @@ def payment_terms_agent(df, api_key=None, **kwargs):
         else:
             unresolved.append(v)
 
-    print(f"  Regex: {len(det_mapping)} resolved, {len(unresolved)} → AI")
+    print(f"  Regex: {len(det_mapping)} resolved, {len(unresolved)} -> AI")
 
     if unresolved:
         sys_msg = custom_sys or "Output JSON only. Follow the exact format specified."
@@ -815,7 +845,7 @@ def normalize_region_agent(df, api_key=None, **kwargs):
                     break
         unresolved = [v for v in unresolved if v not in det_mapping]
 
-    print(f"  Deterministic: {len(det_mapping)} resolved, {len(unresolved)} → AI")
+    print(f"  Deterministic: {len(det_mapping)} resolved, {len(unresolved)} -> AI")
 
     if unresolved:
         sys_msg = custom_sys or "JSON only"
@@ -833,7 +863,7 @@ def normalize_region_agent(df, api_key=None, **kwargs):
     normalized = df[target_col].astype(str).map(det_mapping).fillna(df[target_col])
     _upsert_adjacent_column(df, target_col, new_col, normalized)
 
-    return df, f"[OK] Normalized {len(det_mapping)} regions → **{new_col}**.", cost.summary()
+    return df, f"[OK] Normalized {len(det_mapping)} regions -> **{new_col}**.", cost.summary()
 
 
 def normalize_plant_agent(df, api_key=None, **kwargs):
@@ -860,7 +890,7 @@ def normalize_plant_agent(df, api_key=None, **kwargs):
         else:
             unresolved.append(v)
 
-    print(f"  Deterministic: {len(det_mapping)} resolved, {len(unresolved)} → AI")
+    print(f"  Deterministic: {len(det_mapping)} resolved, {len(unresolved)} -> AI")
 
     if unresolved:
         sys_msg = custom_sys or "JSON only"
@@ -881,7 +911,7 @@ def normalize_plant_agent(df, api_key=None, **kwargs):
     normalized = df[target_col].astype(str).map(det_mapping).fillna(df[target_col])
     _upsert_adjacent_column(df, target_col, new_col, normalized)
 
-    return df, f"[OK] Normalized {len(det_mapping)} plant names → **{new_col}**.", cost.summary()
+    return df, f"[OK] Normalized {len(det_mapping)} plant names -> **{new_col}**.", cost.summary()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -917,177 +947,179 @@ def _diverse_date_samples(series, max_samples=30):
 #  SPEND NORMALIZATION (CURRENCY CONVERSION)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def normalize_spend_agent(df, api_key=None, **kwargs):
-    """Normalize spend amounts using grouped historical FX API rates.
-    
-    Reads:
-        kwargs['currency_col']: column name with currency codes
-        kwargs['spend_cols']: list of column names with spend amounts
-        kwargs['date_col']: column name with transaction dates
-        kwargs['target_currency']: target currency code (e.g. "USD")
-    
-    For each spend column:
-    - Creates new column: SPEND AMOUNT CONVERTED_{target_currency}
-    - For each row: if currency == target, copy as-is; else apply FX rate
-    - Rates are fetched by grouping rows per source currency and unique dates
-    
-    Returns:
-        (df_with_new_cols, summary_message, cost.summary())
+def assess_supplier_country(df, **kwargs):
     """
-    cost = CostTracker()
-    
-    # Extract kwargs (all required for this agent)
+    Assess the dataset for supplier country normalization.
+    Returns population stats for the selected country column.
+    """
+    country_col = kwargs.get('country_col')
+
+    if not country_col or country_col not in df.columns:
+        return {
+            "population": None,
+            "error": f"Column '{country_col}' not found." if country_col else "No column specified.",
+        }
+
+    total_rows = len(df)
+    pop_mask = df[country_col].notna() & (df[country_col].astype(str).str.strip() != "")
+    n_populated = int(pop_mask.sum())
+    pct = (n_populated / total_rows * 100) if total_rows > 0 else 0
+
+    return {
+        "population": {
+            "n_populated": n_populated,
+            "n_total": total_rows,
+            "pct_populated": round(pct, 1),
+            "warn": pct < 60,
+        },
+    }
+
+
+from .fx_rates import load_fx_table, run_conversion
+
+def assess_currency_conversion(df, **kwargs):
+    """
+    Assess the dataset for currency conversion.
+    Returns: dict of warnings, candidate columns, default selections, etc.
+    """
     currency_col = kwargs.get('currency_col')
-    spend_cols = kwargs.get('spend_cols', [])
-    date_col = kwargs.get('date_col')
-    target_currency = kwargs.get('target_currency', 'USD').upper().strip()
     
-    if not currency_col:
-        return df, "[WARN] No currency column specified.", cost.summary()
+    date_cols = [
+        c for c in df.columns
+        if ("date" in str(c).lower() or "dob" in str(c).lower() or "time" in str(c).lower())
+        and not str(c).startswith("Norm_Date_")
+    ]
+    
+    try:
+        fx_data = load_fx_table()
+        FX, LATEST_RATE, SUPPORTED_CURRENCIES, LATEST_PERIOD, FX_YEARLY, FX_YEARLY_MONTHS = fx_data
+    except Exception as e:
+        return {
+            "needs_confirmation": True,
+            "warnings": [f"Could not load FX lookup table: {e}"],
+            "candidate_dates": date_cols,
+            "recommended_date": date_cols[0] if date_cols else None,
+            "population": None,
+            "unsupported_currencies": [],
+        }
+        
+    warnings_list = []
+    supported_set = set(c.upper() for c in SUPPORTED_CURRENCIES) | {"USD"}
+    needs_confirmation = False
+    
+    if currency_col and currency_col in df.columns:
+        total_rows = len(df)
+        pop_mask = df[currency_col].notna() & (df[currency_col].astype(str).str.strip() != "")
+        n_populated = int(pop_mask.sum())
+        pct = (n_populated / total_rows * 100) if total_rows > 0 else 0
+        
+        if pct < 60:
+            warnings_list.append(f"Currency column is only {pct:.1f}% populated (minimum threshold: 60%). Unpopulated rows will produce NaN.")
+            needs_confirmation = True
+            
+        ccy_values = df[currency_col].dropna().astype(str).str.strip().str.upper()
+        ccy_values = ccy_values[ccy_values != ""]
+        unsupported_counts = ccy_values[~ccy_values.isin(supported_set)].value_counts()
+        
+        if not unsupported_counts.empty:
+            total_affected = int(unsupported_counts.sum())
+            details = ", ".join([f"{ccy}: {cnt}" for ccy, cnt in unsupported_counts.items()])
+            warnings_list.append(f"Unsupported currency codes found affecting {total_affected} rows: {details}. These rows will produce NaN.")
+            needs_confirmation = True
+    elif currency_col:
+        warnings_list.append(f"Currency column '{currency_col}' not found.")
+        needs_confirmation = True
+
+    return {
+        "needs_confirmation": needs_confirmation,
+        "warnings": warnings_list,
+        "candidate_dates": date_cols,
+        "recommended_date": date_cols[0] if date_cols else None,
+        "population": {
+            "n_populated": n_populated,
+            "n_total": total_rows,
+            "pct_populated": round(pct, 1),
+            "warn": pct < 60,
+        } if (currency_col and currency_col in df.columns) else None,
+        "unsupported_currencies": [
+            {"code": str(ccy), "row_count": int(cnt)}
+            for ccy, cnt in unsupported_counts.items()
+        ] if (currency_col and currency_col in df.columns and not unsupported_counts.empty) else [],
+    }
+
+def _coerce_spend_columns(raw_cols):
+    if raw_cols is None: return []
+    if isinstance(raw_cols, str): raw_cols = [raw_cols]
+    if not isinstance(raw_cols, (list, tuple, set)): return []
+    return [str(c).strip() for c in raw_cols if str(c).strip()]
+
+def normalize_spend_agent(df, api_key=None, **kwargs):
+    cost = CostTracker()
+    currency_col = kwargs.get('currency_col')
+    spend_cols = _coerce_spend_columns(kwargs.get('spend_cols'))
+    date_col = kwargs.get('date_col')
+    scope_year = kwargs.get('scope_year')
+    target_currency = kwargs.get('target_currency', 'USD').upper().strip()
+    fx_overrides = kwargs.get('fx_overrides') or {}
+
+    conversion_mode = "monthly"
+    if date_col == "No date col" or not date_col or date_col not in df.columns:
+        if scope_year and str(scope_year).strip():
+            conversion_mode = "scope_year"
+        else:
+            conversion_mode = "latest_fallback"
+            
+    if not currency_col or currency_col not in df.columns:
+        return df, "[WARN] Valid currency column is required.", cost.summary()
+        
     if not spend_cols:
         return df, "[WARN] No spend columns specified.", cost.summary()
-    if not date_col:
-        return df, "[WARN] No date column specified.", cost.summary()
-    
-    # Check if all required columns exist in this DataFrame
-    missing_cols = []
-    if currency_col not in df.columns:
-        missing_cols.append(f"currency ({currency_col})")
-    if date_col not in df.columns:
-        missing_cols.append(f"date ({date_col})")
-    
-    for col in spend_cols:
-        if col not in df.columns:
-            missing_cols.append(f"spend ({col})")
-    
-    # If columns are missing, skip this sheet gracefully instead of erroring
-    if missing_cols:
-        return df, f"[SKIP] Missing column(s): {', '.join(missing_cols)}. No conversion applied.", cost.summary()
-    
-    print(f"  Converting {len(spend_cols)} spend column(s) to {target_currency}...")
-    print(f"    Currency col: {currency_col}")
-    print(f"    Date col: {date_col}")
-    print(f"    Spend cols: {', '.join(spend_cols)}")
-    
+        
+    try:
+        fx_data = load_fx_table()
+    except Exception as e:
+        return df, f"[WARN] Could not load FX lookup table: {e}", cost.summary()
+        
     results = []
-    new_cols = []
-    
-    def _parse_amount(value):
-        """Parse common money formats into float."""
-        if pd.isna(value):
-            return None
-        if isinstance(value, (int, float)):
-            return float(value)
-
-        s = str(value).strip()
-        if not s:
-            return None
-
-        # Handle common accounting formats and thousand separators.
-        s = s.replace(',', '').replace('$', '').replace('€', '').replace('£', '')
-        if s.startswith('(') and s.endswith(')'):
-            s = '-' + s[1:-1]
-
-        try:
-            return float(s)
-        except (ValueError, TypeError):
-            return None
-
-    def _parse_date_iso(value):
-        """Parse diverse date formats to YYYY-MM-DD."""
-        if pd.isna(value):
-            return None
-        if hasattr(value, 'strftime'):
-            try:
-                return value.strftime('%Y-%m-%d')
-            except Exception:
-                pass
-
-        text = str(value).strip()
-        if not text:
-            return None
-
-        # First parse with default assumptions, then retry as day-first.
-        dt = pd.to_datetime(text, errors='coerce')
-        if pd.isna(dt):
-            dt = pd.to_datetime(text, errors='coerce', dayfirst=True)
-        if pd.isna(dt):
-            return None
-
-        return dt.strftime('%Y-%m-%d')
+    all_metrics = []
 
     for spend_col in spend_cols:
-        new_col = f"SPEND AMOUNT CONVERTED_{target_currency}"
-        # Avoid duplicate column names
-        col_counter = 1
-        while new_col in df.columns or new_col in new_cols:
-            new_col = f"SPEND AMOUNT CONVERTED_{target_currency}_{col_counter}"
-            col_counter += 1
-        
-        new_cols.append(new_col)
-        
-        # Initialize new column with nulls
-        converted = [None] * len(df)
-        conversion_count = 0
-        no_rate_count = 0
-        
-        parsed_rows = []
-        currency_to_dates = {}
+        if spend_col not in df.columns: continue
 
-        # First pass: parse rows and build grouped request map.
-        for idx, row in df.iterrows():
-            try:
-                spend_val = row[spend_col]
-                currency_val = str(row[currency_col]).upper().strip() if pd.notna(row[currency_col]) else None
-                date_val = row[date_col]
-                
-                # Skip if missing critical values
-                if pd.isna(spend_val) or not currency_val:
-                    continue
-                
-                # Convert spend to numeric
-                spend_numeric = _parse_amount(spend_val)
-                if spend_numeric is None:
-                    continue
-                
-                # Format date
-                date_str = _parse_date_iso(date_val)
-                if not date_str:
-                    continue
-
-                parsed_rows.append((idx, spend_numeric, currency_val, date_str))
-                if currency_val != target_currency:
-                    if currency_val not in currency_to_dates:
-                        currency_to_dates[currency_val] = set()
-                    currency_to_dates[currency_val].add(date_str)
-                
-            except Exception as e:
-                print(f"    [WARN] Row {idx}: {e}")
-                continue
-
-        # One grouped API call pattern: currency -> unique dates.
-        rate_map = fetch_grouped_fx_rates(currency_to_dates, target_currency)
-
-        # Second pass: apply conversion.
-        for idx, spend_numeric, currency_val, date_str in parsed_rows:
-            if currency_val == target_currency:
-                converted[idx] = spend_numeric
-                conversion_count += 1
-                continue
-
-            rate = rate_map.get((currency_val, date_str))
-            if rate is None:
-                no_rate_count += 1
-                continue
-
-            converted[idx] = spend_numeric * rate
-            conversion_count += 1
-        
-        _upsert_adjacent_column(df, spend_col, new_col, converted)
-        results.append(
-            f"'{spend_col}' → '{new_col}': {conversion_count} converted, "
-            f"{no_rate_count} no rate found"
+        df, metrics, fx_col, out_col, status_col = run_conversion(
+            df, spend_col, currency_col,
+            conversion_mode=conversion_mode,
+            date_col=date_col if conversion_mode == "monthly" else None,
+            scope_year=int(scope_year) if scope_year and str(scope_year).isdigit() else None,
+            fx_data=fx_data,
+            fx_overrides=fx_overrides,
         )
-    
-    msg = "[OK] " + "; ".join(results)
-    return df, msg, cost.summary()
+
+        if conversion_mode == "monthly":
+            mode_desc = f"Monthly date-based (column: '{date_col}')"
+        elif conversion_mode == "scope_year":
+            mode_desc = f"Scope year ({scope_year})"
+        else:
+            mode_desc = "Latest fallback"
+
+        n_unconverted = (
+            metrics['n_currency_missing'] +
+            metrics['n_unsupported'] +
+            metrics['n_spend_invalid'] +
+            metrics['n_date_unparseable']
+        )
+        msg = (
+            f"Conversion complete\n"
+            f"• FX rate column: '{fx_col}'\n"
+            f"• Output column: '{out_col}'\n"
+            f"• Status column: '{status_col}'\n"
+            f"• FX mode: {mode_desc}\n"
+            f"• Rows converted: {metrics['n_converted']}\n"
+            f"• Rows via fallback: {metrics['n_fallback']}\n"
+            f"• Rows not converted: {n_unconverted}"
+        )
+        results.append(msg)
+        all_metrics.append({"spend_col": spend_col, "status_col": status_col, **metrics})
+
+    final_msg = "[OK] \n" + "\n\n".join(results)
+    return df, final_msg, cost.summary(), all_metrics

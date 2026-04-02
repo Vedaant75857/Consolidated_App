@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Database, AlertCircle, RefreshCw, CheckCircle2, KeyRound,
-  Sparkles, Building2, Globe, Calendar, DollarSign, MapPin,
+  Building2, Globe, Calendar, DollarSign, MapPin,
   ClipboardList, Download, Sun, Moon, ArrowLeft,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
@@ -16,10 +16,10 @@ const NORM_OPS = [
   { id: "supplier_name",       label: "Supplier Names",      icon: Building2 },
   { id: "supplier_country",    label: "Supplier Country",    icon: Globe },
   { id: "date",                label: "Dates",               icon: Calendar },
+  { id: "currency_conversion", label: "Currency Conversion", icon: DollarSign },
   { id: "payment_terms",       label: "Payment Terms",       icon: ClipboardList },
   { id: "region",              label: "Regions",             icon: MapPin },
   { id: "plant",               label: "Plant / Site",        icon: Building2 },
-  { id: "currency_conversion", label: "Currency Conversion", icon: DollarSign },
 ];
 
 /* ── Sidebar step descriptor ── */
@@ -35,7 +35,7 @@ export default function App() {
   /* ── Core wizard state ── */
   const [step, setStep]                       = useState<number>(1);
   const [maxStepReached, setMaxStepReached]   = useState<number>(1);
-  const [normActiveTab, setNormActiveTab]     = useState<string>("pipeline");
+  const [normActiveTab, setNormActiveTab]     = useState<string>("supplier_name");
   const [apiKey, setApiKey]                   = useState("");
   const [file, setFile]                       = useState<File | null>(null);
   const [filename, setFilename]               = useState<string | null>(null);
@@ -125,7 +125,7 @@ export default function App() {
       case 1:
         return (
           <DataLoading
-            step={1} file={file} setFile={setFile}
+            step={1} file={file} setFile={setFile} setFilename={setFilename}
             apiKey={apiKey} setApiKey={setApiKey}
             handleUpload={handleUpload} loading={loading} filename={filename}
           />
@@ -254,27 +254,14 @@ export default function App() {
                       </div>
                     </motion.div>
 
-                    {/* ── Normalization sub-steps (expand when step 3 is active/completed) ── */}
-                    {s.num === 3 && (isActive || isCompleted) && (
+                    {/* ── Normalization sub-steps (always visible for step 3) ── */}
+                    {s.num === 3 && (
                       <motion.div
                         initial={{ opacity: 0, height: 0 }}
                         animate={{ opacity: 1, height: "auto" }}
                         exit={{ opacity: 0, height: 0 }}
-                        className="ml-[42px] mt-1 mb-2 space-y-0.5 border-l-2 border-neutral-200 dark:border-neutral-700 pl-3"
+                        className="ml-[42px] mt-1 mb-2 space-y-0.5 pl-3"
                       >
-                        {/* Run Pipeline */}
-                        <button
-                          onClick={() => { setStep(3); setNormActiveTab("pipeline"); }}
-                          className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors text-left ${
-                            isActive && normActiveTab === "pipeline"
-                              ? "bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-400 font-bold"
-                              : "text-neutral-500 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800/50"
-                          }`}
-                        >
-                          <Sparkles className="w-3.5 h-3.5 shrink-0" />
-                          Run Pipeline
-                        </button>
-
                         {/* Individual operations */}
                         {NORM_OPS.map((op) => {
                           const Icon = op.icon;
