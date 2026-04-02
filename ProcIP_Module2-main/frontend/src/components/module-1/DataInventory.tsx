@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Loader2, ArrowRight, Trash2, RowsIcon, Check, Database, ChevronDown, ChevronRight, X } from "lucide-react";
+import { Loader2, ArrowRight, Trash2, RowsIcon, Check, Database, ChevronDown, ChevronRight, X, ExternalLink } from "lucide-react";
 import { motion } from "motion/react";
 import { SurfaceCard, PrimaryButton } from "../common/ui";
 
@@ -9,6 +9,7 @@ interface DataInventoryProps {
   loading: boolean;
   setLoading: (l: boolean) => void;
   setError: (e: string | null) => void;
+  importSource?: string | null;
 }
 
 function HeaderRowEditor({
@@ -300,7 +301,7 @@ const FormattedTable: React.FC<{ tableKey: string, setError: any, setLoading: an
   );
 }
 
-export default function DataInventory({ inventory, onProceed, loading, setLoading, setError }: DataInventoryProps) {
+export default function DataInventory({ inventory, onProceed, loading, setLoading, setError, importSource }: DataInventoryProps) {
   const [expandedTable, setExpandedTable] = useState<string | null>(null);
   const [headerEditTable, setHeaderEditTable] = useState<string | null>(null);
   const [localInventory, setLocalInventory] = useState(inventory);
@@ -344,6 +345,12 @@ export default function DataInventory({ inventory, onProceed, loading, setLoadin
   return (
     <motion.section initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
       <SurfaceCard title="Data Preview" subtitle={`${localInventory.length} table${localInventory.length !== 1 ? "s" : ""} securely extracted from upload.`} icon={Database} noPadding>
+        {importSource && (
+          <div className="mx-6 mt-4 mb-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+            <ExternalLink className="w-3 h-3" />
+            Imported from {importSource === "stitcher" ? "DataStitcher" : "external module"}
+          </div>
+        )}
         <div className="divide-y divide-neutral-100 bg-white rounded-b-xl">
           {localInventory.map((inv, i) => {
             const isExpanded = expandedTable === inv.table_key;

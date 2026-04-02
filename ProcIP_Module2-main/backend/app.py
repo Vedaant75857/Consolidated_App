@@ -36,6 +36,7 @@ AGENT_MAPPING = {
 }
 
 import zipfile
+import requests as _requests
 
 class AppState:
     def __init__(self):
@@ -473,6 +474,77 @@ def run_normalization():
             
     except Exception as e:
          return jsonify({"error": str(e)}), 500
+
+ANALYZER_BE = os.environ.get("ANALYZER_BACKEND_URL", "http://localhost:3005")
+
+
+@app.route('/api/import-from-stitcher', methods=['POST'])
+def import_from_stitcher():
+    """Accept a CSV file from DataStitcher (Module 1) with headers already in row 0."""
+    if 'file' not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+
+    file = request.files['file']
+    buffer = file.read()
+    fname = file.filename or "imported.csv"
+
+    state.data_vault = {}
+    inventory = []
+
+    try:
+        key = f"{fname}::"
+        df = pd.read_csv(io.BytesIO(buffer))
+        if df.empty:
+            return jsonify({"error": "Imported file contains no data"}), 400
+        state.data_vault[key] = df
+        inventory.append({"table_key": key, "rows": len(df), "cols": len(df.columns)})
+
+        return jsonify({"inventory": inventory, "imported": True})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Failed to import data: {str(e)}"}), 500
+
+
+@app.route('/api/current-inventory', methods=['GET'])
+def current_inventory():
+    """Return the current data_vault as an inventory list (used after external import)."""
+    inventory = []
+    for key, df in state.data_vault.items():
+        inventory.append({"table_key": key, "rows": len(df), "cols": len(df.columns)})
+    return jsonify({"inventory": inventory})
+
+
+@app.route('/api/transfer-to-analyzer', methods=['POST'])
+def transfer_to_analyzer():
+    """Send the current normalised DataFrame to the Summarization Module (Module 3)."""
+    if state.df is None:
+        return jsonify({"ok": False, "error": "No active dataset to transfer"}), 400
+
+    try:
+        csv_str = state.df.to_csv(index=False)
+        csv_buf = io.BytesIO(csv_str.encode("utf-8"))
+
+        fname = (state.filename.rsplit('.', 1)[0] + "_normalized.csv") if state.filename else "normalized_data.csv"
+
+        resp = _requests.post(
+            f"{ANALYZER_BE}/api/upload",
+            files={"file": (fname, csv_buf, "text/csv")},
+            timeout=120,
+        )
+        if resp.status_code != 200:
+            err = resp.json().get("error", resp.text) if resp.headers.get("content-type", "").startswith("application/json") else resp.text
+            return jsonify({"ok": False, "error": f"Analyzer upload failed: {err}"}), 502
+
+        data = resp.json()
+        return jsonify({"ok": True, "analyzerSessionId": data.get("sessionId")})
+    except _requests.exceptions.ConnectionError:
+        return jsonify({"ok": False, "error": "Cannot reach the Data Analyzer backend. Ensure it is running on port 3005."}), 502
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 
 @app.route('/api/download', methods=['GET'])
 def download():

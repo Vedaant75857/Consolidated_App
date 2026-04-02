@@ -5,13 +5,18 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import time
 import zipfile
 from typing import Any
 
+import requests as _requests
 from openpyxl import Workbook
 
 from flask import Blueprint, Response, jsonify, request, stream_with_context
+
+NORMALIZER_BE = os.environ.get("NORMALIZER_BACKEND_URL", "http://localhost:5000")
+ANALYZER_BE = os.environ.get("ANALYZER_BACKEND_URL", "http://localhost:3005")
 
 from shared.db import (
     drop_table,
@@ -693,3 +698,110 @@ def group_preview_route():
         return jsonify(result)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+
+
+# ── Cross-module transfer helpers ──────────────────────────────────────────────
+
+
+def _read_version_csv(conn, version: int | None) -> tuple[bytes, str]:
+    """Read a merge version (or latest final_merged) as CSV bytes + filename."""
+    target_table = "final_merged"
+    filename = "final_merged.csv"
+
+    if version is not None:
+        merge_history = get_meta(conn, "merge_history") or []
+        entry = next((e for e in merge_history if e["version"] == version), None)
+        if not entry:
+            raise ValueError(f"Version {version} not found in merge history")
+        target_table = entry["table_name"]
+        label = entry.get("file_label", f"merge_v{version}")
+        safe_label = "".join(c if c.isalnum() or c in "._- " else "_" for c in label)
+        filename = f"{safe_label}.csv"
+
+    if not table_exists(conn, target_table):
+        raise ValueError("No merged data found")
+
+    columns = read_table_columns(conn, target_table)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(columns)
+    cursor = conn.execute(f"SELECT * FROM {quote_id(target_table)}")
+    while True:
+        rows = cursor.fetchmany(2000)
+        if not rows:
+            break
+        for row in rows:
+            writer.writerow([row[c] for c in columns])
+
+    return buf.getvalue().encode("utf-8"), filename
+
+
+@merging_bp.route("/merge/transfer-to-normalizer", methods=["POST"])
+def transfer_to_normalizer():
+    """Send a merge output to the Data Normalizer (Module 2) via backend-to-backend transfer."""
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+        version = body.get("version")
+        if not session_id:
+            return jsonify({"ok": False, "error": "Missing sessionId"}), 400
+
+        conn = get_session_db(session_id)
+        csv_bytes, filename = _read_version_csv(conn, version)
+
+        resp = _requests.post(
+            f"{NORMALIZER_BE}/api/import-from-stitcher",
+            files={"file": (filename, io.BytesIO(csv_bytes), "text/csv")},
+            timeout=120,
+        )
+        if resp.status_code != 200:
+            err_text = resp.text
+            try:
+                err_text = resp.json().get("error", err_text)
+            except Exception:
+                pass
+            return jsonify({"ok": False, "error": f"Normalizer import failed: {err_text}"}), 502
+
+        return jsonify({"ok": True})
+    except _requests.exceptions.ConnectionError:
+        return jsonify({"ok": False, "error": "Cannot reach the Data Normalizer backend. Ensure it is running on port 5000."}), 502
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@merging_bp.route("/merge/transfer-to-analyzer", methods=["POST"])
+def transfer_to_analyzer():
+    """Send a merge output to the Summarization Module (Module 3) via backend-to-backend transfer."""
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+        version = body.get("version")
+        if not session_id:
+            return jsonify({"ok": False, "error": "Missing sessionId"}), 400
+
+        conn = get_session_db(session_id)
+        csv_bytes, filename = _read_version_csv(conn, version)
+
+        resp = _requests.post(
+            f"{ANALYZER_BE}/api/upload",
+            files={"file": (filename, io.BytesIO(csv_bytes), "text/csv")},
+            timeout=120,
+        )
+        if resp.status_code != 200:
+            err_text = resp.text
+            try:
+                err_text = resp.json().get("error", err_text)
+            except Exception:
+                pass
+            return jsonify({"ok": False, "error": f"Analyzer upload failed: {err_text}"}), 502
+
+        data = resp.json()
+        return jsonify({"ok": True, "analyzerSessionId": data.get("sessionId")})
+    except _requests.exceptions.ConnectionError:
+        return jsonify({"ok": False, "error": "Cannot reach the Data Analyzer backend. Ensure it is running on port 3005."}), 502
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500

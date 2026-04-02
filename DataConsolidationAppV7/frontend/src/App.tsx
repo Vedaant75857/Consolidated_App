@@ -1309,6 +1309,7 @@ export default function App() {
         <MergeOutputsPanel
           mergeOutputs={mergeOutputs}
           sessionId={sessionId}
+          apiKey={apiKey}
           onClose={() => setOutputsPanelOpen(false)}
           onDeleteOutput={handleDeleteMergeOutput}
         />

@@ -44,6 +44,7 @@ export default function App() {
 
   /* ── Data state ── */
   const [inventory, setInventory]             = useState<any[]>([]);
+  const [importSource, setImportSource]       = useState<string | null>(null);
 
   /* ── Live pipeline activity log ── */
   const [statusLog, setStatusLog] = useState<LogEntry[]>([]);
@@ -67,6 +68,38 @@ export default function App() {
   useEffect(() => {
     if (apiKey) localStorage.setItem("datastitcher_apikey", apiKey);
   }, [apiKey]);
+
+  /* ── Handle cross-module import via URL params ── */
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const imported = params.get("imported");
+    const urlApiKey = params.get("apiKey");
+    const source = params.get("source");
+
+    if (imported === "true") {
+      window.history.replaceState({}, "", window.location.pathname);
+
+      if (urlApiKey) {
+        setApiKey(urlApiKey);
+        localStorage.setItem("datastitcher_apikey", urlApiKey);
+      }
+      if (source) setImportSource(source);
+
+      fetch("/api/current-inventory")
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.inventory?.length) {
+            setInventory(data.inventory);
+            setStep(2);
+            setMaxStepReached(2);
+            addLog("IMPORT", "success", `Data imported from ${source === "stitcher" ? "DataStitcher" : "external module"} — ${data.inventory.length} table(s) ready.`);
+          }
+        })
+        .catch(() => {
+          addLog("IMPORT", "error", "Failed to load imported data from backend.");
+        });
+    }
+  }, [addLog]);
 
   useEffect(() => {
     setMaxStepReached((prev) => Math.max(prev, step));
@@ -135,6 +168,7 @@ export default function App() {
           <DataInventory
             inventory={inventory} onProceed={handleProceedFromInventory}
             loading={loading} setLoading={setLoading} setError={setError}
+            importSource={importSource}
           />
         );
       case 3:

@@ -118,6 +118,7 @@ export default function App() {
   const [emailFallback, setEmailFallback] = useState<string | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
   const [emailLoading, setEmailLoading] = useState(false);
+  const [importSource, setImportSource] = useState<string | null>(null);
 
   const navigateToStep = useCallback((target: AppStep) => {
     setSlideDirection(target > step ? 1 : -1);
@@ -139,11 +140,21 @@ export default function App() {
 
     const urlParams = new URLSearchParams(window.location.search);
     const urlSessionId = urlParams.get("sessionId");
+    const urlApiKey = urlParams.get("apiKey");
+    const urlSource = urlParams.get("source");
 
     const restoreTarget = urlSessionId || sessionStorage.getItem(LS_SESSION_KEY);
 
     if (urlSessionId) {
       window.history.replaceState({}, "", window.location.pathname);
+    }
+
+    if (urlApiKey) {
+      setApiKey(urlApiKey);
+      localStorage.setItem(LS_API_KEY, urlApiKey);
+    }
+    if (urlSource) {
+      setImportSource(urlSource);
     }
 
     if (restoreTarget) {
@@ -644,6 +655,7 @@ export default function App() {
                         onDeleteTable={handleDeleteTable}
                         onSetHeaderRow={handleSetHeaderRow}
                         onDeleteRows={handleDeleteRows}
+                        importSource={importSource}
                       />
                     )}
 

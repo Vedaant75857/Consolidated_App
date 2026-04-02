@@ -14,6 +14,7 @@ import {
   RowsIcon,
   Check,
   CheckCircle2,
+  ExternalLink,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import JSZip from "jszip";
@@ -324,6 +325,7 @@ export interface DataLoadingProps {
     customNames?: Record<number, string>
   ) => void;
   onDeleteRows?: (tableKey: string, rowIds: (string | number)[]) => void;
+  importSource?: string | null;
 }
 
 export default function DataLoading({
@@ -342,6 +344,7 @@ export default function DataLoading({
   onDeleteTable,
   onSetHeaderRow,
   onDeleteRows,
+  importSource,
 }: DataLoadingProps) {
   const [isDragOver, setIsDragOver] = useState(false);
   const [fileLabel, setFileLabel] = useState<string | null>(null);
@@ -743,6 +746,12 @@ export default function DataLoading({
           icon={Database}
           noPadding
         >
+          {importSource && (
+            <div className="mx-6 mt-4 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+              <ExternalLink className="w-3 h-3" />
+              Imported from {importSource === "normalizer" ? "Data Normalizer" : importSource === "stitcher" ? "DataStitcher" : "external module"}
+            </div>
+          )}
           {uploadWarnings.length > 0 && (
             <div className="mx-6 mt-4 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl p-4 space-y-2">
               <p className="text-sm font-bold text-amber-700 dark:text-amber-400">
