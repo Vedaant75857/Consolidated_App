@@ -1,9 +1,29 @@
+import json
 import logging
+import math
 import os
 
 from flask import Flask
+from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS
 from dotenv import load_dotenv
+
+
+def _nan_to_none(obj):
+    """Recursively replace float NaN/Infinity with None for JSON safety."""
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _nan_to_none(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_nan_to_none(v) for v in obj]
+    return obj
+
+
+class SafeJSONProvider(DefaultJSONProvider):
+    def dumps(self, obj, **kwargs):
+        kwargs.setdefault("default", self.default)
+        return json.dumps(_nan_to_none(obj), allow_nan=False, **kwargs)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,6 +41,7 @@ from routes.quality_routes import quality_bp
 from routes.executive_routes import executive_bp
 
 app = Flask(__name__)
+app.json = SafeJSONProvider(app)
 CORS(app)
 
 app.config["MAX_CONTENT_LENGTH"] = 300 * 1024 * 1024  # 300 MB

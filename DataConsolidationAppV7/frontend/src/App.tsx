@@ -111,6 +111,7 @@ export default function App() {
   // Step 5: Data Cleaning (per-table)
   const [cleaningConfigs, setCleaningConfigs] = useState<Record<string, any>>({});
   const [dedupResults, setDedupResults] = useState<Record<string, any>>({});
+  const [standardizeConfigs, setStandardizeConfigs] = useState<Record<string, any>>({});
 
   // Step 6-7: Guided Merge
   const [mergeBaseGroupId, setMergeBaseGroupId] = useState<string>("");
@@ -217,6 +218,7 @@ export default function App() {
       if (s.step) { setStep(s.step); setMaxStepReached(s.maxStepReached || s.step); }
       if (s.excludedTables) setExcludedTables(s.excludedTables);
       if (s.cleaningConfigs) setCleaningConfigs(s.cleaningConfigs);
+      if (s.standardizeConfigs) setStandardizeConfigs(s.standardizeConfigs);
       if (s.mergeOutputs) setMergeOutputs(s.mergeOutputs);
 
       const sid = s.sessionId;
@@ -263,7 +265,7 @@ export default function App() {
       const persistable = {
         sessionId, step, maxStepReached,
         inventory, previews, uploadWarnings,
-        cleaningConfigs,
+        cleaningConfigs, standardizeConfigs,
         headerNormDecisions, headerNormStandardFields,
         appendGroups, unassigned, excludedTables,
         appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
@@ -276,7 +278,7 @@ export default function App() {
   }, [
     sessionId, step, maxStepReached,
     inventory, previews, uploadWarnings,
-    cleaningConfigs,
+    cleaningConfigs, standardizeConfigs,
     headerNormDecisions, headerNormStandardFields,
     appendGroups, unassigned, excludedTables,
     appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
@@ -325,8 +327,31 @@ export default function App() {
     }
     if (patch.appendGroupMappings) setAppendGroupMappings(patch.appendGroupMappings);
     if (patch.unassigned) setUnassigned(patch.unassigned);
-    if (patch.groupSchema) setGroupSchema(patch.groupSchema);
-    if (!patch.groupSchema && patch.groupSchemaTableRows) setGroupSchema(patch.groupSchemaTableRows);
+    if (patch.groupSchema || patch.groupSchemaTableRows) {
+      const incoming = (patch.groupSchema || patch.groupSchemaTableRows) as any[];
+      if (patch.appendGroups) {
+        const nameMap: Record<string, string> = {};
+        for (const g of patch.appendGroups as any[]) {
+          if (g.group_id && g.group_name) nameMap[g.group_id] = g.group_name;
+        }
+        setGroupSchema(incoming.map((g: any) => ({
+          ...g,
+          group_name: nameMap[g.group_id] || g.group_name || "",
+        })));
+      } else {
+        setAppendGroups((prevGroups) => {
+          const nameMap: Record<string, string> = {};
+          for (const g of prevGroups) {
+            if (g.group_id && g.group_name) nameMap[g.group_id] = g.group_name;
+          }
+          setGroupSchema(incoming.map((g: any) => ({
+            ...g,
+            group_name: nameMap[g.group_id] || g.group_name || "",
+          })));
+          return prevGroups;
+        });
+      }
+    }
     if (patch.mergeBaseGroupId) setMergeBaseGroupId(patch.mergeBaseGroupId);
     if (patch.mergeResult) {
       setMergeResult(patch.mergeResult);
@@ -587,6 +612,48 @@ export default function App() {
     }
   };
 
+  const handleAnalyzeColumns = async (groupId: string, columns: string[]) => {
+    try {
+      const res = await fetch("/api/analyze-column-format", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, groupId, columns }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || "Failed to analyze columns");
+      const data = await res.json();
+      return data.results || [];
+    } catch (err: any) {
+      setError(err.message);
+      addLog("Column Standardization", "error", err.message);
+      return [];
+    }
+  };
+
+  const handleApplyStandardize = async (groupId: string, actions: any[]) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/apply-column-standardize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, groupId, actions }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || "Failed to standardize columns");
+      const data = await res.json();
+      if (data.groupRow) {
+        setGroupSchema((prev) => prev.map((gs) => gs.group_id === groupId ? { ...gs, ...data.groupRow } : gs));
+      }
+      setStandardizeConfigs((prev) => ({ ...prev, [groupId]: actions }));
+      const appliedCols = (data.applied || []).map((a: any) => a.column).join(", ");
+      addLog("Column Standardization", "success", `Standardized columns for "${groupNameMap[groupId] || groupId}": ${appliedCols}`);
+    } catch (err: any) {
+      setError(err.message);
+      addLog("Column Standardization", "error", err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const fetchResultsPreviews = async () => {
     if (!sessionId) return;
     try {
@@ -661,6 +728,7 @@ export default function App() {
       // Cascade-reset downstream step (cleaning + dedup)
       setCleaningConfigs({});
       setDedupResults({});
+      setStandardizeConfigs({});
       const totalCols = (data.tables || []).reduce((s: number, t: any) => s + (t.decisions?.length || 0), 0);
       addLog("Header Normalisation", "success", `Mapped ${totalCols} columns across ${data.tables?.length || 0} table(s)`);
       const normGroupIds = (data.tables || []).map((t: any) => t.tableKey);
@@ -691,6 +759,7 @@ export default function App() {
       // Cascade-reset downstream step (cleaning + dedup configs reference old column names)
       setCleaningConfigs({});
       setDedupResults({});
+      setStandardizeConfigs({});
       setStep(5);
     } catch (err: any) {
       setError(err.message);
@@ -748,6 +817,7 @@ export default function App() {
       setGroupPreviewData({});
       setCleaningConfigs({});
       setDedupResults({});
+      setStandardizeConfigs({});
       setMergeBaseGroupId("");
       setMergeSourceGroupId("");
       setMergeResult(null);
@@ -922,6 +992,7 @@ export default function App() {
       setGroupPreviewData({});
       setCleaningConfigs({});
       setDedupResults({});
+      setStandardizeConfigs({});
       addLog("Append Execute", "success", `Appended into ${(data.groupSchema || []).length} group(s)`);
     } catch (err: any) {
       setError(err.message);
@@ -1215,10 +1286,13 @@ export default function App() {
                   sessionId={sessionId}
                   cleaningConfigs={cleaningConfigs}
                   dedupResults={dedupResults}
+                  standardizeConfigs={standardizeConfigs}
                   loading={loading}
                   onCleanGroup={handleCleanGroup}
                   onDedupPreview={handleDedupPreview}
                   onDedupApply={handleDedupApply}
+                  onAnalyzeColumns={handleAnalyzeColumns}
+                  onApplyStandardize={handleApplyStandardize}
                   onProceed={() => setStep(6)}
                   onSkip={() => setStep(6)}
                 />

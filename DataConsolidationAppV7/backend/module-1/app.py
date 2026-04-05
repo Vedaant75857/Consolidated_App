@@ -1,7 +1,9 @@
 """Module 1 — Data Stitching API (Flask, port 3001)."""
 
 import atexit
+import json
 import logging
+import math
 import os
 import threading
 import time
@@ -24,9 +26,24 @@ from shared.db import cleanup_stale_sessions, cleanup_all_sessions
 from shared.utils import json_default
 
 
+def _nan_to_none(obj):
+    """Recursively replace float NaN/Infinity with None for JSON safety."""
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _nan_to_none(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_nan_to_none(v) for v in obj]
+    return obj
+
+
 class AppJSONProvider(DefaultJSONProvider):
     def default(self, o):  # type: ignore[override]
         return json_default(o)
+
+    def dumps(self, obj, **kwargs):
+        kwargs.setdefault("default", self.default)
+        return json.dumps(_nan_to_none(obj), allow_nan=False, **kwargs)
 
 
 def create_app() -> Flask:

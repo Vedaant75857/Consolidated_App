@@ -19,7 +19,7 @@ interface HeaderNormalisationProps {
   onFetchGroupPreview: (groupIds: string[]) => void;
 }
 
-type Action = "AUTO" | "REVIEW" | "DROP" | "KEEP";
+type Action = "AUTO" | "DROP" | "KEEP";
 
 interface ColDecision {
   source_col: string;
@@ -32,14 +32,14 @@ interface ColDecision {
 }
 
 function normalizeAction(action: unknown): Action {
-  const a = String(action || "REVIEW").toUpperCase();
-  if (a === "AUTO" || a === "REVIEW" || a === "DROP" || a === "KEEP") return a;
-  return "REVIEW";
+  const a = String(action || "KEEP").toUpperCase();
+  if (a === "REVIEW") return "AUTO";
+  if (a === "AUTO" || a === "DROP" || a === "KEEP") return a;
+  return "KEEP";
 }
 
 const ACTION_COLORS: Record<Action, string> = {
   AUTO: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800",
-  REVIEW: "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800",
   KEEP: "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800",
   DROP: "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800",
 };
@@ -113,13 +113,12 @@ function NormTable({
                         const action = normalizeAction(e.target.value);
                         onUpdateDecision(col, {
                           action,
-                          mapped_to: d?.mapped_to || d?.suggested_std_field || null,
+                          mapped_to: action === "KEEP" ? null : (d?.mapped_to || d?.suggested_std_field || null),
                         });
                       }}
                       className={`w-full px-1.5 py-1 rounded text-[10px] font-bold border cursor-pointer ${ACTION_COLORS[d?.action || "KEEP"]}`}
                     >
                       <option value="AUTO">AUTO</option>
-                      <option value="REVIEW">REVIEW</option>
                       <option value="KEEP">KEEP</option>
                       <option value="DROP">DROP</option>
                     </select>
@@ -134,26 +133,30 @@ function NormTable({
               </th>
               {columns.map((col) => {
                 const d = decisionMap[col];
+                const isKeep = (d?.action || "KEEP") === "KEEP";
                 return (
                   <th key={`target-${col}`} className="px-1 py-1 border-b border-r border-neutral-300 dark:border-neutral-700">
                     <select
-                      value={d?.mapped_to || ""}
+                      value={isKeep ? "" : (d?.mapped_to || "")}
                       onChange={(e) => onUpdateDecision(col, { mapped_to: e.target.value || null })}
-                      className="w-full px-1.5 py-1 rounded text-[10px] font-semibold border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900"
+                      disabled={isKeep}
+                      className={`w-full px-1.5 py-1 rounded text-[10px] font-semibold border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 ${isKeep ? "opacity-50 cursor-not-allowed" : ""}`}
                     >
-                      <option value="">-- Unmapped --</option>
-                      {d?.top_alternatives && d.top_alternatives.length > 0 && (
+                      <option value="">{isKeep ? col : "-- Unmapped --"}</option>
+                      {!isKeep && d?.top_alternatives && d.top_alternatives.length > 0 && (
                         <optgroup label="Suggested">
                           {d.top_alternatives.map((f) => (
                             <option key={f} value={f}>{f}</option>
                           ))}
                         </optgroup>
                       )}
-                      <optgroup label="All Standard Fields">
-                        {stdFieldNames.filter((f) => !(d?.top_alternatives || []).includes(f)).map((f) => (
-                          <option key={f} value={f}>{f}</option>
-                        ))}
-                      </optgroup>
+                      {!isKeep && (
+                        <optgroup label="All Standard Fields">
+                          {stdFieldNames.filter((f) => !(d?.top_alternatives || []).includes(f)).map((f) => (
+                            <option key={f} value={f}>{f}</option>
+                          ))}
+                        </optgroup>
+                      )}
                     </select>
                   </th>
                 );
@@ -275,7 +278,6 @@ function GroupPanel({
   };
 
   const autoCount = decisions.filter((d) => d.action === "AUTO").length;
-  const reviewCount = decisions.filter((d) => d.action === "REVIEW").length;
   const keepCount = decisions.filter((d) => d.action === "KEEP").length;
   const dropCount = decisions.filter((d) => d.action === "DROP").length;
 
@@ -312,7 +314,6 @@ function GroupPanel({
           </div>
           <div className="flex items-center gap-2">
             {autoCount > 0 && <span className="text-[9px] font-bold bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 px-1.5 py-0.5 rounded">{autoCount} AUTO</span>}
-            {reviewCount > 0 && <span className="text-[9px] font-bold bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 px-1.5 py-0.5 rounded">{reviewCount} REVIEW</span>}
             {keepCount > 0 && <span className="text-[9px] font-bold bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 px-1.5 py-0.5 rounded">{keepCount} KEEP</span>}
             {dropCount > 0 && <span className="text-[9px] font-bold bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 px-1.5 py-0.5 rounded">{dropCount} DROP</span>}
           </div>
@@ -386,6 +387,7 @@ export default function HeaderNormalisation({
   onFetchGroupPreview,
 }: HeaderNormalisationProps) {
   const [edited, setEdited] = useState<Record<string, ColDecision[]>>({});
+  const [userEditedCols, setUserEditedCols] = useState<Set<string>>(new Set());
   const [manualExcelMode, setManualExcelMode] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -424,6 +426,9 @@ export default function HeaderNormalisation({
   );
 
   const updateRow = useCallback((groupKey: string, sourceCol: string, patch: Partial<ColDecision>) => {
+    if (patch.mapped_to !== undefined) {
+      setUserEditedCols((prev) => new Set(prev).add(`${groupKey}::${sourceCol}`));
+    }
     setEdited((prev) => {
       const arr = [...(prev[groupKey] || [])];
       const idx = arr.findIndex((x) => x.source_col === sourceCol);
@@ -440,6 +445,7 @@ export default function HeaderNormalisation({
         ...d,
         action: normalizeAction(d.action),
         suggested_std_field: d.mapped_to || d.suggested_std_field || null,
+        user_edited: userEditedCols.has(`${tableKey}::${d.source_col}`),
       }));
     }
     onApply(payload);
@@ -583,7 +589,7 @@ export default function HeaderNormalisation({
                   <GroupPanel
                     key={groupKey}
                     groupId={groupKey}
-                    groupName={groupNameMap[groupKey] || schema?.group_id || groupKey}
+                    groupName={groupNameMap[groupKey] || schema?.group_name || groupKey}
                     columns={cols}
                     rows={rows}
                     totalRows={total}

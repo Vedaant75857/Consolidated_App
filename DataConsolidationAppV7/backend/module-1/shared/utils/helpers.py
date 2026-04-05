@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime, time
 from dataclasses import dataclass, field
 import json
+import math
 import sqlite3
 from typing import Any
 
@@ -85,6 +86,8 @@ def json_default(value: Any) -> Any:
 
 def json_safe(value: Any) -> Any:
     """Recursively convert nested values into JSON-safe primitives."""
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return None
     if isinstance(value, dict):
         return {str(k): json_safe(v) for k, v in value.items()}
     if isinstance(value, list):

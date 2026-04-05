@@ -155,8 +155,26 @@ def save_append_groups(
     append_groups: list | None,
     unassigned: list | None,
 ) -> None:
-    set_meta(conn, "appendGroups", append_groups or [])
+    """Persist append groups and propagate group_name into groupSchemaTableRows."""
+    groups = append_groups or []
+    set_meta(conn, "appendGroups", groups)
     set_meta(conn, "unassigned", unassigned or [])
+
+    schema_rows = get_meta(conn, "groupSchemaTableRows")
+    if isinstance(schema_rows, list) and schema_rows:
+        name_lookup = {
+            str(g.get("group_id", "")): str(g.get("group_name", ""))
+            for g in groups if g.get("group_name")
+        }
+        updated = False
+        for row in schema_rows:
+            gid = str(row.get("group_id", ""))
+            new_name = name_lookup.get(gid)
+            if new_name and new_name != row.get("group_name"):
+                row["group_name"] = new_name
+                updated = True
+        if updated:
+            set_meta(conn, "groupSchemaTableRows", schema_rows)
 
 
 def run_append_mapping(

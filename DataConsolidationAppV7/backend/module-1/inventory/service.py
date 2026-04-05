@@ -418,3 +418,180 @@ def clean_group_sql(
         "groupRow": {"group_id": group_id, "rows": n_rows, "cols": len(out_cols), "columns": out_cols},
         "duplicatesRemoved": duplicates_removed,
     }
+
+
+# ---------------------------------------------------------------------------
+# 5c: Column value standardization (leading/trailing zeros)
+# ---------------------------------------------------------------------------
+
+def analyze_column_format(
+    conn: sqlite3.Connection,
+    group_id: str,
+    columns: list[str],
+) -> list[dict[str, Any]]:
+    """Analyze selected columns for leading-zero patterns and numeric format.
+
+    Returns per-column stats: has_leading_zeros, pct_leading_zeros, all_numeric,
+    min_len, max_len, mode_len, recommendation ('strip'|'pad'|'none'), reason.
+    """
+    sql_name = lookup_sql_name(conn, group_id)
+    if not sql_name or not table_exists(conn, sql_name):
+        raise ValueError(f"Table not found for group: {group_id}")
+
+    existing_cols = read_table_columns(conn, sql_name)
+    valid = [c for c in columns if c in existing_cols]
+    if not valid:
+        raise ValueError("None of the selected columns exist in this table.")
+
+    tbl = quote_id(sql_name)
+    results: list[dict[str, Any]] = []
+
+    for col in valid:
+        qc = quote_id(col)
+        row = conn.execute(
+            f"""SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN TRIM({qc}) GLOB '0[0-9]*' THEN 1 ELSE 0 END) AS leading_zeros,
+                SUM(CASE WHEN TRIM({qc}) GLOB '[0-9]*'
+                          AND TRIM({qc}) NOT GLOB '*[^0-9]*' THEN 1 ELSE 0 END) AS all_numeric,
+                MIN(LENGTH(TRIM({qc}))) AS min_len,
+                MAX(LENGTH(TRIM({qc}))) AS max_len
+            FROM {tbl}
+            WHERE TRIM({qc}) != ''"""
+        ).fetchone()
+
+        total = row[0] or 0
+        leading_zeros_count = row[1] or 0
+        all_numeric_count = row[2] or 0
+        min_len = row[3] or 0
+        max_len = row[4] or 0
+
+        pct_leading = round(100 * leading_zeros_count / total, 1) if total else 0.0
+        pct_numeric = round(100 * all_numeric_count / total, 1) if total else 0.0
+        is_all_numeric = pct_numeric >= 90
+        has_leading = pct_leading >= 5 and is_all_numeric
+
+        mode_row = conn.execute(
+            f"""SELECT LENGTH(TRIM({qc})) AS len, COUNT(*) AS cnt
+                FROM {tbl}
+                WHERE TRIM({qc}) != ''
+                GROUP BY len ORDER BY cnt DESC LIMIT 1"""
+        ).fetchone()
+        mode_len = mode_row[0] if mode_row else 0
+
+        if has_leading and min_len != max_len:
+            recommendation = "pad"
+            reason = (
+                f"{pct_leading}% of values have leading zeros. "
+                f"Lengths vary ({min_len}-{max_len}), most common length: {mode_len}. "
+                f"Recommend padding to {max_len} characters for consistency."
+            )
+        elif has_leading and min_len == max_len:
+            recommendation = "none"
+            reason = (
+                f"{pct_leading}% of values have leading zeros but all are {max_len} chars. "
+                f"Already consistent — no action needed."
+            )
+        elif is_all_numeric and not has_leading and min_len != max_len:
+            recommendation = "pad"
+            reason = (
+                f"All numeric values with varying lengths ({min_len}-{max_len}). "
+                f"No leading zeros detected — may need padding to match other datasets. "
+                f"Most common length: {mode_len}."
+            )
+        else:
+            recommendation = "none"
+            reason = (
+                f"Column is {'numeric' if is_all_numeric else 'mixed-type'}. "
+                f"No leading-zero issues detected."
+            )
+
+        results.append({
+            "column": col,
+            "total_values": total,
+            "has_leading_zeros": has_leading,
+            "pct_leading_zeros": pct_leading,
+            "all_numeric": is_all_numeric,
+            "pct_numeric": pct_numeric,
+            "min_len": min_len,
+            "max_len": max_len,
+            "mode_len": mode_len,
+            "recommendation": recommendation,
+            "reason": reason,
+        })
+
+    return results
+
+
+def apply_column_standardize(
+    conn: sqlite3.Connection,
+    group_id: str,
+    actions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Apply strip/pad operations to selected columns.
+
+    Each action dict: {column, operation: 'strip'|'pad'|'none', pad_length: int}.
+    Returns summary of changes made.
+    """
+    sql_name = lookup_sql_name(conn, group_id)
+    if not sql_name or not table_exists(conn, sql_name):
+        raise ValueError(f"Table not found for group: {group_id}")
+
+    existing_cols = read_table_columns(conn, sql_name)
+    tbl = quote_id(sql_name)
+    applied: list[dict[str, str]] = []
+
+    for act in actions:
+        col = act.get("column", "")
+        operation = act.get("operation", "none")
+        if col not in existing_cols or operation == "none":
+            continue
+
+        qc = quote_id(col)
+
+        if operation == "strip":
+            conn.execute(
+                f"""UPDATE {tbl}
+                    SET {qc} = CAST(CAST(TRIM({qc}) AS INTEGER) AS TEXT)
+                    WHERE TRIM({qc}) != ''
+                      AND TRIM({qc}) GLOB '[0-9]*'
+                      AND TRIM({qc}) NOT GLOB '*[^0-9]*'"""
+            )
+            applied.append({"column": col, "operation": "strip"})
+
+        elif operation == "pad":
+            pad_length = int(act.get("pad_length", 0))
+            if pad_length < 1 or pad_length > 50:
+                continue
+            zeros = "0" * pad_length
+            conn.execute(
+                f"""UPDATE {tbl}
+                    SET {qc} = SUBSTR('{zeros}' || TRIM({qc}), -{pad_length})
+                    WHERE TRIM({qc}) != ''
+                      AND TRIM({qc}) GLOB '[0-9]*'
+                      AND TRIM({qc}) NOT GLOB '*[^0-9]*'"""
+            )
+            applied.append({"column": col, "operation": "pad", "pad_length": str(pad_length)})
+
+    if applied:
+        conn.commit()
+
+    out_cols = read_table_columns(conn, sql_name)
+    n_rows = table_row_count(conn, sql_name)
+
+    group_schema = get_meta(conn, "groupSchemaTableRows") or []
+    for gs in group_schema:
+        if gs.get("group_id") == group_id:
+            gs["rows"] = n_rows
+            gs["cols"] = len(out_cols)
+            gs["columns"] = out_cols
+            break
+    set_meta(conn, "groupSchemaTableRows", group_schema)
+
+    preview_rows = read_table(conn, sql_name, PREVIEW_ROWS)
+
+    return {
+        "applied": applied,
+        "preview": {"columns": out_cols, "rows": preview_rows},
+        "groupRow": {"group_id": group_id, "rows": n_rows, "cols": len(out_cols), "columns": out_cols},
+    }

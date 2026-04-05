@@ -1,14 +1,34 @@
+import json
 import logging
+import math
 import os
 import io
 import re as _re
 import uuid
 import warnings
 from flask import Flask, request, jsonify, send_file
+from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
+
+
+def _nan_to_none(obj):
+    """Recursively replace float NaN/Infinity with None for JSON safety."""
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _nan_to_none(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_nan_to_none(v) for v in obj]
+    return obj
+
+
+class SafeJSONProvider(DefaultJSONProvider):
+    def dumps(self, obj, **kwargs):
+        kwargs.setdefault("default", self.default)
+        return json.dumps(_nan_to_none(obj), allow_nan=False, **kwargs)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,6 +50,7 @@ warnings.filterwarnings('ignore')
 load_dotenv()
 
 app = Flask(__name__)
+app.json = SafeJSONProvider(app)
 CORS(app)
 app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 
@@ -147,12 +168,11 @@ def get_raw_preview():
         return jsonify({"error": "Table not found"}), 404
     
     df = state.data_vault[table_key]
-    preview_df = df.head(50).astype(str).replace(["<NA>", "nan", "NaT", "None"], "")
+    preview_df = df.head(50).fillna("").astype(str).replace(["<NA>", "nan", "NaT", "None"], "")
     raw_list = preview_df.values.tolist()
     
-    # If columns were explicitly set, inject them at row 0 so the editor can preview them natively
-    columns = list(df.columns)
-    if any(isinstance(c, str) for c in columns):
+    columns = [str(c) for c in df.columns]
+    if any(c.strip() for c in columns):
         raw_list.insert(0, columns)
         
     return jsonify({"rawPreview": raw_list})
@@ -165,8 +185,8 @@ def get_preview():
         
     df = state.data_vault[table_key]
     return jsonify({
-        "columns": list(df.columns),
-        "rows": df.head(50).astype(str).replace(["<NA>", "nan", "NaT", "None"], "").to_dict(orient="records")
+        "columns": [str(c) for c in df.columns],
+        "rows": df.head(50).fillna("").astype(str).replace(["<NA>", "nan", "NaT", "None"], "").to_dict(orient="records")
     })
 
 @app.route('/api/current-preview', methods=['GET'])
@@ -174,7 +194,7 @@ def get_current_preview():
     if state.df is None:
         return jsonify({"error": "No active dataset loaded"}), 400
 
-    preview_df = state.df.head(50).astype(str).replace(["<NA>", "nan", "NaT", "None"], "")
+    preview_df = state.df.head(50).fillna("").astype(str).replace(["<NA>", "nan", "NaT", "None"], "")
     return jsonify({
         "columns": [str(c) for c in state.df.columns],
         "rows": preview_df.to_dict(orient="records")
@@ -187,7 +207,7 @@ def _suggest_columns(df: pd.DataFrame, sample_size: int = 100) -> dict:
     Returns None for each field when no confident match is found.
     """
     sample = df.head(sample_size)
-    cols = list(df.columns)
+    cols = [str(c) for c in df.columns]
 
     # ── Helpers ──────────────────────────────────────────────────────────────
     def col_lower(c):
@@ -375,7 +395,7 @@ def set_header_row():
     df.columns = final_headers
     state.data_vault[table_key] = df.iloc[row_index + 1:].reset_index(drop=True)
     
-    return jsonify({"message": "Header row updated successfully", "rows": len(state.data_vault[table_key]), "columns": list(state.data_vault[table_key].columns)})
+    return jsonify({"message": "Header row updated successfully", "rows": len(state.data_vault[table_key]), "columns": [str(c) for c in state.data_vault[table_key].columns]})
 
 @app.route('/api/delete-rows', methods=['POST'])
 def delete_rows():
@@ -470,7 +490,7 @@ def run_normalization():
         if isinstance(result, tuple) and len(result) >= 2:
             modified_df, message = result[0], result[1]
             state.df = modified_df
-            response = {"message": message, "columns": list(state.df.columns)}
+            response = {"message": message, "columns": [str(c) for c in state.df.columns]}
             if len(result) >= 4 and result[3] is not None:
                 if agent_id == "currency_conversion":
                     response["conversion_metrics"] = result[3]
@@ -531,7 +551,7 @@ def transfer_to_analyzer():
         return jsonify({"ok": False, "error": "No active dataset to transfer"}), 400
 
     try:
-        csv_str = state.df.to_csv(index=False)
+        csv_str = state.df.to_csv(index=False, na_rep="")
         csv_bytes = csv_str.encode("utf-8")
 
         fname = (state.filename.rsplit('.', 1)[0] + "_normalized.csv") if state.filename else "normalized_data.csv"

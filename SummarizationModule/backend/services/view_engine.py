@@ -1,9 +1,29 @@
+import math
 import sqlite3
 from typing import Any
 
 import pandas as pd
 
 from shared.formatting import format_spend, format_pct
+
+
+def _safe_float(v: Any) -> float | None:
+    """Convert a value to float, returning None for NaN/Infinity."""
+    try:
+        f = float(v)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return f
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_list(values: list) -> list:
+    """Replace NaN/Infinity in a list of floats with None."""
+    return [
+        None if isinstance(v, float) and (math.isnan(v) or math.isinf(v)) else v
+        for v in values
+    ]
 
 VIEW_REGISTRY: list[dict[str, Any]] = [
     {
@@ -137,7 +157,7 @@ def compute_spend_over_time(df: pd.DataFrame) -> dict[str, Any]:
     yearly["Year"] = yearly["Year"].astype(int).astype(str)
 
     chart_labels = (last_12["Month"].astype(str) + " " + last_12["Year"].astype(int).astype(str)).tolist()
-    chart_values = last_12["Total Spend (USD)"].tolist()
+    chart_values = _safe_list(last_12["Total Spend (USD)"].tolist())
 
     return {
         "tableData": {
@@ -177,7 +197,7 @@ def compute_supplier_ranking(df: pd.DataFrame, top_n: int = 20) -> dict[str, Any
         "tableData": _to_records(supplier.reset_index()),
         "chartData": {
             "labels": top["Supplier Name"].tolist(),
-            "values": top["Total Spend (USD)"].tolist(),
+            "values": _safe_list(top["Total Spend (USD)"].tolist()),
         },
         "excludedRows": excluded,
         "totalSuppliers": len(supplier),
@@ -212,8 +232,8 @@ def compute_pareto(df: pd.DataFrame, threshold: float = 80.0) -> dict[str, Any]:
         "tableData": _to_records(pareto),
         "chartData": {
             "labels": pareto["Supplier Name"].tolist(),
-            "spendValues": pareto["Total Spend (USD)"].tolist(),
-            "cumulativePercent": pareto["Cumulative %"].tolist(),
+            "spendValues": _safe_list(pareto["Total Spend (USD)"].tolist()),
+            "cumulativePercent": _safe_list(pareto["Cumulative %"].tolist()),
         },
         "excludedRows": excluded,
         "suppliersInGroup": len(pareto),
@@ -242,7 +262,7 @@ def compute_currency_spend(df: pd.DataFrame) -> dict[str, Any]:
         "tableData": _to_records(currency),
         "chartData": {
             "labels": currency["Currency"].tolist(),
-            "values": currency["Total Local Spend"].tolist(),
+            "values": _safe_list(currency["Total Local Spend"].tolist()),
         },
         "excludedRows": excluded,
     }
@@ -268,7 +288,7 @@ def compute_country_spend(df: pd.DataFrame) -> dict[str, Any]:
         "tableData": _to_records(country),
         "chartData": {
             "labels": country["Country"].tolist(),
-            "values": country["Total Spend (USD)"].tolist(),
+            "values": _safe_list(country["Total Spend (USD)"].tolist()),
         },
         "excludedRows": excluded,
     }
@@ -294,7 +314,7 @@ def compute_l1_spend(df: pd.DataFrame) -> dict[str, Any]:
         "tableData": _to_records(l1),
         "chartData": {
             "labels": l1["Category L1"].tolist(),
-            "values": l1["Total Spend (USD)"].tolist(),
+            "values": _safe_list(l1["Total Spend (USD)"].tolist()),
         },
         "excludedRows": excluded,
     }
@@ -319,17 +339,17 @@ def _build_mekko_data(
         for _, row in segs.iterrows():
             segments.append({
                 "label": str(row[seg_field]),
-                "value": float(row[spend_field]),
-                "share": float(row[spend_field] / col_spend) if col_spend > 0 else 0,
+                "value": _safe_float(row[spend_field]) or 0,
+                "share": _safe_float(row[spend_field] / col_spend) if col_spend > 0 else 0,
             })
         columns.append({
             "label": str(col_val),
-            "totalSpend": float(col_spend),
-            "width": float(col_width),
+            "totalSpend": _safe_float(col_spend) or 0,
+            "width": _safe_float(col_width) or 0,
             "segments": segments,
         })
 
-    return {"columns": columns, "grandTotal": float(grand_total)}
+    return {"columns": columns, "grandTotal": _safe_float(grand_total) or 0}
 
 
 def compute_l1_vs_l2_mekko(df: pd.DataFrame) -> dict[str, Any]:
@@ -415,9 +435,9 @@ def compute_category_drilldown(df: pd.DataFrame, mapping: dict) -> dict[str, Any
             node: dict[str, Any] = {
                 "name": str(val),
                 "level": current_level,
-                "totalSpend": float(spend),
-                "percentOfParent": round(float(spend / parent_total * 100), 2) if parent_total > 0 else 0,
-                "percentOfTotal": round(float(spend / grand_total * 100), 2) if grand_total > 0 else 0,
+                "totalSpend": _safe_float(spend) or 0,
+                "percentOfParent": round(_safe_float(spend / parent_total * 100) or 0, 2) if parent_total > 0 else 0,
+                "percentOfTotal": round(_safe_float(spend / grand_total * 100) or 0, 2) if grand_total > 0 else 0,
             }
             if remaining:
                 child_data = data[data[current_level] == val]

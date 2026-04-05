@@ -128,7 +128,8 @@
     "COST CTR",
     "HSN/SAC CODE",
     "COSTCENTERNAME",
-    "COSTCENTER"
+    "COSTCENTER",
+    "COSTCENTERCOMPANYCODE"
   ],
   "Payment date": [
     "CLEARING",
@@ -261,7 +262,8 @@
     "CATEGORY4"
   ],
   "Cost Center Description": [
-    "COSTCENTERDESCRIPTION"
+    "COSTCENTERDESCRIPTION",
+    "COSTCENTERNAME"
   ],
   "PO Material Description": [
     "MATERIAL"

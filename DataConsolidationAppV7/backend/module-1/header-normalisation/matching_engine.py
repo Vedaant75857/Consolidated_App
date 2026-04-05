@@ -213,8 +213,7 @@ def map_single_header(
         return {"raw": raw, "tier": "JUNK", "mapped_to": None, "confidence": 0.0, "action": "DROP"}
 
     def _hit(field: str, tier: str, conf: float = 1.0) -> dict:
-        action = "AUTO" if conf >= 0.84 else "REVIEW"
-        return {"raw": raw, "tier": tier, "mapped_to": field, "confidence": round(conf, 3), "action": action}
+        return {"raw": raw, "tier": tier, "mapped_to": field, "confidence": round(conf, 3), "action": "AUTO"}
 
     # -- T1: Alias dictionary lookup --
     if norm in ALIAS_LOOKUP:

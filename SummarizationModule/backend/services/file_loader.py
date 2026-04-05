@@ -348,6 +348,17 @@ def build_inventory(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return inventory
 
 
+def _safe_value(v: Any) -> Any:
+    """Convert None or float NaN/Infinity to empty string for JSON safety."""
+    if v is None:
+        return ""
+    if isinstance(v, float):
+        import math
+        if math.isnan(v) or math.isinf(v):
+            return ""
+    return v
+
+
 def build_preview(conn: sqlite3.Connection, limit: int = 50) -> dict[str, dict[str, Any]]:
     """Returns {table_key: {columns: [...], rows: [{...}, ...]}}"""
     registry = _get_registry(conn)
@@ -360,7 +371,10 @@ def build_preview(conn: sqlite3.Connection, limit: int = 50) -> dict[str, dict[s
             rows = cursor.fetchall()
             previews[entry["table_key"]] = {
                 "columns": col_names,
-                "rows": [dict(zip(col_names, row)) for row in rows],
+                "rows": [
+                    {c: _safe_value(v) for c, v in zip(col_names, row)}
+                    for row in rows
+                ],
             }
         except Exception:
             pass

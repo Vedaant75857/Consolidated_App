@@ -237,6 +237,8 @@ def _to_ui_decision(engine_result: dict) -> dict[str, Any]:
     mapped_to = engine_result.get("mapped_to")
     confidence = engine_result.get("confidence", 0.0)
     action = engine_result.get("action", "KEEP")
+    if action == "REVIEW":
+        action = "AUTO"
     tier = engine_result.get("tier", "")
     reason = engine_result.get("reason", "")
 
@@ -289,16 +291,23 @@ def apply_header_norm(
         for cd in col_decisions:
             src = cd["source_col"]
             action = cd.get("action", "KEEP")
+            if action == "REVIEW":
+                action = "AUTO"
             mapped_to = cd.get("mapped_to")
+            user_edited = cd.get("user_edited", False)
 
             if action == "DROP":
                 dropped_count += 1
                 continue
 
-            if mapped_to and mapped_to.strip():
+            if action == "KEEP":
+                select_parts.append(quote_id(src))
+                kept_count += 1
+            elif mapped_to and mapped_to.strip():
                 select_parts.append(f'{quote_id(src)} AS {quote_id(mapped_to)}')
                 mapped_count += 1
-                alias_add(mapped_to, src)
+                if user_edited:
+                    alias_add(mapped_to, src)
             else:
                 select_parts.append(quote_id(src))
                 kept_count += 1

@@ -152,12 +152,14 @@ def _auto_header_norm_decisions(conn) -> dict[str, list[dict[str, Any]]]:
             if not src:
                 continue
             action = str(d.get("action") or "KEEP")
+            if action == "REVIEW":
+                action = "AUTO"
             mapped = d.get("suggested_std_field")
             col_decisions.append(
                 {
                     "source_col": src,
                     "action": action,
-                    "mapped_to": mapped if action in ("AUTO", "REVIEW") else None,
+                    "mapped_to": mapped if action == "AUTO" else None,
                 }
             )
         if col_decisions:
