@@ -55,9 +55,6 @@ DESCRIPTION_COLUMNS: list[str] = [
     "PO Material Group Description",
     "PO Material Description",
     "PO Line Item Description 2",
-    "Cost Center Description",
-    "GL Account Description",
-    "Contract Description",
 ]
 
 CURRENCY_COLUMNS: list[str] = [

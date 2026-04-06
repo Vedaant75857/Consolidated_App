@@ -35,6 +35,21 @@ interface DataQualityAssessmentProps {
 
 /* ── Helpers ───────────────────────────────────────────────────────────── */
 
+const HIDDEN_COLUMNS = new Set([
+  "Cost Center Description",
+  "GL Account Description",
+  "Contract Description",
+]);
+
+function renderBoldMarkdown(text: string): React.ReactNode {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, i) =>
+    part.startsWith("**") && part.endsWith("**")
+      ? <strong key={i}>{part.slice(2, -2)}</strong>
+      : part
+  );
+}
+
 function fillRateColor(rate: number): { bg: string; text: string } {
   if (rate > 80) return { bg: "bg-emerald-100 dark:bg-emerald-950/40", text: "text-emerald-700 dark:text-emerald-400" };
   if (rate > 60) return { bg: "bg-amber-100 dark:bg-amber-950/40", text: "text-amber-700 dark:text-amber-400" };
@@ -207,8 +222,9 @@ export default function DataQualityAssessment({
 
       {/* Results table */}
       {result && result.parameters.map((group) => {
-        const mappedCols = group.columns.filter((c) => c.mapped);
-        const unmappedCols = group.columns.filter((c) => !c.mapped);
+        const visibleColumns = group.columns.filter((c) => !HIDDEN_COLUMNS.has(c.columnName));
+        const mappedCols = visibleColumns.filter((c) => c.mapped);
+        const unmappedCols = visibleColumns.filter((c) => !c.mapped);
         const isExpanded = expandedGroups.has(group.group);
 
         return (
@@ -248,7 +264,7 @@ export default function DataQualityAssessment({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                      {group.columns.map((col) => {
+                      {visibleColumns.map((col) => {
                         const colors = col.mapped
                           ? fillRateColor(col.fillRate)
                           : { bg: "bg-neutral-100 dark:bg-neutral-800", text: "text-neutral-400 dark:text-neutral-500" };
@@ -267,7 +283,7 @@ export default function DataQualityAssessment({
                             </td>
                             <td className="px-6 py-3">
                               <span className={`text-sm leading-relaxed ${col.mapped ? "text-neutral-700 dark:text-neutral-300" : "text-neutral-400 dark:text-neutral-500 italic"}`}>
-                                {col.insight || (col.mapped ? "" : "Column not present in data.")}
+                                {renderBoldMarkdown(col.insight || (col.mapped ? "" : "Column not present in data."))}
                               </span>
                             </td>
                           </tr>
