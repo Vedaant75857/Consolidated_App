@@ -1,10 +1,12 @@
 import logging
+import threading
 
 from flask import Blueprint, jsonify, request
 
 from shared.db import get_session_db, get_meta, set_meta, session_exists
 from services.view_engine import get_available_views, compute_views
 from services.ai_summary import generate_summary_for_view
+from services.data_quality import run_executive_summary
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +57,7 @@ def compute():
         results = compute_views(conn, selected_views, config, mapping)
 
         set_meta(conn, "view_results", results)
-        set_meta(conn, "step", 5)
+        set_meta(conn, "step", 6)
         conn.close()
 
         return jsonify({"views": results})
@@ -137,4 +139,63 @@ def generate_summary():
         return jsonify({"viewId": view_id, "summary": summary})
     except Exception as exc:
         logger.error("generate-summary failed: %s", exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 500
+
+
+# ── Executive Summary (DQA) ──────────────────────────────────────────────
+
+_ES_LOCK_GUARD = threading.Lock()
+_ES_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _es_lock(session_id: str) -> threading.RLock:
+    with _ES_LOCK_GUARD:
+        lock = _ES_LOCKS.get(session_id)
+        if lock is None:
+            lock = threading.RLock()
+            _ES_LOCKS[session_id] = lock
+        return lock
+
+
+@views_bp.route("/executive-summary", methods=["POST"])
+def executive_summary():
+    """Run the Executive Summary DQA on the analysis_data table.
+
+    Request JSON:
+        sessionId – active session identifier (required)
+        apiKey    – Portkey / OpenAI key for AI insights (required)
+        force     – if true, bypass cache and recompute (optional)
+    """
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+        api_key = body.get("apiKey")
+        force = body.get("force", False)
+
+        if not session_id or not session_exists(session_id):
+            return jsonify({"error": "Invalid session"}), 400
+        if not api_key or not str(api_key).strip():
+            return jsonify({"error": "Missing API key"}), 400
+
+        conn = get_session_db(str(session_id))
+        lock = _es_lock(str(session_id))
+
+        with lock:
+            # Return cached result unless force-rerun requested
+            if not force:
+                cached = get_meta(conn, "executive_summary")
+                if cached:
+                    conn.close()
+                    return jsonify(cached)
+
+            result = run_executive_summary(conn, str(api_key).strip())
+            set_meta(conn, "executive_summary", result)
+            conn.close()
+
+        return jsonify(result)
+
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.error("executive-summary failed: %s", exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500

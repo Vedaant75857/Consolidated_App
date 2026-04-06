@@ -595,3 +595,123 @@ def apply_column_standardize(
         "preview": {"columns": out_cols, "rows": preview_rows},
         "groupRow": {"group_id": group_id, "rows": n_rows, "cols": len(out_cols), "columns": out_cols},
     }
+
+
+# ── Concatenation ─────────────────────────────────────────────────────
+
+def concat_columns_apply(
+    conn: sqlite3.Connection,
+    group_id: str,
+    columns: list[str],
+) -> dict[str, Any]:
+    """Concatenate selected columns into a new derived column."""
+    sql_name = lookup_sql_name(conn, group_id)
+    if not sql_name:
+        raise ValueError(f"No table found for group '{group_id}'.")
+
+    existing_cols = read_table_columns(conn, sql_name)
+    missing = [c for c in columns if c not in existing_cols]
+    if missing:
+        raise ValueError(f"Columns not found: {', '.join(missing)}")
+    if len(columns) < 2:
+        raise ValueError("At least 2 columns are required for concatenation.")
+
+    new_col = "Concat_" + "_".join(columns)
+    if new_col in existing_cols:
+        raise ValueError(f"Column '{new_col}' already exists.")
+
+    tbl = quote_id(sql_name)
+    qnew = quote_id(new_col)
+
+    # Add new column
+    conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {qnew} TEXT")
+
+    # Build concatenation expression: COALESCE(col,'') || COALESCE(col,'') || ...
+    expr = " || ".join(f"COALESCE({quote_id(c)}, '')" for c in columns)
+    conn.execute(f"UPDATE {tbl} SET {qnew} = {expr}")
+    conn.commit()
+
+    # Track in metadata
+    concat_meta: dict = get_meta(conn, "concatColumns") or {}
+    group_concats: list = concat_meta.get(group_id, [])
+    group_concats.append({"column_name": new_col, "source_columns": columns})
+    concat_meta[group_id] = group_concats
+    set_meta(conn, "concatColumns", concat_meta)
+
+    # Update groupSchemaTableRows
+    out_cols = read_table_columns(conn, sql_name)
+    n_rows = table_row_count(conn, sql_name)
+    group_schema = get_meta(conn, "groupSchemaTableRows") or []
+    for gs in group_schema:
+        if gs.get("group_id") == group_id:
+            gs["rows"] = n_rows
+            gs["cols"] = len(out_cols)
+            gs["columns"] = out_cols
+            break
+    set_meta(conn, "groupSchemaTableRows", group_schema)
+
+    return {
+        "column_name": new_col,
+        "source_columns": columns,
+        "groupRow": {"group_id": group_id, "rows": n_rows, "cols": len(out_cols), "columns": out_cols},
+        "concatColumns": group_concats,
+    }
+
+
+def delete_concat_column(
+    conn: sqlite3.Connection,
+    group_id: str,
+    column_name: str,
+) -> dict[str, Any]:
+    """Delete a previously created concatenation column."""
+    sql_name = lookup_sql_name(conn, group_id)
+    if not sql_name:
+        raise ValueError(f"No table found for group '{group_id}'.")
+
+    # Validate it's a tracked concat column
+    concat_meta: dict = get_meta(conn, "concatColumns") or {}
+    group_concats: list = concat_meta.get(group_id, [])
+    if not any(cc["column_name"] == column_name for cc in group_concats):
+        raise ValueError(f"'{column_name}' is not a tracked concatenation column.")
+
+    existing_cols = read_table_columns(conn, sql_name)
+    if column_name not in existing_cols:
+        raise ValueError(f"Column '{column_name}' does not exist in the table.")
+
+    # Rebuild table without the column
+    kept = [c for c in existing_cols if c != column_name]
+    select_list = ", ".join(quote_id(c) for c in kept)
+    work = _work_name(group_id)
+    shadow = _shadow_name(group_id)
+
+    drop_table(conn, work)
+    conn.execute(
+        f"CREATE TABLE {quote_id(work)} AS SELECT * FROM {quote_id(sql_name)}"
+    )
+    conn.commit()
+    _rebuild_from_select(conn, work, shadow, select_list)
+    drop_table(conn, sql_name)
+    conn.execute(f"ALTER TABLE {quote_id(work)} RENAME TO {quote_id(sql_name)}")
+    conn.commit()
+
+    # Update concat metadata
+    group_concats = [cc for cc in group_concats if cc["column_name"] != column_name]
+    concat_meta[group_id] = group_concats
+    set_meta(conn, "concatColumns", concat_meta)
+
+    # Update groupSchemaTableRows
+    out_cols = read_table_columns(conn, sql_name)
+    n_rows = table_row_count(conn, sql_name)
+    group_schema = get_meta(conn, "groupSchemaTableRows") or []
+    for gs in group_schema:
+        if gs.get("group_id") == group_id:
+            gs["rows"] = n_rows
+            gs["cols"] = len(out_cols)
+            gs["columns"] = out_cols
+            break
+    set_meta(conn, "groupSchemaTableRows", group_schema)
+
+    return {
+        "groupRow": {"group_id": group_id, "rows": n_rows, "cols": len(out_cols), "columns": out_cols},
+        "concatColumns": group_concats,
+    }

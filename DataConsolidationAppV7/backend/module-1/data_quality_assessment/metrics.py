@@ -24,6 +24,13 @@ NULL_PROXY_VALUES: list[str] = [
     "unclassified", "0", ".",
 ]
 
+NON_PROCURABLE_KEYWORDS: list[str] = [
+    "customs duties", "government fee", "license fee", "legal charges",
+    "bank charges", "currency adjustment", "write-off",
+    "taxes", "tax", "rebate", "duty", "freight", "shipping",
+    "insurance", "penalty", "fine", "interest", "surcharge",
+]
+
 # Pre-compiled regex buckets for date format detection
 _DATE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("YYYY-MM-DD", re.compile(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}$")),
@@ -335,7 +342,10 @@ def compute_description_metrics(
         f"       AND LENGTH(TRIM({qc})) - LENGTH(REPLACE(TRIM({qc}), ' ', '')) > 0 "
         f"       THEN 1 END) AS multi_word, "
         f"  AVG(CASE WHEN {nn} THEN LENGTH(TRIM({qc})) END) AS avg_len, "
-        f"  {proxy_expr} AS proxy_ct "
+        f"  {proxy_expr} AS proxy_ct, "
+        f"  COUNT(CASE WHEN {nn} "
+        f"       AND (TRIM({qc}) GLOB '*[A-Za-z]*' OR TRIM({qc}) GLOB '*[0-9]*') "
+        f"       THEN 1 END) AS alphanumeric_ct "
         f"FROM {tbl}"
     )
     row = conn.execute(sql).fetchone()
@@ -344,6 +354,57 @@ def compute_description_metrics(
         "multiWordCount": int(row["multi_word"] or 0),
         "avgCharLength": round(float(row["avg_len"] or 0), 1),
         "nullProxyCount": int(row["proxy_ct"] or 0),
+        "alphanumericCount": int(row["alphanumeric_ct"] or 0),
+    }
+
+
+# ── non-procurable spend ──────────────────────────────────────────────────
+
+def compute_non_procurable_spend(
+    conn: sqlite3.Connection,
+    table_name: str,
+    desc_column: str,
+    spend_column: str | None,
+) -> dict[str, Any]:
+    """Sum spend for rows whose description matches non-procurable keywords.
+
+    Args:
+        conn: SQLite connection.
+        table_name: Target table.
+        desc_column: Description column to check for keyword matches.
+        spend_column: Spend column to sum (None if unavailable).
+
+    Returns:
+        Dict with ``nonProcurableSpend`` (float|None) and ``spendColumnUsed``.
+    """
+    if spend_column is None:
+        return {"nonProcurableSpend": None, "spendColumnUsed": None}
+
+    tbl = quote_id(table_name)
+    qd = quote_id(desc_column)
+    qs = quote_id(spend_column)
+
+    keyword_conditions = " OR ".join(
+        f"INSTR(LOWER(TRIM({qd})), '{kw}') > 0"
+        for kw in NON_PROCURABLE_KEYWORDS
+    )
+    numeric_check = (
+        f"TRIM({qs}) GLOB '*[0-9]*' "
+        f"AND TRIM({qs}) NOT GLOB '*[^0-9.eE+-]*'"
+    )
+
+    sql = (
+        f"SELECT SUM(CASE "
+        f"  WHEN ({keyword_conditions}) AND ({numeric_check}) "
+        f"  THEN CAST({qs} AS REAL) ELSE 0 END"
+        f") AS non_proc_spend "
+        f"FROM {tbl} "
+        f"WHERE {qd} IS NOT NULL AND TRIM({qd}) != ''"
+    )
+    row = conn.execute(sql).fetchone()
+    return {
+        "nonProcurableSpend": round(float(row["non_proc_spend"] or 0), 2),
+        "spendColumnUsed": spend_column,
     }
 
 
@@ -372,3 +433,145 @@ def compute_currency_metrics(
         "distinctCount": len(codes),
         "codes": codes,
     }
+
+
+def compute_currency_quality_analysis(
+    conn: sqlite3.Connection,
+    table_name: str,
+    currency_column: str,
+    local_spend_col: str | None,
+    reporting_spend_col: str | None,
+    total_rows: int,
+    top_n: int = 20,
+) -> list[dict[str, Any]]:
+    """Per-currency-code breakdown with row coverage and spend totals.
+
+    Args:
+        conn: SQLite connection.
+        table_name: Target table.
+        currency_column: Currency code column to group by.
+        local_spend_col: Local currency spend column (None if unavailable).
+        reporting_spend_col: Reporting currency spend column (None if unavailable).
+        total_rows: Total rows in the table (denominator for row %).
+        top_n: Show top N currencies by reporting spend; rest aggregated as 'Others'.
+
+    Returns:
+        List of dicts sorted by reporting spend descending, each with
+        ``currencyCode``, ``rowCount``, ``rowPct``, ``localSpend``, ``reportingSpend``.
+    """
+    tbl = quote_id(table_name)
+    qc = quote_id(currency_column)
+    nn = _non_null_condition(qc)
+
+    def _spend_expr(spend_col: str | None, alias: str) -> str:
+        if spend_col is None:
+            return f"NULL AS {alias}"
+        qs = quote_id(spend_col)
+        return (
+            f"SUM(CASE WHEN TRIM({qs}) GLOB '*[0-9]*' "
+            f"AND TRIM({qs}) NOT GLOB '*[^0-9.eE+-]*' "
+            f"THEN CAST({qs} AS REAL) ELSE 0 END) AS {alias}"
+        )
+
+    local_expr = _spend_expr(local_spend_col, "local_spend")
+    reporting_expr = _spend_expr(reporting_spend_col, "reporting_spend")
+
+    sql = (
+        f"SELECT UPPER(TRIM({qc})) AS code, COUNT(*) AS row_ct, "
+        f"{local_expr}, {reporting_expr} "
+        f"FROM {tbl} WHERE {nn} "
+        f"GROUP BY UPPER(TRIM({qc})) "
+        f"ORDER BY reporting_spend DESC NULLS LAST, row_ct DESC"
+    )
+    rows = conn.execute(sql).fetchall()
+
+    result: list[dict[str, Any]] = []
+    others_row_ct = 0
+    others_local = 0.0
+    others_reporting = 0.0
+    has_others = False
+
+    for i, r in enumerate(rows):
+        row_ct = int(r["row_ct"] or 0)
+        local_val = float(r["local_spend"]) if r["local_spend"] is not None else None
+        reporting_val = float(r["reporting_spend"]) if r["reporting_spend"] is not None else None
+
+        if i < top_n:
+            result.append({
+                "currencyCode": str(r["code"]),
+                "rowCount": row_ct,
+                "rowPct": _safe_pct(row_ct, total_rows),
+                "localSpend": round(local_val, 2) if local_val is not None else None,
+                "reportingSpend": round(reporting_val, 2) if reporting_val is not None else None,
+            })
+        else:
+            has_others = True
+            others_row_ct += row_ct
+            if local_val is not None:
+                others_local += local_val
+            if reporting_val is not None:
+                others_reporting += reporting_val
+
+    if has_others:
+        result.append({
+            "currencyCode": "Others",
+            "rowCount": others_row_ct,
+            "rowPct": _safe_pct(others_row_ct, total_rows),
+            "localSpend": round(others_local, 2) if local_spend_col else None,
+            "reportingSpend": round(others_reporting, 2) if reporting_spend_col else None,
+        })
+
+    return result
+
+
+# ── fill rate summary (all columns) ──────────────────────────────────────
+
+_SYSTEM_COLUMNS: set[str] = {"FILE_NAME", "RECORD_ID"}
+
+
+def compute_fill_rate_summary(
+    conn: sqlite3.Connection,
+    table_name: str,
+    exclude: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Compute fill rate and unique-value count for every column in a table.
+
+    Args:
+        conn: SQLite connection.
+        table_name: Target table (e.g. ``final_merged_v1``).
+        exclude: Additional column names to skip (combined with system cols).
+
+    Returns:
+        List of dicts with ``columnName``, ``filledRows``, ``totalRows``,
+        ``fillRate``, ``uniqueValues``.
+    """
+    all_cols = read_table_columns(conn, table_name)
+    skip = _SYSTEM_COLUMNS | (exclude or set())
+    columns = [c for c in all_cols if c not in skip]
+
+    if not columns:
+        return []
+
+    tbl = quote_id(table_name)
+    total_rows = table_row_count(conn, table_name)
+    fill_rates = compute_fill_rates(conn, table_name, columns)
+
+    summary: list[dict[str, Any]] = []
+    for col in columns:
+        qc = quote_id(col)
+        unique_row = conn.execute(
+            f"SELECT COUNT(DISTINCT {qc}) FROM {tbl} "
+            f"WHERE {_non_null_condition(qc)}"
+        ).fetchone()
+        unique_count = int(unique_row[0] or 0)
+        fr = fill_rates.get(col, {})
+
+        summary.append({
+            "columnName": col,
+            "filledRows": fr.get("non_null", 0),
+            "totalRows": total_rows,
+            "fillRate": fr.get("fill_rate", 0.0),
+            "uniqueValues": unique_count,
+        })
+
+    return summary

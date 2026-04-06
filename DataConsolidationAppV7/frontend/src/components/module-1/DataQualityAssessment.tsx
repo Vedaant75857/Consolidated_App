@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, type ReactNode, useCallback, useEffect, useState } from "react";
 import { motion } from "motion/react";
-import { BarChart3, ChevronDown, Loader2, RefreshCw } from "lucide-react";
+import { BarChart3, ChevronDown, Loader2, RefreshCw, TableProperties } from "lucide-react";
 import { SurfaceCard, itemVariants } from "../common/ui";
 import { postDataQualityAssessment } from "./services/stitchingApi";
 import type { MergeOutput } from "../../types";
@@ -21,9 +21,18 @@ interface ParameterGroup {
   columns: ColumnEntry[];
 }
 
+interface FillRateSummaryItem {
+  columnName: string;
+  filledRows: number;
+  totalRows: number;
+  fillRate: number;
+  uniqueValues: number;
+}
+
 interface DqaResult {
   totalRows: number;
   parameters: ParameterGroup[];
+  fillRateSummary: FillRateSummaryItem[];
 }
 
 interface DataQualityAssessmentProps {
@@ -41,7 +50,7 @@ const HIDDEN_COLUMNS = new Set([
   "Contract Description",
 ]);
 
-function renderBoldMarkdown(text: string): React.ReactNode {
+function renderBoldMarkdown(text: string): ReactNode {
   const parts = text.split(/(\*\*[^*]+\*\*)/g);
   return parts.map((part, i) =>
     part.startsWith("**") && part.endsWith("**")
@@ -54,6 +63,14 @@ function fillRateColor(rate: number): { bg: string; text: string } {
   if (rate > 80) return { bg: "bg-emerald-100 dark:bg-emerald-950/40", text: "text-emerald-700 dark:text-emerald-400" };
   if (rate > 60) return { bg: "bg-amber-100 dark:bg-amber-950/40", text: "text-amber-700 dark:text-amber-400" };
   return { bg: "bg-red-100 dark:bg-red-950/40", text: "text-red-700 dark:text-red-400" };
+}
+
+function formatCurrency(value: number, label: string | null): string {
+  const formatted = value.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return label ? `${formatted} (${label})` : formatted;
 }
 
 function tableNameForVersion(version: number): string {
@@ -77,6 +94,7 @@ export default function DataQualityAssessment({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [fillRateExpanded, setFillRateExpanded] = useState(true);
 
   const runAssessment = useCallback(
     async (version: number) => {
@@ -220,6 +238,76 @@ export default function DataQualityAssessment({
         </div>
       </SurfaceCard>
 
+      {/* Fill Rate Summary */}
+      {result && result.fillRateSummary && result.fillRateSummary.length > 0 && (
+        <SurfaceCard noPadding>
+          <button
+            onClick={() => setFillRateExpanded(!fillRateExpanded)}
+            className="flex items-center justify-between w-full px-6 py-4 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors rounded-t-3xl"
+          >
+            <div className="flex items-center gap-3">
+              <span className="w-8 h-8 rounded-lg bg-indigo-100 dark:bg-indigo-950/40 flex items-center justify-center">
+                <TableProperties className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+              </span>
+              <div>
+                <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">
+                  Fill Rate Summary
+                </h3>
+                <p className="text-xs text-neutral-400">
+                  {result.fillRateSummary.length} column{result.fillRateSummary.length !== 1 ? "s" : ""}
+                </p>
+              </div>
+            </div>
+            <ChevronDown
+              className={`w-4 h-4 text-neutral-400 transition-transform ${fillRateExpanded ? "" : "-rotate-90"}`}
+            />
+          </button>
+
+          {fillRateExpanded && (
+            <div className="border-t border-neutral-100 dark:border-neutral-800">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                      <th className="px-6 py-3">Column</th>
+                      <th className="px-4 py-3 w-28 text-center">Fill Rate</th>
+                      <th className="px-4 py-3 w-36 text-center">Unique Values</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                    {result.fillRateSummary.map((item) => {
+                      const colors = fillRateColor(item.fillRate);
+                      return (
+                        <tr key={item.columnName} className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors">
+                          <td className="px-6 py-3">
+                            <span className="font-medium text-neutral-800 dark:text-neutral-200">
+                              {item.columnName}
+                            </span>
+                            <span className="ml-2 text-xs text-emerald-600 dark:text-emerald-400">
+                              ({item.filledRows.toLocaleString()} / {item.totalRows.toLocaleString()})
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <span className={`inline-block px-3 py-1 rounded-lg text-xs font-bold tabular-nums ${colors.bg} ${colors.text}`}>
+                              {item.fillRate.toFixed(1)}%
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <span className="text-sm font-semibold tabular-nums text-neutral-700 dark:text-neutral-300">
+                              {item.uniqueValues.toLocaleString()}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </SurfaceCard>
+      )}
+
       {/* Results table */}
       {result && result.parameters.map((group) => {
         const visibleColumns = group.columns.filter((c) => !HIDDEN_COLUMNS.has(c.columnName));
@@ -268,25 +356,89 @@ export default function DataQualityAssessment({
                         const colors = col.mapped
                           ? fillRateColor(col.fillRate)
                           : { bg: "bg-neutral-100 dark:bg-neutral-800", text: "text-neutral-400 dark:text-neutral-500" };
+                        const currencyQuality: any[] | undefined = col.stats?.currencyQuality;
 
                         return (
-                          <tr key={col.parameterKey} className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors">
-                            <td className="px-6 py-3">
-                              <span className={`font-medium ${col.mapped ? "text-neutral-800 dark:text-neutral-200" : "text-neutral-400 dark:text-neutral-500 italic"}`}>
-                                {col.columnName}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3 text-center">
-                              <span className={`inline-block px-3 py-1 rounded-lg text-xs font-bold tabular-nums ${colors.bg} ${colors.text}`}>
-                                {col.mapped ? `${col.fillRate.toFixed(1)}%` : "N/A"}
-                              </span>
-                            </td>
-                            <td className="px-6 py-3">
-                              <span className={`text-sm leading-relaxed ${col.mapped ? "text-neutral-700 dark:text-neutral-300" : "text-neutral-400 dark:text-neutral-500 italic"}`}>
-                                {renderBoldMarkdown(col.insight || (col.mapped ? "" : "Column not present in data."))}
-                              </span>
-                            </td>
-                          </tr>
+                          <Fragment key={col.parameterKey}>
+                            <tr className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors">
+                              <td className="px-6 py-3">
+                                <span className={`font-medium ${col.mapped ? "text-neutral-800 dark:text-neutral-200" : "text-neutral-400 dark:text-neutral-500 italic"}`}>
+                                  {col.columnName}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-center">
+                                <span className={`inline-block px-3 py-1 rounded-lg text-xs font-bold tabular-nums ${colors.bg} ${colors.text}`}>
+                                  {col.mapped ? `${col.fillRate.toFixed(1)}%` : "N/A"}
+                                </span>
+                              </td>
+                              <td className="px-6 py-3">
+                                {group.group === "Description" && col.mapped && (
+                                  <ul className="text-sm text-neutral-700 dark:text-neutral-300 mb-2 space-y-1 list-disc list-inside">
+                                    <li>
+                                      No. of alphanumeric values:{" "}
+                                      <strong>{(col.stats.alphanumericCount ?? 0).toLocaleString()}</strong>
+                                    </li>
+                                    <li>
+                                      Total non-procurable spend:{" "}
+                                      <strong>
+                                        {col.stats.nonProcurableSpend != null
+                                          ? formatCurrency(col.stats.nonProcurableSpend, col.stats.currencyLabel)
+                                          : "N/A"}
+                                      </strong>
+                                    </li>
+                                  </ul>
+                                )}
+                                <span className={`text-sm leading-relaxed ${col.mapped ? "text-neutral-700 dark:text-neutral-300" : "text-neutral-400 dark:text-neutral-500 italic"}`}>
+                                  {renderBoldMarkdown(col.insight || (col.mapped ? "" : "Column not present in data."))}
+                                </span>
+                              </td>
+                            </tr>
+                            {group.group === "Currency" && col.mapped && currencyQuality && currencyQuality.length > 0 && (
+                              <tr>
+                                <td colSpan={3} className="px-6 py-4">
+                                  <div className="rounded-xl border border-neutral-200 dark:border-neutral-700 overflow-hidden">
+                                    <div className="px-4 py-2.5 bg-neutral-50 dark:bg-neutral-800/60 border-b border-neutral-200 dark:border-neutral-700">
+                                      <h4 className="text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                                        Currency Quality Analysis
+                                      </h4>
+                                    </div>
+                                    <table className="w-full text-sm">
+                                      <thead>
+                                        <tr className="bg-neutral-50/50 dark:bg-neutral-800/30 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                                          <th className="px-4 py-2.5">Currency Code</th>
+                                          <th className="px-4 py-2.5 text-center">% of Rows Covered</th>
+                                          <th className="px-4 py-2.5 text-right">Total Amount in Local Currency</th>
+                                          <th className="px-4 py-2.5 text-right">Total Amount in Reporting Currency</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                                        {currencyQuality.map((cq: any) => (
+                                          <tr key={cq.currencyCode} className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors">
+                                            <td className="px-4 py-2 font-medium text-neutral-800 dark:text-neutral-200">
+                                              {cq.currencyCode}
+                                            </td>
+                                            <td className="px-4 py-2 text-center tabular-nums text-neutral-700 dark:text-neutral-300">
+                                              {cq.rowPct.toFixed(1)}%
+                                            </td>
+                                            <td className="px-4 py-2 text-right tabular-nums text-neutral-700 dark:text-neutral-300">
+                                              {col.stats.hasLocalSpend
+                                                ? Math.round(cq.localSpend ?? 0).toLocaleString()
+                                                : "N/A"}
+                                            </td>
+                                            <td className="px-4 py-2 text-right tabular-nums text-neutral-700 dark:text-neutral-300">
+                                              {col.stats.hasReportingSpend
+                                                ? Math.round(cq.reportingSpend ?? 0).toLocaleString()
+                                                : "N/A"}
+                                            </td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
                         );
                       })}
                     </tbody>

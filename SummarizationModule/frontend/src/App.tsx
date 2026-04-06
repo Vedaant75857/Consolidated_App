@@ -44,6 +44,7 @@ import { ErrorBoundary } from "./components/common/ui";
 import DataLoading from "./components/upload/DataLoading";
 import ColumnMappingStep from "./components/mapping/ColumnMappingStep";
 import ViewSelectionStep from "./components/views/ViewSelectionStep";
+import DataQualityStep from "./components/dashboard/DataQualityStep";
 import Dashboard from "./components/dashboard/Dashboard";
 import ProcurementViewsStep from "./components/procurement/ProcurementViewsStep";
 import ContextModal from "./components/email/ContextModal";
@@ -53,20 +54,22 @@ const SIDEBAR_ITEMS = [
   { name: "Upload", steps: [1] as AppStep[] },
   { name: "Data Preview", steps: [2] as AppStep[] },
   { name: "Map Columns", steps: [3] as AppStep[] },
-  { name: "Select Views", steps: [4] as AppStep[] },
-  { name: "Dashboard", steps: [5] as AppStep[] },
-  { name: "Procurement Views", steps: [6] as AppStep[] },
-  { name: "Email", steps: [7] as AppStep[] },
+  { name: "Data Quality", steps: [4] as AppStep[] },
+  { name: "Select Views", steps: [5] as AppStep[] },
+  { name: "Dashboard", steps: [6] as AppStep[] },
+  { name: "Procurement Views", steps: [7] as AppStep[] },
+  { name: "Email", steps: [8] as AppStep[] },
 ];
 
 const STEP_META: Record<number, { title: string; description: string }> = {
   1: { title: "Upload", description: "Upload your procurement data files to begin analysis." },
   2: { title: "Data Preview", description: "Review extracted tables, adjust headers, and remove unwanted files." },
   3: { title: "Map Columns", description: "AI maps your columns to the standard procurement fields." },
-  4: { title: "Select Views", description: "Choose which analyses to generate from your data." },
-  5: { title: "Dashboard", description: "Review detailed view summaries and export results." },
-  6: { title: "Spend X-ray Feasibility", description: "Check which procurement analysis views your data can support." },
-  7: { title: "Email", description: "Generate and edit a client-ready email summary." },
+  4: { title: "Data Quality", description: "Executive summary of data quality across key procurement parameters." },
+  5: { title: "Select Views", description: "Choose which analyses to generate from your data." },
+  6: { title: "Dashboard", description: "Review detailed view summaries and export results." },
+  7: { title: "Spend X-ray Feasibility", description: "Check which procurement analysis views your data can support." },
+  8: { title: "Email", description: "Generate and edit a client-ready email summary." },
 };
 
 const pageVariants = {
@@ -320,7 +323,7 @@ export default function App() {
     [sessionId]
   );
 
-  /* ──── Compute views (step 4 -> 5) ──── */
+  /* ──── Compute views (step 5 -> 6) ──── */
 
   const handleComputeViews = useCallback(
     async (selectedViews: string[], config: ViewConfig) => {
@@ -330,7 +333,7 @@ export default function App() {
       try {
         const result = await computeViews(sessionId, selectedViews, config);
         setViewResults(result.views);
-        setStep(5);
+        setStep(6);
 
         if (apiKey && apiKey.trim()) {
           const summaryViews = result.views.filter(
@@ -387,10 +390,10 @@ export default function App() {
     [sessionId]
   );
 
-  /* ──── Procurement views (step 5 -> 6) ──── */
+  /* ──── Procurement views (step 6 -> 7) ──── */
 
   const handleViewProcurementFeasibility = useCallback(() => {
-    setStep(6);
+    setStep(7);
   }, []);
 
   const handleFetchProcurementViews = useCallback(async () => {
@@ -413,7 +416,7 @@ export default function App() {
       setEmailError(null);
       setEmailFallback(null);
       setGeneratedEmail(null);
-      setStep(7);
+      setStep(8);
 
       try {
         const result = await generateEmail(sessionId, apiKey, context);
@@ -440,7 +443,7 @@ export default function App() {
   }, [emailContext, handleEmailGenerate]);
 
   const handleBackToProcurementViews = useCallback(() => {
-    setStep(6);
+    setStep(7);
   }, []);
 
   /* ──── Reset ──── */
@@ -670,7 +673,15 @@ export default function App() {
                       />
                     )}
 
-                    {step === 4 && (
+                    {step === 4 && sessionId && (
+                      <DataQualityStep
+                        sessionId={sessionId}
+                        apiKey={apiKey}
+                        onProceed={() => setStep(5)}
+                      />
+                    )}
+
+                    {step === 5 && (
                       <ViewSelectionStep
                         views={availableViews}
                         onCompute={handleComputeViews}
@@ -678,7 +689,7 @@ export default function App() {
                       />
                     )}
 
-                    {step === 5 && sessionId && (
+                    {step === 6 && sessionId && (
                       <Dashboard
                         views={viewResults}
                         onExportCsv={handleExportCsv}
@@ -687,7 +698,7 @@ export default function App() {
                       />
                     )}
 
-                    {step === 6 && sessionId && (
+                    {step === 7 && sessionId && (
                       <ProcurementViewsStep
                         sessionId={sessionId}
                         onFetchViews={handleFetchProcurementViews}
@@ -695,7 +706,7 @@ export default function App() {
                       />
                     )}
 
-                    {step === 7 && (
+                    {step === 8 && (
                       <EmailStep
                         email={generatedEmail}
                         subject={emailSubject}

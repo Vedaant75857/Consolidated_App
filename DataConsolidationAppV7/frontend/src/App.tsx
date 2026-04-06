@@ -113,6 +113,7 @@ export default function App() {
   const [cleaningConfigs, setCleaningConfigs] = useState<Record<string, any>>({});
   const [dedupResults, setDedupResults] = useState<Record<string, any>>({});
   const [standardizeConfigs, setStandardizeConfigs] = useState<Record<string, any>>({});
+  const [concatConfigs, setConcatConfigs] = useState<Record<string, Array<{ column_name: string; source_columns: string[] }>>>({});
 
   // Step 6-7: Guided Merge
   const [mergeBaseGroupId, setMergeBaseGroupId] = useState<string>("");
@@ -220,6 +221,7 @@ export default function App() {
       if (s.excludedTables) setExcludedTables(s.excludedTables);
       if (s.cleaningConfigs) setCleaningConfigs(s.cleaningConfigs);
       if (s.standardizeConfigs) setStandardizeConfigs(s.standardizeConfigs);
+      if (s.concatConfigs) setConcatConfigs(s.concatConfigs);
       if (s.mergeOutputs) setMergeOutputs(s.mergeOutputs);
 
       const sid = s.sessionId;
@@ -266,7 +268,7 @@ export default function App() {
       const persistable = {
         sessionId, step, maxStepReached,
         inventory, previews, uploadWarnings,
-        cleaningConfigs, standardizeConfigs,
+        cleaningConfigs, standardizeConfigs, concatConfigs,
         headerNormDecisions, headerNormStandardFields,
         appendGroups, unassigned, excludedTables,
         appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
@@ -279,7 +281,7 @@ export default function App() {
   }, [
     sessionId, step, maxStepReached,
     inventory, previews, uploadWarnings,
-    cleaningConfigs, standardizeConfigs,
+    cleaningConfigs, standardizeConfigs, concatConfigs,
     headerNormDecisions, headerNormStandardFields,
     appendGroups, unassigned, excludedTables,
     appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
@@ -655,6 +657,58 @@ export default function App() {
     }
   };
 
+  const handleConcatApply = async (groupId: string, columns: string[]) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/concat-columns-apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, groupId, columns }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || "Failed to concatenate columns");
+      const data = await res.json();
+      if (data.groupRow) {
+        setGroupSchema((prev) => prev.map((gs) => gs.group_id === groupId ? { ...gs, ...data.groupRow } : gs));
+      }
+      setConcatConfigs((prev) => ({ ...prev, [groupId]: data.concatColumns || [] }));
+      addLog("Concatenation", "success", `Created column "${data.column_name}" in "${groupNameMap[groupId] || groupId}"`);
+      return data;
+    } catch (err: any) {
+      setError(err.message);
+      addLog("Concatenation", "error", err.message);
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteConcatColumn = async (groupId: string, columnName: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/delete-concat-column", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, groupId, columnName }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || "Failed to delete concat column");
+      const data = await res.json();
+      if (data.groupRow) {
+        setGroupSchema((prev) => prev.map((gs) => gs.group_id === groupId ? { ...gs, ...data.groupRow } : gs));
+      }
+      setConcatConfigs((prev) => ({ ...prev, [groupId]: data.concatColumns || [] }));
+      addLog("Concatenation", "success", `Deleted column "${columnName}" from "${groupNameMap[groupId] || groupId}"`);
+      return data;
+    } catch (err: any) {
+      setError(err.message);
+      addLog("Concatenation", "error", err.message);
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const fetchResultsPreviews = async () => {
     if (!sessionId) return;
     try {
@@ -730,6 +784,7 @@ export default function App() {
       setCleaningConfigs({});
       setDedupResults({});
       setStandardizeConfigs({});
+      setConcatConfigs({});
       const totalCols = (data.tables || []).reduce((s: number, t: any) => s + (t.decisions?.length || 0), 0);
       addLog("Header Normalisation", "success", `Mapped ${totalCols} columns across ${data.tables?.length || 0} table(s)`);
       const normGroupIds = (data.tables || []).map((t: any) => t.tableKey);
@@ -761,6 +816,7 @@ export default function App() {
       setCleaningConfigs({});
       setDedupResults({});
       setStandardizeConfigs({});
+      setConcatConfigs({});
       setStep(5);
     } catch (err: any) {
       setError(err.message);
@@ -819,6 +875,7 @@ export default function App() {
       setCleaningConfigs({});
       setDedupResults({});
       setStandardizeConfigs({});
+      setConcatConfigs({});
       setMergeBaseGroupId("");
       setMergeSourceGroupId("");
       setMergeResult(null);
@@ -994,6 +1051,7 @@ export default function App() {
       setCleaningConfigs({});
       setDedupResults({});
       setStandardizeConfigs({});
+      setConcatConfigs({});
       addLog("Append Execute", "success", `Appended into ${(data.groupSchema || []).length} group(s)`);
     } catch (err: any) {
       setError(err.message);
@@ -1295,6 +1353,9 @@ export default function App() {
                   onDedupApply={handleDedupApply}
                   onAnalyzeColumns={handleAnalyzeColumns}
                   onApplyStandardize={handleApplyStandardize}
+                  concatConfigs={concatConfigs}
+                  onConcatApply={handleConcatApply}
+                  onDeleteConcatColumn={handleDeleteConcatColumn}
                   onProceed={() => setStep(6)}
                   onSkip={() => setStep(6)}
                 />

@@ -193,6 +193,51 @@ export function cleanupSession(sessionId: string) {
   }
 }
 
+/* ── Executive Summary (DQA) ─────────────────────────────────────────── */
+
+export interface ExecutiveSummaryColumn {
+  columnName: string;
+  parameterKey: string;
+  fillRate: number;
+  mapped: boolean;
+  stats: Record<string, any>;
+  insight: string;
+}
+
+export interface ExecutiveSummaryGroup {
+  group: string;
+  columns: ExecutiveSummaryColumn[];
+}
+
+export interface FillRateSummaryItem {
+  fieldKey: string;
+  displayName: string;
+  filledRows: number;
+  totalRows: number;
+  fillRate: number;
+  uniqueValues: number;
+}
+
+export interface ExecutiveSummaryResult {
+  totalRows: number;
+  parameters: ExecutiveSummaryGroup[];
+  fillRateSummary: FillRateSummaryItem[];
+}
+
+export async function getExecutiveSummary(
+  sessionId: string,
+  apiKey: string,
+  force = false
+) {
+  return post<ExecutiveSummaryResult>("/executive-summary", {
+    sessionId,
+    apiKey,
+    force,
+  });
+}
+
+/* ── CSV Export ──────────────────────────────────────────────────────── */
+
 export async function exportCsv(sessionId: string, viewId: string) {
   const res = await fetch(`${BASE}/export/csv/${viewId}`, {
     method: "POST",

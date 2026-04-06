@@ -11,14 +11,17 @@ import logging
 import sqlite3
 from typing import Any
 
-from shared.db import read_table_columns, table_exists, table_row_count
+from shared.db import get_meta, read_table_columns, table_exists, table_row_count
 
 from .ai_prompt import generate_dqa_insights
 from .metrics import (
     compute_currency_metrics,
+    compute_currency_quality_analysis,
     compute_date_metrics,
     compute_description_metrics,
     compute_fill_rates,
+    compute_fill_rate_summary,
+    compute_non_procurable_spend,
     compute_spend_metrics,
     compute_supplier_metrics,
 )
@@ -62,6 +65,18 @@ CURRENCY_COLUMNS: list[str] = [
     "PO Local Currency Code",
 ]
 
+# Paired spend columns for each currency column (local, reporting)
+_CURRENCY_SPEND_PAIRS: dict[str, tuple[str, str]] = {
+    "Local Currency Code": (
+        "Total Amount paid in Local Currency",
+        "Total Amount paid in Reporting Currency",
+    ),
+    "PO Local Currency Code": (
+        "PO Total Amount in Local Currency",
+        "PO Total Amount in reporting currency",
+    ),
+}
+
 # Preferred spend column for Pareto (reporting currency first, then local)
 _PARETO_SPEND_PREFERENCE: list[str] = [
     "Total Amount paid in Reporting Currency",
@@ -89,6 +104,65 @@ def _pick_pareto_spend_col(available: set[str]) -> str | None:
 def _make_key(group: str, column: str) -> str:
     """Deterministic key shared between metrics payload and AI response."""
     return f"{group}__{column}"
+
+
+def _resolve_concat_desc_columns(
+    conn: sqlite3.Connection, available: set[str]
+) -> list[str]:
+    """Return concat columns whose source columns overlap with DESCRIPTION_COLUMNS."""
+    concat_meta: dict = get_meta(conn, "concatColumns") or {}
+    desc_set = set(DESCRIPTION_COLUMNS)
+    result: list[str] = []
+    for _group_id, entries in concat_meta.items():
+        for entry in entries:
+            col_name = entry["column_name"]
+            sources = set(entry.get("source_columns", []))
+            if col_name in available and sources & desc_set:
+                result.append(col_name)
+    return result
+
+
+# Map spend columns to their corresponding currency code column
+_SPEND_TO_CURRENCY_CODE: dict[str, str] = {
+    "Total Amount paid in Local Currency": "Local Currency Code",
+    "PO Total Amount in Local Currency": "PO Local Currency Code",
+}
+
+
+def _detect_currency_label(
+    spend_col: str | None,
+    conn: sqlite3.Connection | None = None,
+    table_name: str | None = None,
+    available: set[str] | None = None,
+) -> str | None:
+    """Resolve the actual currency code(s) for a spend column.
+
+    For local-currency spend columns, queries the paired currency-code column
+    to return the actual code (e.g. 'USD') or 'Multi-currency' when there are
+    multiple distinct codes.  For reporting-currency spend columns (no paired
+    code column), falls back to 'Reporting Currency'.
+    """
+    if spend_col is None:
+        return None
+
+    # Try to resolve actual currency code from paired column
+    code_col = _SPEND_TO_CURRENCY_CODE.get(spend_col)
+    if code_col and conn is not None and table_name and available and code_col in available:
+        from shared.db import quote_id
+        qc = quote_id(code_col)
+        tbl = quote_id(table_name)
+        rows = conn.execute(
+            f"SELECT DISTINCT UPPER(TRIM({qc})) AS code FROM {tbl} "
+            f"WHERE {qc} IS NOT NULL AND TRIM({qc}) != '' LIMIT 3"
+        ).fetchall()
+        codes = [str(r["code"]) for r in rows if r["code"]]
+        if len(codes) == 1:
+            return codes[0]
+        if len(codes) > 1:
+            return "Multi-currency"
+
+    # Fallback: use the spend column name itself as the label
+    return spend_col
 
 
 # ---------------------------------------------------------------------------
@@ -119,14 +193,18 @@ def run_data_quality_assessment(
     available = set(read_table_columns(conn, table_name))
     total_rows = table_row_count(conn, table_name)
 
+    # Fill rate summary for all user columns
+    fill_rate_summary = compute_fill_rate_summary(conn, table_name)
+
     # Resolve columns per group
     date_cols = _resolve_columns(available, DATE_COLUMNS)
     spend_cols = _resolve_columns(available, SPEND_COLUMNS)
     supplier_cols = _resolve_columns(available, SUPPLIER_COLUMNS)
     desc_cols = _resolve_columns(available, DESCRIPTION_COLUMNS)
     currency_cols = _resolve_columns(available, CURRENCY_COLUMNS)
+    concat_desc_cols = _resolve_concat_desc_columns(conn, available)
 
-    all_resolved = date_cols + spend_cols + supplier_cols + desc_cols + currency_cols
+    all_resolved = date_cols + spend_cols + supplier_cols + desc_cols + concat_desc_cols + currency_cols
     fill_rates = compute_fill_rates(conn, table_name, all_resolved) if all_resolved else {}
 
     pareto_spend_col = _pick_pareto_spend_col(available)
@@ -209,13 +287,19 @@ def run_data_quality_assessment(
             })
     parameters.append({"group": "Supplier", "columns": supplier_entries})
 
-    # Description
+    # Description (standard + concatenated description columns)
+    all_desc_candidates = DESCRIPTION_COLUMNS + concat_desc_cols
     desc_entries: list[dict[str, Any]] = []
-    for col in DESCRIPTION_COLUMNS:
+    for col in all_desc_candidates:
         key = _make_key("description", col)
         if col in available:
             fr = fill_rates[col]
             stats = compute_description_metrics(conn, table_name, col)
+            np_stats = compute_non_procurable_spend(
+                conn, table_name, col, pareto_spend_col
+            )
+            stats.update(np_stats)
+            stats["currencyLabel"] = _detect_currency_label(pareto_spend_col, conn, table_name, available)
             desc_entries.append({
                 "columnName": col,
                 "parameterKey": key,
@@ -240,6 +324,16 @@ def run_data_quality_assessment(
         if col in available:
             fr = fill_rates[col]
             stats = compute_currency_metrics(conn, table_name, col)
+            # Paired spend columns for quality analysis
+            pair = _CURRENCY_SPEND_PAIRS.get(col, (None, None))
+            local_spend = pair[0] if pair[0] in available else None
+            reporting_spend = pair[1] if pair[1] in available else None
+            stats["currencyQuality"] = compute_currency_quality_analysis(
+                conn, table_name, col,
+                local_spend, reporting_spend, total_rows,
+            )
+            stats["hasLocalSpend"] = local_spend is not None
+            stats["hasReportingSpend"] = reporting_spend is not None
             currency_entries.append({
                 "columnName": col,
                 "parameterKey": key,
@@ -271,4 +365,8 @@ def run_data_quality_assessment(
             else:
                 entry["insight"] = insights_map.get(pk, "")
 
-    return {"totalRows": total_rows, "parameters": parameters}
+    return {
+        "totalRows": total_rows,
+        "parameters": parameters,
+        "fillRateSummary": fill_rate_summary,
+    }

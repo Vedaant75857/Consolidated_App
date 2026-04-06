@@ -56,6 +56,11 @@ interface StdAction {
   pad_length: number;
 }
 
+interface ConcatColumnInfo {
+  column_name: string;
+  source_columns: string[];
+}
+
 interface DataCleaningProps {
   step: number;
   groupSchema: any[];
@@ -64,12 +69,15 @@ interface DataCleaningProps {
   cleaningConfigs: Record<string, any>;
   dedupResults: Record<string, DedupResult>;
   standardizeConfigs: Record<string, any>;
+  concatConfigs: Record<string, ConcatColumnInfo[]>;
   loading: boolean;
   onCleanGroup: (groupId: string, config: CleaningConfig) => Promise<void>;
   onDedupPreview: (groupId: string, columns: string[]) => Promise<DedupStats | null>;
   onDedupApply: (groupId: string, columns: string[]) => Promise<DedupResult | null>;
   onAnalyzeColumns: (groupId: string, columns: string[]) => Promise<ColumnFormatAnalysis[]>;
   onApplyStandardize: (groupId: string, actions: StdAction[]) => Promise<void>;
+  onConcatApply: (groupId: string, columns: string[]) => Promise<any>;
+  onDeleteConcatColumn: (groupId: string, columnName: string) => Promise<any>;
   onProceed: () => void;
   onSkip: () => void;
 }
@@ -82,16 +90,19 @@ export default function DataCleaning({
   cleaningConfigs,
   dedupResults,
   standardizeConfigs,
+  concatConfigs,
   loading,
   onCleanGroup,
   onDedupPreview,
   onDedupApply,
   onAnalyzeColumns,
   onApplyStandardize,
+  onConcatApply,
+  onDeleteConcatColumn,
   onProceed,
   onSkip,
 }: DataCleaningProps) {
-  const [subStep, setSubStep] = useState<"5a" | "5b" | "5c">("5a");
+  const [subStep, setSubStep] = useState<"5a" | "5b" | "5c" | "5d">("5a");
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
   const [localConfig, setLocalConfig] = useState<CleaningConfig>(DEFAULT_CONFIG);
   const [groupPreviews, setGroupPreviews] = useState<Record<string, { columns: string[]; rows: any[] }>>({});
@@ -108,6 +119,11 @@ export default function DataCleaning({
   const [stdActions, setStdActions] = useState<Record<string, StdAction>>({});
   const [stdAnalyzeLoading, setStdAnalyzeLoading] = useState(false);
   const [stdApplyLoading, setStdApplyLoading] = useState(false);
+
+  // 5d: Concatenation state
+  const [concatSelectedCols, setConcatSelectedCols] = useState<string[]>([]);
+  const [concatApplyLoading, setConcatApplyLoading] = useState(false);
+  const [concatDeleteLoading, setConcatDeleteLoading] = useState<string | null>(null);
 
   useEffect(() => {
     if (groupSchema.length > 0 && !selectedGroup) {
@@ -151,6 +167,7 @@ export default function DataCleaning({
     setStdSelectedCols([]);
     setStdAnalysisResults([]);
     setStdActions({});
+    setConcatSelectedCols([]);
   }, [selectedGroup]);
 
   const currentSchema = selectedGroup ? groupSchema.find((g: any) => g.group_id === selectedGroup) : null;
@@ -159,6 +176,7 @@ export default function DataCleaning({
   const isCleaned = selectedGroup ? !!cleaningConfigs[selectedGroup] : false;
   const isDeduped = selectedGroup ? !!dedupResults[selectedGroup] : false;
   const isStandardized = selectedGroup ? !!standardizeConfigs[selectedGroup] : false;
+  const hasConcats = selectedGroup ? (concatConfigs[selectedGroup]?.length || 0) > 0 : false;
 
   const handleApplyCleaning = async () => {
     if (!selectedGroup) return;
@@ -229,11 +247,47 @@ export default function DataCleaning({
     }
   };
 
+  // 5d: Concatenation handlers
+  const toggleConcatColumn = (col: string) => {
+    setConcatSelectedCols((prev) =>
+      prev.includes(col) ? prev.filter((c) => c !== col) : [...prev, col]
+    );
+  };
+
+  const handleConcatApply = async () => {
+    if (!selectedGroup || concatSelectedCols.length < 2) return;
+    setConcatApplyLoading(true);
+    try {
+      const result = await onConcatApply(selectedGroup, concatSelectedCols);
+      if (result) {
+        setConcatSelectedCols([]);
+        setGroupPreviews((prev) => { const n = { ...prev }; delete n[selectedGroup!]; return n; });
+        fetchGroupPreview(selectedGroup);
+      }
+    } finally {
+      setConcatApplyLoading(false);
+    }
+  };
+
+  const handleDeleteConcat = async (columnName: string) => {
+    if (!selectedGroup) return;
+    setConcatDeleteLoading(columnName);
+    try {
+      const result = await onDeleteConcatColumn(selectedGroup, columnName);
+      if (result) {
+        setGroupPreviews((prev) => { const n = { ...prev }; delete n[selectedGroup!]; return n; });
+        fetchGroupPreview(selectedGroup);
+      }
+    } finally {
+      setConcatDeleteLoading(null);
+    }
+  };
+
   if (step !== 5) return null;
 
   const gn = (id: string) => groupNameMap[id] || id;
 
-  const groupSidebar = (statusKey: "clean" | "dedup" | "standardize") => (
+  const groupSidebar = (statusKey: "clean" | "dedup" | "standardize" | "concat") => (
     <div className="w-64 border-r border-neutral-100 dark:border-neutral-800 bg-neutral-50/30 dark:bg-neutral-800 overflow-y-auto shrink-0">
       <div className="p-3">
         <p className="text-[10px] font-bold uppercase tracking-wider text-neutral-400 dark:text-neutral-500 px-2 mb-2">
@@ -243,7 +297,8 @@ export default function DataCleaning({
           const isSelected = selectedGroup === gs.group_id;
           const isDone = statusKey === "clean" ? !!cleaningConfigs[gs.group_id]
             : statusKey === "dedup" ? !!dedupResults[gs.group_id]
-            : !!standardizeConfigs[gs.group_id];
+            : statusKey === "standardize" ? !!standardizeConfigs[gs.group_id]
+            : (concatConfigs[gs.group_id]?.length || 0) > 0;
           return (
             <button
               key={gs.group_id}
@@ -329,6 +384,20 @@ export default function DataCleaning({
             5c — Column Standardization
             {Object.keys(standardizeConfigs).length > 0 && (
               <span className="ml-1.5 text-emerald-600 dark:text-emerald-400">({Object.keys(standardizeConfigs).length})</span>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => setSubStep("5d")}
+            className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${
+              subStep === "5d"
+                ? "bg-white dark:bg-neutral-700 text-neutral-900 dark:text-white shadow-sm"
+                : "text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
+            }`}
+          >
+            5d — Concatenate
+            {Object.values(concatConfigs).flat().length > 0 && (
+              <span className="ml-1.5 text-emerald-600 dark:text-emerald-400">({Object.values(concatConfigs).flat().length})</span>
             )}
           </button>
         </div>
@@ -856,6 +925,165 @@ export default function DataCleaning({
         </div>
       )}
 
+      {/* ===== Sub-step 5d: Concatenation ===== */}
+      {subStep === "5d" && (
+        <div className="flex min-h-[500px]">
+          {groupSidebar("concat")}
+
+          <div className="flex-1 overflow-y-auto">
+            {selectedGroup && columns.length > 0 ? (
+              <div className="p-6 space-y-6">
+                {/* Header */}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="font-semibold tracking-tight text-neutral-900 dark:text-white text-sm flex items-center gap-2">
+                      <Copy className="w-4 h-4 text-red-500" />
+                      {gn(selectedGroup)}
+                    </h3>
+                    <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
+                      {currentSchema?.rows?.toLocaleString()} rows, {columns.length} columns
+                      {hasConcats && (
+                        <span className="text-emerald-600 dark:text-emerald-400 font-medium ml-2">
+                          {concatConfigs[selectedGroup].length} concat column(s)
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                  <PrimaryButton
+                    onClick={handleConcatApply}
+                    disabled={concatSelectedCols.length < 2 || concatApplyLoading}
+                  >
+                    {concatApplyLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                    Apply Concatenation
+                  </PrimaryButton>
+                </div>
+
+                {/* Instructions */}
+                <div className="px-4 py-3 bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-xl text-xs text-blue-700 dark:text-blue-300">
+                  Select <strong>2 or more columns</strong> to concatenate. Values are joined directly (no separator).
+                  Null/empty values are skipped. The new column will be named <strong>Concat_col1_col2_...</strong>
+                </div>
+
+                {/* Formula preview */}
+                {concatSelectedCols.length >= 2 && (
+                  <div className="px-4 py-3 bg-neutral-50 dark:bg-neutral-800 rounded-xl text-xs font-mono text-neutral-700 dark:text-neutral-300">
+                    New column: <strong className="text-red-600 dark:text-red-400">Concat_{concatSelectedCols.join("_")}</strong>
+                  </div>
+                )}
+                {concatSelectedCols.length === 1 && (
+                  <div className="px-4 py-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-xl text-xs text-amber-700 dark:text-amber-300">
+                    Select at least one more column to concatenate.
+                  </div>
+                )}
+
+                {/* Created concat columns */}
+                {concatConfigs[selectedGroup]?.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider">
+                      Created Concat Columns
+                    </p>
+                    {concatConfigs[selectedGroup].map((cc) => (
+                      <div key={cc.column_name} className="flex items-center justify-between border border-neutral-200 dark:border-neutral-700 rounded-xl px-4 py-3">
+                        <div>
+                          <p className="text-sm font-bold text-neutral-900 dark:text-white">{cc.column_name}</p>
+                          <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                            From: {cc.source_columns.join(" + ")}
+                          </p>
+                        </div>
+                        <SecondaryButton
+                          onClick={() => handleDeleteConcat(cc.column_name)}
+                          disabled={concatDeleteLoading === cc.column_name}
+                        >
+                          {concatDeleteLoading === cc.column_name
+                            ? <Loader2 className="w-3 h-3 animate-spin" />
+                            : "Delete"}
+                        </SecondaryButton>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Column selection table */}
+                {currentPreview && columns.length > 0 && (
+                  <div>
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="text-xs font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider">
+                        Select Columns to Concatenate
+                      </p>
+                      {concatSelectedCols.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setConcatSelectedCols([])}
+                          className="text-[11px] text-red-500 hover:text-red-700 dark:hover:text-red-400 font-medium"
+                        >
+                          Clear all
+                        </button>
+                      )}
+                    </div>
+                    <div className="overflow-x-auto border border-neutral-200 dark:border-neutral-700 rounded-xl max-h-[400px]">
+                      <table className="min-w-full text-xs">
+                        <thead className="sticky top-0 z-10">
+                          <tr className="bg-neutral-100/80 dark:bg-neutral-800/80 backdrop-blur">
+                            {columns.map((col) => {
+                              const isSelected = concatSelectedCols.includes(col);
+                              return (
+                                <td key={col} className="px-3 py-2 text-center border-b border-neutral-200 dark:border-neutral-700">
+                                  <button type="button" onClick={() => toggleConcatColumn(col)} className="mx-auto block">
+                                    <span className={`inline-flex items-center justify-center w-5 h-5 rounded border-2 transition-colors cursor-pointer ${
+                                      isSelected
+                                        ? "bg-red-500 border-red-500 text-white"
+                                        : "border-neutral-300 dark:border-neutral-600 hover:border-red-400"
+                                    }`}>
+                                      {isSelected && <Check className="w-3 h-3" />}
+                                    </span>
+                                  </button>
+                                </td>
+                              );
+                            })}
+                          </tr>
+                          <tr className="bg-neutral-50 dark:bg-neutral-800">
+                            {columns.map((col) => (
+                              <th key={col} className={`px-3 py-2 text-left font-bold whitespace-nowrap border-b border-neutral-200 dark:border-neutral-700 ${
+                                concatSelectedCols.includes(col) ? "text-red-700 dark:text-red-400" : "text-neutral-500 dark:text-neutral-400"
+                              }`}>
+                                {col}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {currentPreview.rows.length > 0 ? (
+                            currentPreview.rows.map((row: any, ri: number) => (
+                              <tr key={ri} className="hover:bg-red-50/30 dark:hover:bg-red-950/10">
+                                {columns.map((col) => (
+                                  <td key={col} className="px-3 py-1.5 whitespace-nowrap text-neutral-700 dark:text-neutral-300 max-w-[200px] truncate border-b border-neutral-100 dark:border-neutral-800">
+                                    {row[col] != null ? String(row[col]) : <span className="text-neutral-300 italic">null</span>}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))
+                          ) : (
+                            <tr>
+                              <td colSpan={columns.length} className="px-3 py-6 text-center text-neutral-400">
+                                No preview data available
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="flex items-center justify-center h-full text-neutral-400 text-sm">
+                {groupSchema.length === 0 ? "No groups available. Complete the append step first." : "Select a group from the list to configure concatenation."}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Footer */}
       <div className="p-6 border-t border-neutral-100 dark:border-neutral-800 flex justify-between items-center">
         <div className="text-xs text-neutral-500 flex items-center gap-3">
@@ -869,7 +1097,12 @@ export default function DataCleaning({
               {Object.keys(dedupResults).length} group{Object.keys(dedupResults).length !== 1 ? "s" : ""} deduplicated
             </span>
           )}
-          {Object.keys(cleaningConfigs).length === 0 && Object.keys(dedupResults).length === 0 && (
+          {Object.values(concatConfigs).flat().length > 0 && (
+            <span className="rounded-full border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/30 px-3 py-1 text-xs font-medium text-purple-700 dark:text-purple-400">
+              {Object.values(concatConfigs).flat().length} concat column{Object.values(concatConfigs).flat().length !== 1 ? "s" : ""} created
+            </span>
+          )}
+          {Object.keys(cleaningConfigs).length === 0 && Object.keys(dedupResults).length === 0 && Object.values(concatConfigs).flat().length === 0 && (
             <span>No cleaning or dedup applied yet. You can skip this step.</span>
           )}
         </div>

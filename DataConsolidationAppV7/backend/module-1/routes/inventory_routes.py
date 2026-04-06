@@ -13,6 +13,8 @@ from inventory.service import (
     dedup_apply_group,
     analyze_column_format,
     apply_column_standardize,
+    concat_columns_apply,
+    delete_concat_column,
 )
 from inventory.dtype_defaults import STANDARD_FIELD_DTYPES
 
@@ -152,6 +154,46 @@ def apply_column_standardize_route():
 
         conn = get_session_db(session_id)
         result = apply_column_standardize(conn, group_id, actions)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@inventory_bp.route("/concat-columns-apply", methods=["POST"])
+def concat_columns_apply_route():
+    """Concatenate selected columns into a new derived column."""
+    try:
+        body = request.get_json(force=True)
+        session_id = body.get("sessionId")
+        group_id = body.get("groupId")
+        columns = body.get("columns") or []
+        if not session_id or not group_id or len(columns) < 2:
+            return jsonify({"error": "Missing sessionId, groupId, or need at least 2 columns."}), 400
+
+        conn = get_session_db(session_id)
+        result = concat_columns_apply(conn, group_id, columns)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@inventory_bp.route("/delete-concat-column", methods=["POST"])
+def delete_concat_column_route():
+    """Delete a previously created concatenation column."""
+    try:
+        body = request.get_json(force=True)
+        session_id = body.get("sessionId")
+        group_id = body.get("groupId")
+        column_name = body.get("columnName")
+        if not session_id or not group_id or not column_name:
+            return jsonify({"error": "Missing sessionId, groupId, or columnName."}), 400
+
+        conn = get_session_db(session_id)
+        result = delete_concat_column(conn, group_id, column_name)
         return jsonify(result)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
