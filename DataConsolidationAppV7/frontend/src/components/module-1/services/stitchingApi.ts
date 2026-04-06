@@ -207,6 +207,16 @@ export async function mergeHistory(sessionId: string): Promise<any> {
   return jsonGet(`/merge/history?sessionId=${encodeURIComponent(sessionId)}`);
 }
 
+// --- Data Quality Assessment ---
+
+export async function postDataQualityAssessment(
+  sessionId: string,
+  apiKey: string,
+  tableName: string,
+): Promise<any> {
+  return jsonPost("/data-quality-assessment", { sessionId, apiKey, tableName });
+}
+
 // --- Chat ---
 
 export async function chat(body: {

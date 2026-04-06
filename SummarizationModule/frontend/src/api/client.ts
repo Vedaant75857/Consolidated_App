@@ -10,7 +10,6 @@ import type {
   ViewResult,
   EmailContext,
   ProcurementViewAvailability,
-  ExecSummaryRow,
 } from "../types";
 
 const BASE = "/api";
@@ -192,10 +191,6 @@ export function cleanupSession(sessionId: string) {
       keepalive: true,
     }).catch(() => {});
   }
-}
-
-export async function fetchExecutiveSummary(sessionId: string) {
-  return post<{ rows: ExecSummaryRow[] }>("/executive-summary", { sessionId });
 }
 
 export async function exportCsv(sessionId: string, viewId: string) {

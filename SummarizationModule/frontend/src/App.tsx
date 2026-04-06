@@ -64,7 +64,7 @@ const STEP_META: Record<number, { title: string; description: string }> = {
   2: { title: "Data Preview", description: "Review extracted tables, adjust headers, and remove unwanted files." },
   3: { title: "Map Columns", description: "AI maps your columns to the standard procurement fields." },
   4: { title: "Select Views", description: "Choose which analyses to generate from your data." },
-  5: { title: "Dashboard", description: "View your procurement analytics and export results." },
+  5: { title: "Dashboard", description: "Review detailed view summaries and export results." },
   6: { title: "Spend X-ray Feasibility", description: "Check which procurement analysis views your data can support." },
   7: { title: "Email", description: "Generate and edit a client-ready email summary." },
 };
@@ -681,7 +681,6 @@ export default function App() {
                     {step === 5 && sessionId && (
                       <Dashboard
                         views={viewResults}
-                        sessionId={sessionId}
                         onExportCsv={handleExportCsv}
                         onRecomputeView={handleRecomputeView}
                         onViewProcurementFeasibility={handleViewProcurementFeasibility}
@@ -691,8 +690,6 @@ export default function App() {
                     {step === 6 && sessionId && (
                       <ProcurementViewsStep
                         sessionId={sessionId}
-                        mapping={confirmedMapping}
-                        apiKey={apiKey}
                         onFetchViews={handleFetchProcurementViews}
                         onGenerateEmail={apiKey.trim() ? handleOpenEmailModal : undefined}
                       />

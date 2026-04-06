@@ -1,19 +1,17 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChevronDown, ChevronUp, ArrowRight } from "lucide-react";
-import type { ViewResult, ViewConfig, ExecSummaryRow } from "../../types";
-import { fetchExecutiveSummary } from "../../api/client";
+import type { ViewResult, ViewConfig } from "../../types";
 import ViewPanel from "./ViewPanel";
-import ExecutiveSummary from "./executive/ExecutiveSummary";
 
 interface Props {
   views: ViewResult[];
-  sessionId: string;
   onExportCsv: (viewId: string) => void;
   onRecomputeView?: (viewId: string, config: ViewConfig) => Promise<ViewResult>;
   onViewProcurementFeasibility?: () => void;
 }
 
+/** Collapsible accordion-style panel for grouping dashboard sections. */
 function CollapsiblePanel({
   title,
   defaultExpanded,
@@ -61,30 +59,10 @@ function CollapsiblePanel({
 
 export default function Dashboard({
   views,
-  sessionId,
   onExportCsv,
   onRecomputeView,
   onViewProcurementFeasibility,
 }: Props) {
-  const [execRows, setExecRows] = useState<ExecSummaryRow[]>([]);
-  const [execLoading, setExecLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    setExecLoading(true);
-    fetchExecutiveSummary(sessionId)
-      .then((res) => {
-        if (!cancelled) setExecRows(res.rows);
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (!cancelled) setExecLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId]);
-
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -96,11 +74,7 @@ export default function Dashboard({
         </p>
       </div>
 
-      <CollapsiblePanel title="Executive Summary" defaultExpanded={true}>
-        <ExecutiveSummary rows={execRows} loading={execLoading} />
-      </CollapsiblePanel>
-
-      <CollapsiblePanel title="Detailed Summary" defaultExpanded={false}>
+      <CollapsiblePanel title="Detailed Summary" defaultExpanded={true}>
         <div className="space-y-6 p-4">
           {views.map((view) => (
             <ViewPanel

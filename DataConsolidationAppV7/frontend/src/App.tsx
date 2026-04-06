@@ -7,6 +7,7 @@ import DataCleaning from "./components/module-1/DataCleaning";
 import HeaderNormalisation from "./components/module-1/HeaderNormalisation";
 import Appending from "./components/module-1/Appending";
 import Merging from "./components/module-1/Merging";
+import DataQualityAssessment from "./components/module-1/DataQualityAssessment";
 import LoadingOverlay from "./components/module-1/LoadingOverlay";
 import StatusLog, { type LogEntry } from "./components/module-1/StatusLog";
 import DataPreviewOverlay from "./components/module-1/DataPreviewOverlay";
@@ -1035,7 +1036,7 @@ export default function App() {
     }
   }, [sessionId, addLog]);
 
-  const AI_STEPS = new Set([3, 4, 6]);
+  const AI_STEPS = new Set([3, 4, 6, 8]);
 
   const sidebarItems = [
     { name: "Upload + Settings",     steps: [1],      sub: "Manual" },
@@ -1044,9 +1045,10 @@ export default function App() {
     { name: "Header Normalisation",  steps: [4],      sub: "AI-assisted" },
     { name: "Data Cleaning",         steps: [5],      sub: "Manual" },
     { name: "Merge",                 steps: [6, 7],   sub: "AI-assisted" },
+    { name: "Data Quality",          steps: [8],      sub: "AI-assisted" },
   ];
 
-  const getDisplayStep = (s: number) => s <= 5 ? s : 6;
+  const getDisplayStep = (s: number) => s <= 5 ? s : s <= 7 ? 6 : 7;
   const animationKey = step;
 
   return (
@@ -1188,7 +1190,7 @@ export default function App() {
               </motion.button>
             </div>
 
-            <StepHero step={step} displayStep={getDisplayStep(step)} isAi={AI_STEPS.has(step)} totalSteps={6} />
+            <StepHero step={step} displayStep={getDisplayStep(step)} isAi={AI_STEPS.has(step)} totalSteps={7} />
 
             {error && (
               <motion.div
@@ -1350,6 +1352,15 @@ export default function App() {
                       />
                     </motion.div>
                   </AnimatePresence>
+                )}
+
+                {step === 8 && (
+                  <DataQualityAssessment
+                    sessionId={sessionId}
+                    apiKey={apiKey}
+                    mergeOutputs={mergeOutputs}
+                    addLog={addLog}
+                  />
                 )}
 
               </motion.div>

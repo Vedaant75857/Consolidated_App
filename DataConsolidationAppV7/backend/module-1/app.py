@@ -79,6 +79,7 @@ def create_app() -> Flask:
         ("routes.header_normalisation_routes", "header_normalisation_bp"),
         ("routes.merging_routes", "merging_bp"),
         ("routes.insights_routes", "insights_bp"),
+        ("routes.data_quality_routes", "data_quality_bp"),
     ]
     for mod_path, bp_attr in _blueprints:
         try:

@@ -1165,14 +1165,14 @@ export default function Merging(props: MergingProps) {
               </button>
 
               <button
-                onClick={() => setStep(7)}
+                onClick={() => setStep(8)}
                 className="flex flex-col items-center gap-2 rounded-2xl border-2 border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 p-5 hover:border-emerald-300 dark:hover:border-emerald-700 hover:bg-emerald-50/30 dark:hover:bg-emerald-950/20 transition-all group"
               >
                 <span className="w-10 h-10 rounded-xl bg-neutral-100 dark:bg-neutral-700 flex items-center justify-center group-hover:bg-emerald-100 dark:group-hover:bg-emerald-900/30 transition-colors">
                   <ArrowRight className="w-5 h-5 text-neutral-500 group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors" />
                 </span>
-                <span className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">Move to Next Step</span>
-                <span className="text-[11px] text-neutral-400 text-center leading-tight">Continue to the next step in the pipeline</span>
+                <span className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">Run Data Quality Assessment</span>
+                <span className="text-[11px] text-neutral-400 text-center leading-tight">Analyse data quality across key procurement parameters</span>
               </button>
             </div>
           </SurfaceCard>

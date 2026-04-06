@@ -132,14 +132,4 @@ export interface ProcurementViewAvailability {
   missingFields: string[];
 }
 
-export interface ExecSummaryRow {
-  key: string;
-  label: string;
-  mapped: boolean;
-  fillRate: number;
-  validRows: number;
-  totalRows: number;
-  insight: string | null;
-}
-
 export type AppStep = 1 | 2 | 3 | 4 | 5 | 6 | 7;
