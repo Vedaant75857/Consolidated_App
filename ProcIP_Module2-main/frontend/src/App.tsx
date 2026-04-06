@@ -22,6 +22,8 @@ const NORM_OPS = [
   { id: "plant",               label: "Plant / Site",        icon: Building2 },
 ];
 
+const DISABLED_OPS = new Set(["supplier_name", "payment_terms", "region", "plant"]);
+
 /* ── Sidebar step descriptor ── */
 const SIDEBAR_STEPS = [
   { num: 1, name: "Upload Data",           ai: false },
@@ -303,14 +305,18 @@ export default function App() {
                         {/* Individual operations */}
                         {NORM_OPS.map((op) => {
                           const Icon = op.icon;
+                          const isDisabled = DISABLED_OPS.has(op.id);
                           return (
                             <button
                               key={op.id}
-                              onClick={() => { setStep(3); setNormActiveTab(op.id); }}
+                              disabled={isDisabled}
+                              onClick={isDisabled ? undefined : () => { setStep(3); setNormActiveTab(op.id); }}
                               className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors text-left ${
-                                isActive && normActiveTab === op.id
-                                  ? "bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-400 font-bold"
-                                  : "text-neutral-500 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800/50"
+                                isDisabled
+                                  ? "opacity-40 cursor-not-allowed text-neutral-400 dark:text-neutral-600"
+                                  : isActive && normActiveTab === op.id
+                                    ? "bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-400 font-bold"
+                                    : "text-neutral-500 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800/50"
                               }`}
                             >
                               <Icon className="w-3.5 h-3.5 shrink-0 opacity-70" />
