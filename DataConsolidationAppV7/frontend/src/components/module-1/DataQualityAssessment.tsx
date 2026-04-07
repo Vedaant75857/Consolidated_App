@@ -299,9 +299,6 @@ export default function DataQualityAssessment({
                             <span className="font-medium text-neutral-800 dark:text-neutral-200">
                               {item.columnName}
                             </span>
-                            <span className="ml-2 text-xs text-emerald-600 dark:text-emerald-400">
-                              ({item.filledRows.toLocaleString()} / {item.totalRows.toLocaleString()})
-                            </span>
                           </td>
                           <td className="px-4 py-3 text-center">
                             <span className={`inline-block px-3 py-1 rounded-lg text-xs font-bold tabular-nums ${colors.bg} ${colors.text}`}>
@@ -326,9 +323,8 @@ export default function DataQualityAssessment({
 
       {/* Results table */}
       {result && result.parameters.map((group) => {
-        const visibleColumns = group.columns.filter((c) => !HIDDEN_COLUMNS.has(c.columnName));
-        const mappedCols = visibleColumns.filter((c) => c.mapped);
-        const unmappedCols = visibleColumns.filter((c) => !c.mapped);
+        const visibleColumns = group.columns.filter((c) => !HIDDEN_COLUMNS.has(c.columnName) && c.mapped);
+        if (visibleColumns.length === 0) return null;
         const isExpanded = expandedGroups.has(group.group);
 
         return (
@@ -346,8 +342,7 @@ export default function DataQualityAssessment({
                     {group.group}
                   </h3>
                   <p className="text-xs text-neutral-400">
-                    {mappedCols.length} column{mappedCols.length !== 1 ? "s" : ""} found
-                    {unmappedCols.length > 0 && `, ${unmappedCols.length} not mapped`}
+                    {visibleColumns.length} column{visibleColumns.length !== 1 ? "s" : ""} found
                   </p>
                 </div>
               </div>
@@ -369,33 +364,30 @@ export default function DataQualityAssessment({
                     </thead>
                     <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
                       {visibleColumns.map((col) => {
-                        const colors = col.mapped
-                          ? fillRateColor(col.fillRate)
-                          : { bg: "bg-neutral-100 dark:bg-neutral-800", text: "text-neutral-400 dark:text-neutral-500" };
+                        const colors = fillRateColor(col.fillRate);
                         const currencyQuality: any[] | undefined = col.stats?.currencyQuality;
+                        const spendByCurrency: any[] | undefined = col.stats?.spendByCurrency;
 
                         return (
                           <Fragment key={col.parameterKey}>
                             <tr className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors align-top">
                               <td className="px-6 py-3">
-                                <span className={`font-medium ${col.mapped ? "text-neutral-800 dark:text-neutral-200" : "text-neutral-400 dark:text-neutral-500 italic"}`}>
+                                <span className="font-medium text-neutral-800 dark:text-neutral-200">
                                   {col.columnName}
                                 </span>
                               </td>
                               <td className="px-4 py-3 text-center">
                                 <span className={`inline-block px-3 py-1 rounded-lg text-xs font-bold tabular-nums ${colors.bg} ${colors.text}`}>
-                                  {col.mapped ? `${col.fillRate.toFixed(1)}%` : "N/A"}
+                                  {col.fillRate.toFixed(1)}%
                                 </span>
                               </td>
                               <td className="px-6 py-3">
-                                <span className={`text-sm leading-relaxed ${col.mapped ? "text-neutral-700 dark:text-neutral-300" : "text-neutral-400 dark:text-neutral-500 italic"}`}>
-                                  {col.mapped
-                                    ? renderInsightMarkdown(col.insight || "")
-                                    : renderBoldMarkdown(col.insight || "Column not present in data.")}
+                                <span className="text-sm leading-relaxed text-neutral-700 dark:text-neutral-300">
+                                  {renderInsightMarkdown(col.insight || "")}
                                 </span>
                               </td>
                             </tr>
-                            {group.group === "Currency" && col.mapped && currencyQuality && currencyQuality.length > 0 && (
+                            {group.group === "Currency" && currencyQuality && currencyQuality.length > 0 && (
                               <tr>
                                 <td colSpan={3} className="px-6 py-4">
                                   <div className="rounded-xl border border-neutral-200 dark:border-neutral-700 overflow-hidden">
@@ -430,6 +422,45 @@ export default function DataQualityAssessment({
                                             <td className="px-4 py-2 text-right tabular-nums text-neutral-700 dark:text-neutral-300">
                                               {col.stats.hasReportingSpend
                                                 ? Math.round(cq.reportingSpend ?? 0).toLocaleString()
+                                                : "N/A"}
+                                            </td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                            {group.group === "Spend" && spendByCurrency && spendByCurrency.length > 0 && (
+                              <tr>
+                                <td colSpan={3} className="px-6 py-4">
+                                  <div className="rounded-xl border border-neutral-200 dark:border-neutral-700 overflow-hidden">
+                                    <div className="px-4 py-2.5 bg-neutral-50 dark:bg-neutral-800/60 border-b border-neutral-200 dark:border-neutral-700">
+                                      <h4 className="text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                                        Spend by Currency
+                                      </h4>
+                                    </div>
+                                    <table className="w-full text-sm">
+                                      <thead>
+                                        <tr className="bg-neutral-50/50 dark:bg-neutral-800/30 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                                          <th className="px-4 py-2.5">Currency Code</th>
+                                          <th className="px-4 py-2.5 text-center">% of Rows Covered</th>
+                                          <th className="px-4 py-2.5 text-right">Total Amount in Local Currency</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                                        {spendByCurrency.map((cq: any) => (
+                                          <tr key={cq.currencyCode} className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors">
+                                            <td className="px-4 py-2 font-medium text-neutral-800 dark:text-neutral-200">
+                                              {cq.currencyCode}
+                                            </td>
+                                            <td className="px-4 py-2 text-center tabular-nums text-neutral-700 dark:text-neutral-300">
+                                              {cq.rowPct.toFixed(1)}%
+                                            </td>
+                                            <td className="px-4 py-2 text-right tabular-nums text-neutral-700 dark:text-neutral-300">
+                                              {cq.localSpend != null
+                                                ? Math.round(cq.localSpend).toLocaleString()
                                                 : "N/A"}
                                             </td>
                                           </tr>

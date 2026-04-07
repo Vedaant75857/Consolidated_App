@@ -428,6 +428,8 @@ def compute_non_procurable_spend(
     table_name: str,
     desc_column: str,
     spend_column: str | None,
+    *,
+    currency_column: str | None = None,
 ) -> dict[str, Any]:
     """Sum spend for rows whose description matches non-procurable keywords.
 
@@ -436,12 +438,18 @@ def compute_non_procurable_spend(
         table_name: Target table.
         desc_column: Description column to check for keyword matches.
         spend_column: Spend column to sum (None if unavailable).
+        currency_column: Optional currency code column for per-currency breakdown.
 
     Returns:
-        Dict with ``nonProcurableSpend`` (float|None) and ``spendColumnUsed``.
+        Dict with ``nonProcurableSpend``, ``spendColumnUsed``, and
+        optionally ``nonProcurableSpendByCurrency`` (top 5 + Others).
     """
     if spend_column is None:
-        return {"nonProcurableSpend": None, "spendColumnUsed": None}
+        return {
+            "nonProcurableSpend": None,
+            "spendColumnUsed": None,
+            "nonProcurableSpendByCurrency": None,
+        }
 
     tbl = quote_id(table_name)
     qd = quote_id(desc_column)
@@ -455,19 +463,44 @@ def compute_non_procurable_spend(
         f"TRIM({qs}) GLOB '*[0-9]*' "
         f"AND TRIM({qs}) NOT GLOB '*[^0-9.eE+-]*'"
     )
+    np_filter = f"({keyword_conditions}) AND ({numeric_check})"
 
     sql = (
-        f"SELECT SUM(CASE "
-        f"  WHEN ({keyword_conditions}) AND ({numeric_check}) "
+        f"SELECT SUM(CASE WHEN {np_filter} "
         f"  THEN CAST({qs} AS REAL) ELSE 0 END"
         f") AS non_proc_spend "
         f"FROM {tbl} "
         f"WHERE {qd} IS NOT NULL AND TRIM({qd}) != ''"
     )
     row = conn.execute(sql).fetchone()
+    total_np = round(float(row["non_proc_spend"] or 0))
+
+    # Per-currency breakdown (top 5 + Others)
+    by_currency: list[dict[str, Any]] | None = None
+    if currency_column is not None:
+        qc = quote_id(currency_column)
+        rows = conn.execute(
+            f"SELECT UPPER(TRIM({qc})) AS code, "
+            f"  SUM(CASE WHEN {numeric_check} THEN CAST({qs} AS REAL) ELSE 0 END) AS spend "
+            f"FROM {tbl} "
+            f"WHERE {qd} IS NOT NULL AND TRIM({qd}) != '' "
+            f"  AND ({keyword_conditions}) "
+            f"  AND {qc} IS NOT NULL AND TRIM({qc}) != '' "
+            f"GROUP BY UPPER(TRIM({qc})) "
+            f"ORDER BY spend DESC"
+        ).fetchall()
+        top_5 = [
+            {"code": str(r["code"]), "spend": round(float(r["spend"] or 0))}
+            for r in rows[:5]
+        ]
+        if len(rows) > 5:
+            top_5.append({"code": "Others", "spend": None})
+        by_currency = top_5
+
     return {
-        "nonProcurableSpend": round(float(row["non_proc_spend"] or 0)),
+        "nonProcurableSpend": total_np,
         "spendColumnUsed": spend_column,
+        "nonProcurableSpendByCurrency": by_currency,
     }
 
 

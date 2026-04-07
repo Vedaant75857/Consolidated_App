@@ -60,7 +60,7 @@ Required bullets:
 
 **Spend columns**
 Metrics provided: ``totalSpend``, ``numericPct``, ``nonNumericPct``,
-``fillRate``.
+``fillRate``, ``reportingCurrencyMissing`` (boolean, optional).
 
 Required bullets:
 - Total spend: ``- Total spend: **{friendly amount}**`` (use $1.2B, €450M
@@ -71,17 +71,22 @@ Required bullets:
 - If both reporting and local currency columns exist, add a bullet noting
   both are available.
 - Add an interpretation bullet on data completeness.
+- If ``reportingCurrencyMissing`` is true, add a final bullet:
+  ``- Please proceed to **Module 2** for currency normalization``
 
 **Supplier (Vendor Name)**
 Metrics provided: ``uniqueVendors`` (raw count), ``paretoFeasible``,
 ``paretoVendorCount`` (raw count), ``paretoVendorPct``, ``paretoMessage``,
-``fillRate``.
+``paretoSpendStandardized`` (boolean), ``fillRate``.
 
 Required bullets:
 - Unique vendors: ``- **{uniqueVendors}** unique vendors identified``
 - Fill rate: ``- Fill rate: **{fillRate}%**``
-- If Pareto feasible: ``- Pareto: **{paretoVendorCount}** vendors (**{paretoVendorPct}%**) cover **80%** of total spend``
+- If Pareto feasible AND ``paretoSpendStandardized`` is true:
+  ``- **{paretoVendorCount}** vendors (**{paretoVendorPct}%**) cover **80%** of total spend``
   — add interpretation (concentrated/fragmented supply base).
+- If Pareto feasible BUT ``paretoSpendStandardized`` is false:
+  ``- Spend is not standardized — please proceed to **Module 2** for currency conversion``
 - If Pareto not feasible: ``- Pareto analysis not feasible: {paretoMessage}``
 - Add interpretation bullet on vendor concentration / rationalization
   opportunities.
@@ -91,7 +96,8 @@ Metrics provided: ``alphanumericPct``, ``oneWordPct``, ``multiWordPct``,
 ``nullProxyPct``, ``avgCharLength``, ``fillRate``, ``nonProcurableSpend``,
 ``currencyLabel``, ``alphanumericSpendTotal``,
 ``alphanumericSpendByCurrency`` (array of {code, spend} or null),
-``alphanumericSpendColumn``.
+``alphanumericSpendColumn``,
+``nonProcurableSpendByCurrency`` (array of {code, spend} or null).
 
 Required bullets:
 - Alphanumeric values + spend: ``- Alphanumeric values: **{alphanumericPct}%**``
@@ -104,7 +110,14 @@ Required bullets:
     ``, Total alphanumeric spend: **{spend1} ({code1})**, **{spend2} ({code2})**, ...``
     (entries with ``spend: null`` like "Others" should show just the code with no number)
   * If both are null: omit the spend part.
-- Non-procurable spend: ``- Total non-procurable spend: **{nonProcurableSpend} ({currencyLabel})**``
+- Non-procurable spend: format identically to alphanumeric spend:
+  * If ``nonProcurableSpendByCurrency`` has exactly 1 entry:
+    ``- Total non-procurable spend: **{spend} ({code})**``
+  * If ``nonProcurableSpendByCurrency`` has multiple entries:
+    ``- Total non-procurable spend: **{spend1} ({code1})**, **{spend2} ({code2})**, ...``
+    (entries with ``spend: null`` like "Others" show just the code with no number)
+  * If ``nonProcurableSpendByCurrency`` is null, fall back to:
+    ``- Total non-procurable spend: **{nonProcurableSpend} ({currencyLabel})**``
   — flag if material relative to total spend.
 - Fill rate: ``- Fill rate: **{fillRate}%**`` — with interpretation.
 - One-word / multi-word: ``- One-word: **{oneWordPct}%**, Multi-word: **{multiWordPct}%**``

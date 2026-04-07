@@ -244,112 +244,13 @@ def run_data_quality_assessment(
             })
     parameters.append({"group": "Date", "columns": date_entries})
 
-    # Spend
-    spend_entries: list[dict[str, Any]] = []
-    for col in SPEND_COLUMNS:
-        key = _make_key("spend", col)
-        if col in available:
-            fr = fill_rates[col]
-            stats = compute_spend_metrics(conn, table_name, col)
-            spend_entries.append({
-                "columnName": col,
-                "parameterKey": key,
-                "fillRate": fr["fill_rate"],
-                "mapped": True,
-                "stats": stats,
-            })
-        else:
-            spend_entries.append({
-                "columnName": col,
-                "parameterKey": key,
-                "fillRate": 0.0,
-                "mapped": False,
-                "stats": {},
-            })
-    parameters.append({"group": "Spend", "columns": spend_entries})
-
-    # Supplier
-    supplier_entries: list[dict[str, Any]] = []
-    for col in SUPPLIER_COLUMNS:
-        key = _make_key("supplier", col)
-        if col in available:
-            fr = fill_rates[col]
-            stats = compute_supplier_metrics(
-                conn, table_name, col, pareto_spend_col
-            )
-            supplier_entries.append({
-                "columnName": col,
-                "parameterKey": key,
-                "fillRate": fr["fill_rate"],
-                "mapped": True,
-                "stats": stats,
-            })
-        else:
-            supplier_entries.append({
-                "columnName": col,
-                "parameterKey": key,
-                "fillRate": 0.0,
-                "mapped": False,
-                "stats": {},
-            })
-    parameters.append({"group": "Supplier", "columns": supplier_entries})
-
-    # Description (standard + concatenated description columns)
-    all_desc_candidates = DESCRIPTION_COLUMNS + concat_desc_cols
-    # Resolve spend column for alphanumeric spend
-    alpha_spend_col: str | None = None
-    for c in _ALPHA_SPEND_PREFERENCE:
-        if c in available:
-            alpha_spend_col = c
-            break
-    # Only show per-currency breakdown when using a local currency column;
-    # reporting currency columns already have a single denomination.
-    _LOCAL_SPEND_COLS = {"Total Amount paid in Local Currency", "PO Total Amount in Local Currency"}
-    alpha_currency_col: str | None = (
-        currency_cols[0] if currency_cols and alpha_spend_col in _LOCAL_SPEND_COLS else None
-    )
-
-    desc_entries: list[dict[str, Any]] = []
-    for col in all_desc_candidates:
-        key = _make_key("description", col)
-        if col in available:
-            fr = fill_rates[col]
-            stats = compute_description_metrics(conn, table_name, col)
-            np_stats = compute_non_procurable_spend(
-                conn, table_name, col, pareto_spend_col
-            )
-            stats.update(np_stats)
-            stats["currencyLabel"] = _detect_currency_label(pareto_spend_col, conn, table_name, available)
-            # Alphanumeric spend
-            alpha_stats = compute_alphanumeric_spend(
-                conn, table_name, col, alpha_spend_col, alpha_currency_col
-            )
-            stats.update(alpha_stats)
-            desc_entries.append({
-                "columnName": col,
-                "parameterKey": key,
-                "fillRate": fr["fill_rate"],
-                "mapped": True,
-                "stats": stats,
-            })
-        else:
-            desc_entries.append({
-                "columnName": col,
-                "parameterKey": key,
-                "fillRate": 0.0,
-                "mapped": False,
-                "stats": {},
-            })
-    parameters.append({"group": "Description", "columns": desc_entries})
-
-    # Currency
+    # Currency (rendered before Spend so panels are adjacent)
     currency_entries: list[dict[str, Any]] = []
     for col in CURRENCY_COLUMNS:
         key = _make_key("currency", col)
         if col in available:
             fr = fill_rates[col]
             stats = compute_currency_metrics(conn, table_name, col)
-            # Paired spend columns for quality analysis
             pair = _CURRENCY_SPEND_PAIRS.get(col, (None, None))
             local_spend = pair[0] if pair[0] in available else None
             reporting_spend = pair[1] if pair[1] in available else None
@@ -375,6 +276,125 @@ def run_data_quality_assessment(
                 "stats": {},
             })
     parameters.append({"group": "Currency", "columns": currency_entries})
+
+    # Spend
+    _REPORTING_SPEND_COLS = {
+        "Total Amount paid in Reporting Currency",
+        "PO Total Amount in reporting currency",
+    }
+    # Map local-currency spend columns to their reporting-currency counterpart
+    _LOCAL_TO_REPORTING: dict[str, str] = {
+        "Total Amount paid in Local Currency": "Total Amount paid in Reporting Currency",
+        "PO Total Amount in Local Currency": "PO Total Amount in reporting currency",
+    }
+    spend_entries: list[dict[str, Any]] = []
+    for col in SPEND_COLUMNS:
+        key = _make_key("spend", col)
+        if col in available:
+            fr = fill_rates[col]
+            stats = compute_spend_metrics(conn, table_name, col)
+            # Attach per-currency breakdown for local-currency spend columns
+            paired_ccy = _SPEND_TO_CURRENCY_CODE.get(col)
+            if paired_ccy and paired_ccy in available:
+                stats["spendByCurrency"] = compute_currency_quality_analysis(
+                    conn, table_name, paired_ccy,
+                    col, None, total_rows,
+                )
+            # Flag when the corresponding reporting-currency column is absent
+            reporting_counterpart = _LOCAL_TO_REPORTING.get(col)
+            if reporting_counterpart and reporting_counterpart not in available:
+                stats["reportingCurrencyMissing"] = True
+            spend_entries.append({
+                "columnName": col,
+                "parameterKey": key,
+                "fillRate": fr["fill_rate"],
+                "mapped": True,
+                "stats": stats,
+            })
+        else:
+            spend_entries.append({
+                "columnName": col,
+                "parameterKey": key,
+                "fillRate": 0.0,
+                "mapped": False,
+                "stats": {},
+            })
+    parameters.append({"group": "Spend", "columns": spend_entries})
+
+    # Supplier
+    pareto_spend_standardized = (
+        pareto_spend_col in _REPORTING_SPEND_COLS if pareto_spend_col else False
+    )
+    supplier_entries: list[dict[str, Any]] = []
+    for col in SUPPLIER_COLUMNS:
+        key = _make_key("supplier", col)
+        if col in available:
+            fr = fill_rates[col]
+            stats = compute_supplier_metrics(
+                conn, table_name, col, pareto_spend_col
+            )
+            stats["paretoSpendStandardized"] = pareto_spend_standardized
+            supplier_entries.append({
+                "columnName": col,
+                "parameterKey": key,
+                "fillRate": fr["fill_rate"],
+                "mapped": True,
+                "stats": stats,
+            })
+        else:
+            supplier_entries.append({
+                "columnName": col,
+                "parameterKey": key,
+                "fillRate": 0.0,
+                "mapped": False,
+                "stats": {},
+            })
+    parameters.append({"group": "Supplier", "columns": supplier_entries})
+
+    # Description (standard + concatenated description columns)
+    all_desc_candidates = DESCRIPTION_COLUMNS + concat_desc_cols
+    alpha_spend_col: str | None = None
+    for c in _ALPHA_SPEND_PREFERENCE:
+        if c in available:
+            alpha_spend_col = c
+            break
+    _LOCAL_SPEND_COLS = {"Total Amount paid in Local Currency", "PO Total Amount in Local Currency"}
+    alpha_currency_col: str | None = (
+        currency_cols[0] if currency_cols and alpha_spend_col in _LOCAL_SPEND_COLS else None
+    )
+
+    desc_entries: list[dict[str, Any]] = []
+    for col in all_desc_candidates:
+        key = _make_key("description", col)
+        if col in available:
+            fr = fill_rates[col]
+            stats = compute_description_metrics(conn, table_name, col)
+            np_stats = compute_non_procurable_spend(
+                conn, table_name, col, pareto_spend_col,
+                currency_column=alpha_currency_col,
+            )
+            stats.update(np_stats)
+            stats["currencyLabel"] = _detect_currency_label(pareto_spend_col, conn, table_name, available)
+            alpha_stats = compute_alphanumeric_spend(
+                conn, table_name, col, alpha_spend_col, alpha_currency_col
+            )
+            stats.update(alpha_stats)
+            desc_entries.append({
+                "columnName": col,
+                "parameterKey": key,
+                "fillRate": fr["fill_rate"],
+                "mapped": True,
+                "stats": stats,
+            })
+        else:
+            desc_entries.append({
+                "columnName": col,
+                "parameterKey": key,
+                "fillRate": 0.0,
+                "mapped": False,
+                "stats": {},
+            })
+    parameters.append({"group": "Description", "columns": desc_entries})
 
     # ── AI insights ────────────────────────────────────────────────────────
 

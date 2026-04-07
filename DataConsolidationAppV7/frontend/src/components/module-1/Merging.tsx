@@ -569,6 +569,8 @@ export default function Merging(props: MergingProps) {
       <MergeReport
         mergeHistory={mergeHistory}
         mergeOutputs={props.mergeOutputs}
+        onProceedToQuality={() => setStep(8)}
+        onGoBackToMerge={() => setStep(6)}
       />
     );
   }

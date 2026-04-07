@@ -167,7 +167,8 @@
   ],
   "Vendor Country": [
     "COUNTRY",
-    "VENDORCOUNTRY"
+    "VENDORCOUNTRY",
+    "REGION"
   ],
   "Invoice PO Number": [
     "POSTALCODE",
