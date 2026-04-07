@@ -10,6 +10,7 @@ interface DataInventoryProps {
   setLoading: (l: boolean) => void;
   setError: (e: string | null) => void;
   importSource?: string | null;
+  onBeforeMutate?: () => Promise<void>;
 }
 
 function HeaderRowEditor({
@@ -185,7 +186,7 @@ function HeaderRowEditor({
   );
 }
 
-const FormattedTable: React.FC<{ tableKey: string, setError: any, setLoading: any, onUpdated: () => void }> = ({ tableKey, setError, setLoading, onUpdated }) => {
+const FormattedTable: React.FC<{ tableKey: string, setError: any, setLoading: any, onUpdated: () => void, onBeforeMutate?: () => Promise<void> }> = ({ tableKey, setError, setLoading, onUpdated, onBeforeMutate }) => {
   const [preview, setPreview] = useState<{columns: string[], rows: any[]}>({ columns: [], rows: [] });
   const [fetching, setFetching] = useState(true);
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string | number>>(new Set());
@@ -217,7 +218,7 @@ const FormattedTable: React.FC<{ tableKey: string, setError: any, setLoading: an
   const handleDeleteSelected = async () => {
     if (selectedRowIds.size === 0) return;
     if (!window.confirm(`Delete ${selectedRowIds.size} selected row(s)?`)) return;
-    
+    if (onBeforeMutate) await onBeforeMutate();
     setLoading(true);
     try {
       const res = await fetch("/api/delete-rows", {
@@ -301,7 +302,7 @@ const FormattedTable: React.FC<{ tableKey: string, setError: any, setLoading: an
   );
 }
 
-export default function DataInventory({ inventory, onProceed, loading, setLoading, setError, importSource }: DataInventoryProps) {
+export default function DataInventory({ inventory, onProceed, loading, setLoading, setError, importSource, onBeforeMutate }: DataInventoryProps) {
   const [expandedTable, setExpandedTable] = useState<string | null>(null);
   const [headerEditTable, setHeaderEditTable] = useState<string | null>(null);
   const [localInventory, setLocalInventory] = useState(inventory);
@@ -311,6 +312,7 @@ export default function DataInventory({ inventory, onProceed, loading, setLoadin
 
   const handleDeleteTable = async (tableKey: string) => {
     if (!window.confirm("Delete this table completely?")) return;
+    if (onBeforeMutate) await onBeforeMutate();
     setLoading(true);
     try {
       await fetch("/api/delete-table", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tableKey }) });
@@ -320,6 +322,7 @@ export default function DataInventory({ inventory, onProceed, loading, setLoadin
   };
 
   const handleSetHeaderRow = async (tableKey: string, rowIndex: number, customNames?: Record<number, string>) => {
+    if (onBeforeMutate) await onBeforeMutate();
     setError(null);
     const payload = { tableKey, rowIndex, customNames };
     const res = await fetch("/api/set-header-row", {
@@ -392,7 +395,7 @@ export default function DataInventory({ inventory, onProceed, loading, setLoadin
 
                 {isExpanded && !isHeaderEdit && (
                   <div className="bg-neutral-50/30">
-                    <FormattedTable key={`${inv.table_key}-${updates}`} tableKey={inv.table_key} setError={setError} setLoading={setLoading} onUpdated={forceUpdate} />
+                    <FormattedTable key={`${inv.table_key}-${updates}`} tableKey={inv.table_key} setError={setError} setLoading={setLoading} onUpdated={forceUpdate} onBeforeMutate={onBeforeMutate} />
                     <div className="p-4 bg-white border-t border-neutral-100 flex justify-end items-center shadow-[0_-4px_6px_-6px_rgba(0,0,0,0.02)]">
                        <span className="text-xs text-neutral-500 font-medium mr-4">Ready to lock in this specific table?</span>
                        <PrimaryButton onClick={() => onProceed(inv.table_key)} disabled={loading}>

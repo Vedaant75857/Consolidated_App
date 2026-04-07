@@ -40,6 +40,8 @@ interface DataQualityAssessmentProps {
   apiKey: string;
   mergeOutputs: MergeOutput[];
   addLog: (step: string, type: "info" | "success" | "error", message: string) => void;
+  setAiLoading: (v: boolean) => void;
+  setLoadingMessage: (v: string) => void;
 }
 
 /* ── Helpers ───────────────────────────────────────────────────────────── */
@@ -84,6 +86,8 @@ export default function DataQualityAssessment({
   apiKey,
   mergeOutputs,
   addLog,
+  setAiLoading,
+  setLoadingMessage,
 }: DataQualityAssessmentProps) {
   const latestVersion = mergeOutputs.length > 0
     ? Math.max(...mergeOutputs.map((o) => o.version))
@@ -99,6 +103,8 @@ export default function DataQualityAssessment({
   const runAssessment = useCallback(
     async (version: number) => {
       setLoading(true);
+      setAiLoading(true);
+      setLoadingMessage("Running Data Quality Assessment...");
       setError(null);
       setResult(null);
       addLog("Data Quality", "info", "Running data quality assessment...");
@@ -114,9 +120,11 @@ export default function DataQualityAssessment({
         addLog("Data Quality", "error", msg);
       } finally {
         setLoading(false);
+        setAiLoading(false);
+        setLoadingMessage("");
       }
     },
-    [sessionId, apiKey, addLog],
+    [sessionId, apiKey, addLog, setAiLoading, setLoadingMessage],
   );
 
   // Auto-run on first mount when no results yet

@@ -54,6 +54,16 @@ def set_meta(conn: sqlite3.Connection, key: str, value: Any):
     conn.commit()
 
 
+def delete_meta(conn: sqlite3.Connection, key: str):
+    conn.execute("DELETE FROM _meta WHERE key = ?", (key,))
+    conn.commit()
+
+
+def get_all_meta_keys(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute("SELECT key FROM _meta").fetchall()
+    return [r[0] for r in rows]
+
+
 def delete_session(session_id: str):
     path = _db_path(session_id)
     if os.path.isfile(path):

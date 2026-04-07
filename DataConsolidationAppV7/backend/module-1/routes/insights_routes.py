@@ -14,6 +14,8 @@ from flask import Blueprint, Response, jsonify, request, stream_with_context
 
 from shared.db import (
     all_registered_tables,
+    delete_meta,
+    drop_table,
     get_meta,
     get_session_db,
     lookup_sql_name,
@@ -22,6 +24,7 @@ from shared.db import (
     set_meta,
     table_exists,
     table_row_count,
+    unregister_table,
 )
 from appending.service import run_append_execute, run_append_mapping, run_append_plan
 from data_loading.service import (
@@ -639,5 +642,75 @@ def chat():
         return jsonify(result)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+
+# ── Step-aware cache invalidation ──────────────────────────────────────
+
+_STEP_ARTIFACTS: dict[int, dict] = {
+    3: {
+        "meta": ["appendGroups", "appendGroupMappings", "groupSchemaTableRows", "unassigned"],
+        "table_prefix": ["grp__"],
+    },
+    4: {
+        "meta": ["headerNormDecisions"],
+        "table_prefix": [],
+    },
+    5: {
+        "meta": [],
+        "table_prefix": [],
+    },
+    6: {
+        "meta": ["mergeBaseGroupId", "mergeApprovedSources", "merge_history"],
+        "table_prefix": ["final_merged", "merge_v"],
+    },
+}
+
+
+@insights_bp.route("/invalidate-downstream", methods=["POST"])
+def invalidate_downstream():
+    """Clear all cached artifacts for steps after *fromStep*."""
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+        from_step = int(body.get("fromStep", 0))
+
+        if not session_id:
+            return jsonify({"error": "Missing sessionId"}), 400
+
+        conn = get_session_db(str(session_id))
+
+        if from_step == 0:
+            # Full session wipe (re-upload scenario)
+            from shared.db import get_all_meta_keys
+
+            for key in get_all_meta_keys(conn):
+                delete_meta(conn, key)
+            for reg in all_registered_tables(conn):
+                sql_name = reg.get("sql_name") or reg.get("table_name", "")
+                if sql_name:
+                    drop_table(conn, sql_name, commit=False)
+                tk = reg.get("table_key", "")
+                if tk:
+                    unregister_table(conn, tk, commit=False)
+            conn.commit()
+        else:
+            for step_num in sorted(_STEP_ARTIFACTS.keys()):
+                if step_num > from_step:
+                    spec = _STEP_ARTIFACTS[step_num]
+                    for key in spec["meta"]:
+                        delete_meta(conn, key)
+                    for prefix in spec["table_prefix"]:
+                        for reg in all_registered_tables(conn):
+                            sql_name = reg.get("sql_name") or reg.get("table_name", "")
+                            tk = reg.get("table_key", "")
+                            if sql_name and sql_name.startswith(prefix):
+                                drop_table(conn, sql_name, commit=False)
+                                if tk:
+                                    unregister_table(conn, tk, commit=False)
+            conn.commit()
+
+        return jsonify({"ok": True})
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": str(exc)}), 500

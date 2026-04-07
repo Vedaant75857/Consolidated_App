@@ -8,6 +8,8 @@ import { motion, AnimatePresence } from "motion/react";
 import DataLoading from "./components/module-1/DataLoading";
 import DataInventory from "./components/module-1/DataInventory";
 import NormDashboard from "./components/module-2/NormDashboard";
+import LoadingOverlay from "./components/module-2/LoadingOverlay";
+import StepChangeWarningDialog from "./components/module-2/StepChangeWarningDialog";
 import StatusLog, { type LogEntry } from "./components/module-1/StatusLog";
 import { useTheme } from "./components/common/ThemeProvider";
 
@@ -37,11 +39,13 @@ export default function App() {
   /* ── Core wizard state ── */
   const [step, setStep]                       = useState<number>(1);
   const [maxStepReached, setMaxStepReached]   = useState<number>(1);
-  const [normActiveTab, setNormActiveTab]     = useState<string>("supplier_name");
+  const [normActiveTab, setNormActiveTab]     = useState<string>("supplier_country");
   const [apiKey, setApiKey]                   = useState("");
   const [file, setFile]                       = useState<File | null>(null);
   const [filename, setFilename]               = useState<string | null>(null);
   const [loading, setLoading]                 = useState(false);
+  const [loadingMessage, setLoadingMessage]   = useState("");
+  const [loadingOnCancel, setLoadingOnCancel] = useState<(() => void) | null>(null);
   const [error, setError]                     = useState<string | null>(null);
 
   /* ── Data state ── */
@@ -111,10 +115,57 @@ export default function App() {
     setMaxStepReached((prev) => Math.max(prev, step));
   }, [step]);
 
+  // ── Step-aware cache invalidation ──────────────────────────────────
+  const [pendingInvalidation, setPendingInvalidation] = useState<{
+    step: number;
+    action: () => void;
+  } | null>(null);
+  const [normResetKey, setNormResetKey] = useState(0);
+
+  const invalidateDownstream = useCallback(
+    async (fromStep: number) => {
+      if (fromStep < 2) {
+        setInventory([]);
+        setFilename(null);
+        try {
+          await fetch("/api/reset-state", { method: "POST", headers: { "Content-Type": "application/json" } });
+        } catch (err) {
+          console.error("Backend reset-state failed:", err);
+        }
+      }
+      if (fromStep < 3) {
+        setNormResetKey((k: number) => k + 1);
+        try {
+          await fetch("/api/reset-normalization", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+        } catch (err) {
+          console.error("Backend reset-normalization failed:", err);
+        }
+      }
+      setMaxStepReached(fromStep as number);
+    },
+    [],
+  );
+
+  const guardedAction = useCallback(
+    (targetStep: number, action: () => void) => {
+      if (maxStepReached > targetStep) {
+        setPendingInvalidation({ step: targetStep, action });
+      } else {
+        action();
+      }
+    },
+    [maxStepReached],
+  );
+
   /* ── Step 1 → Upload ── */
-  const handleUpload = async () => {
+  const doUpload = async () => {
     if (!file) return;
     setLoading(true);
+    setLoadingMessage("Uploading and extracting your data…");
     setError(null);
     addLog("UPLOAD", "info", "Uploading and extracting " + file.name + "…");
     try {
@@ -132,12 +183,23 @@ export default function App() {
       addLog("UPLOAD", "error", err.message);
     } finally {
       setLoading(false);
+      setLoadingMessage("");
+    }
+  };
+
+  const handleUpload = () => {
+    if (maxStepReached > 1) {
+      guardedAction(1, doUpload);
+    } else {
+      doUpload();
     }
   };
 
   /* ── Step 2 → Select table from inventory ── */
-  const handleProceedFromInventory = async (tableKey: string) => {
+  const doProceedFromInventory = async (tableKey: string) => {
+    if (maxStepReached > 2) await invalidateDownstream(2);
     setLoading(true);
+    setLoadingMessage("Locking table into pipeline…");
     setError(null);
     addLog("INVENTORY", "info", "Locking table " + tableKey + " into pipeline…");
     try {
@@ -155,6 +217,15 @@ export default function App() {
       addLog("INVENTORY", "error", err.message);
     } finally {
       setLoading(false);
+      setLoadingMessage("");
+    }
+  };
+
+  const handleProceedFromInventory = (tableKey: string) => {
+    if (maxStepReached > 2) {
+      guardedAction(2, () => doProceedFromInventory(tableKey));
+    } else {
+      doProceedFromInventory(tableKey);
     }
   };
 
@@ -175,16 +246,21 @@ export default function App() {
             inventory={inventory} onProceed={handleProceedFromInventory}
             loading={loading} setLoading={setLoading} setError={setError}
             importSource={importSource}
+            onBeforeMutate={maxStepReached > 2 ? () => invalidateDownstream(2) : undefined}
           />
         );
       case 3:
         return (
-          <NormDashboard
-            apiKey={apiKey}
-            activeTab={normActiveTab}
-            setActiveTab={setNormActiveTab}
-            addLog={addLog}
-          />
+          <div key={normResetKey}>
+            <NormDashboard
+              apiKey={apiKey}
+              activeTab={normActiveTab}
+              setActiveTab={setNormActiveTab}
+              addLog={addLog}
+              setLoadingMessage={setLoadingMessage}
+              setLoadingOnCancel={setLoadingOnCancel}
+            />
+          </div>
         );
       default:
         return null;
@@ -398,6 +474,20 @@ export default function App() {
 
         {/* ─ Live pipeline activity (sticky bottom bar) ─ */}
         <StatusLog entries={statusLog} onClear={() => setStatusLog([])} />
+        <LoadingOverlay isLoading={!!loadingMessage} message={loadingMessage} onCancel={loadingOnCancel || undefined} />
+
+        <StepChangeWarningDialog
+          open={!!pendingInvalidation}
+          onCancel={() => setPendingInvalidation(null)}
+          onConfirm={async () => {
+            if (pendingInvalidation) {
+              await invalidateDownstream(pendingInvalidation.step);
+              const action = pendingInvalidation.action;
+              setPendingInvalidation(null);
+              action();
+            }
+          }}
+        />
       </main>
       </div>
     </div>

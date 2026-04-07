@@ -21,7 +21,6 @@ export default function LoadingOverlay({ isLoading, message, onCancel }: Loading
 
   return (
     <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/15 dark:bg-black/35">
-      {/* Glassmorphism card with breathing glow */}
       <div
         className="w-[360px] mx-4 rounded-3xl border border-white/40 dark:border-white/[0.12] backdrop-blur-2xl px-10 py-10 flex flex-col items-center gap-5"
         style={{
@@ -31,7 +30,6 @@ export default function LoadingOverlay({ isLoading, message, onCancel }: Loading
             : "breathing-glow 3s ease-in-out infinite",
         }}
       >
-        {/* Clean gradient ring spinner */}
         <div className="relative w-14 h-14">
           <svg
             className="w-14 h-14"
@@ -66,7 +64,6 @@ export default function LoadingOverlay({ isLoading, message, onCancel }: Loading
           </svg>
         </div>
 
-        {/* Message */}
         <p
           className="text-lg font-bold text-red-600 dark:text-red-400 text-center leading-snug tracking-tight"
           style={isDark ? { textShadow: "0 0 12px rgba(239,68,68,0.45)" } : undefined}
@@ -74,7 +71,6 @@ export default function LoadingOverlay({ isLoading, message, onCancel }: Loading
           {message || "Processing\u2026"}
         </p>
 
-        {/* Cancel button — glass style */}
         {onCancel && (
           <button
             type="button"

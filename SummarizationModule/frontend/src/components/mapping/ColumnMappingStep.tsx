@@ -117,14 +117,7 @@ export default function ColumnMappingStep({
   }
 
   if (phase === "detecting") {
-    return (
-      <div className="max-w-2xl mx-auto">
-        <div className="bg-white dark:bg-neutral-900 rounded-2xl border border-neutral-200 dark:border-neutral-800 shadow-sm p-12 text-center">
-          <Loader2 className="w-10 h-10 text-primary animate-spin mx-auto mb-4" />
-          <p className="text-sm text-neutral-600 dark:text-neutral-400">AI is analyzing your columns...</p>
-        </div>
-      </div>
-    );
+    return null;
   }
 
   const mappedCount = aiMappings?.filter(m => userMapping[m.fieldKey]).length ?? 0;
@@ -341,17 +334,7 @@ export default function ColumnMappingStep({
         </div>
       )}
 
-      {phase === "confirming" && (
-        <div className="flex flex-col items-center justify-center py-12 rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 shadow-sm">
-          <Loader2 className="w-10 h-10 text-primary animate-spin mb-4" />
-          <p className="text-sm font-semibold text-neutral-700 dark:text-neutral-300">
-            Confirming mappings &amp; preparing views&hellip;
-          </p>
-          <p className="text-xs text-neutral-400 dark:text-neutral-500 mt-1">
-            This may take a moment
-          </p>
-        </div>
-      )}
+      {/* Confirming phase — global LoadingOverlay handles the spinner */}
     </div>
   );
 }

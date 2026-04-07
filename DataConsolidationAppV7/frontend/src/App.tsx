@@ -12,6 +12,7 @@ import LoadingOverlay from "./components/module-1/LoadingOverlay";
 import StatusLog, { type LogEntry } from "./components/module-1/StatusLog";
 import DataPreviewOverlay from "./components/module-1/DataPreviewOverlay";
 import MergeOutputsPanel from "./components/module-1/MergeOutputsPanel";
+import StepChangeWarningDialog from "./components/common/StepChangeWarningDialog";
 import { StepHero, pageVariants, horizontalVariants } from "./components/common/ui";
 import { useTheme } from "./components/common/ThemeProvider";
 
@@ -63,6 +64,7 @@ export default function App() {
   const slideDirection = step >= prevStepRef.current ? 1 : -1;
   useEffect(() => {
     setLoading(false);
+    setLoadingMessage("");
     setError(null);
     setLastFailedAction(null);
     setMaxStepReached(prev => Math.max(prev, step));
@@ -76,6 +78,7 @@ export default function App() {
     const timer = setTimeout(() => {
       setAiLoading(false);
       setLoading(false);
+      setLoadingMessage("");
     }, AI_LOADING_TIMEOUT_MS);
     return () => clearTimeout(timer);
   }, [aiLoading]);
@@ -190,6 +193,80 @@ export default function App() {
       console.error("Group preview fetch error:", err);
     }
   }, [sessionId]);
+
+  // ── Step-aware cache invalidation ──────────────────────────────────
+  const [pendingInvalidation, setPendingInvalidation] = useState<{
+    step: number;
+    action: () => void;
+  } | null>(null);
+
+  const invalidateDownstream = useCallback(
+    async (fromStep: number) => {
+      // Clear frontend state for all steps after fromStep
+      if (fromStep < 3) {
+        setAppendGroups([]);
+        setUnassigned([]);
+        setExcludedTables([]);
+        setAppendGroupMappings([]);
+        setGroupSchema([]);
+        setAppendReport(null);
+      }
+      if (fromStep < 4) {
+        setHeaderNormDecisions(null);
+        setHeaderNormStandardFields([]);
+        setGroupPreviewData({});
+      }
+      if (fromStep < 5) {
+        setCleaningConfigs({});
+        setDedupResults({});
+        setStandardizeConfigs({});
+        setConcatConfigs({});
+      }
+      if (fromStep < 6) {
+        setMergeBaseGroupId("");
+        setMergeBaseRecommendation(null);
+        setMergeSourceGroupId("");
+        setMergeCommonColumns([]);
+        setMergeSelectedKeys([]);
+        setMergePullColumns([]);
+        setMergeSimulation(null);
+        setMergeValidationReport(null);
+        setMergeResult(null);
+        setMergeExecuteResult(null);
+        setMergeHistory([]);
+        setMergeOutputs([]);
+        setGroupInsights({});
+        setGroupReports([]);
+        setCrossGroupOverview(null);
+      }
+      // Reset maxStepReached to current step
+      setMaxStepReached(fromStep);
+      // Clear backend artifacts
+      if (sessionId) {
+        try {
+          await fetch("/api/execution/invalidate-downstream", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sessionId, fromStep }),
+          });
+        } catch (err) {
+          console.error("Backend invalidation failed:", err);
+        }
+      }
+    },
+    [sessionId],
+  );
+
+  const guardedAction = useCallback(
+    (targetStep: number, action: () => void) => {
+      if (maxStepReached > targetStep) {
+        setPendingInvalidation({ step: targetStep, action });
+      } else {
+        action();
+      }
+    },
+    [maxStepReached],
+  );
 
   const STORAGE_KEY = "datastitcher_session";
   const APIKEY_STORAGE_KEY = "datastitcher_apikey";
@@ -417,7 +494,7 @@ export default function App() {
     return payload;
   }, [sessionId, apiKey, applyStatePatch]);
 
-  const handleUpload = async () => {
+  const doUpload = async () => {
     if (!file) {
       setError("Please select a file or folder to upload.");
       return;
@@ -425,6 +502,10 @@ export default function App() {
     if (file.size > MAX_FILE_SIZE) {
       setError(`File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum allowed size is 300 MB.`);
       return;
+    }
+    // Re-upload: wipe existing session cache first
+    if (sessionId) {
+      await invalidateDownstream(0);
     }
     setLoading(true);
     setLoadingMessage("Uploading and extracting your data...");
@@ -450,13 +531,23 @@ export default function App() {
     } catch (err: any) {
       setError(err.message);
       addLog("Upload", "error", err.message);
-      setLastFailedAction(() => handleUpload);
+      setLastFailedAction(() => doUpload);
     } finally {
       setLoading(false);
+      setLoadingMessage("");
     }
   };
 
-  const handleDeleteTable = async (tableKey: string) => {
+  const handleUpload = () => {
+    if (sessionId && maxStepReached > 1) {
+      guardedAction(1, doUpload);
+    } else {
+      doUpload();
+    }
+  };
+
+  const doDeleteTable = async (tableKey: string) => {
+    if (maxStepReached > 2) await invalidateDownstream(2);
     setLoading(true);
     setError(null);
     try {
@@ -478,7 +569,16 @@ export default function App() {
     }
   };
 
-  const handleDeleteRows = async (tableKey: string, rowIds: (string | number)[]) => {
+  const handleDeleteTable = (tableKey: string) => {
+    if (maxStepReached > 2) {
+      guardedAction(2, () => doDeleteTable(tableKey));
+    } else {
+      doDeleteTable(tableKey);
+    }
+  };
+
+  const doDeleteRows = async (tableKey: string, rowIds: (string | number)[]) => {
+    if (maxStepReached > 2) await invalidateDownstream(2);
     setLoading(true);
     setError(null);
     try {
@@ -502,7 +602,16 @@ export default function App() {
     }
   };
 
-  const handleSetHeaderRow = async (tableKey: string, headerRowIndex: number, customColumnNames?: Record<number, string>) => {
+  const handleDeleteRows = (tableKey: string, rowIds: (string | number)[]) => {
+    if (maxStepReached > 2) {
+      guardedAction(2, () => doDeleteRows(tableKey, rowIds));
+    } else {
+      doDeleteRows(tableKey, rowIds);
+    }
+  };
+
+  const doSetHeaderRow = async (tableKey: string, headerRowIndex: number, customColumnNames?: Record<number, string>) => {
+    if (maxStepReached > 2) await invalidateDownstream(2);
     setLoading(true);
     setError(null);
     try {
@@ -524,7 +633,16 @@ export default function App() {
     }
   };
 
-  const handleCleanTable = async (tableKey: string, config: any) => {
+  const handleSetHeaderRow = (tableKey: string, headerRowIndex: number, customColumnNames?: Record<number, string>) => {
+    if (maxStepReached > 2) {
+      guardedAction(2, () => doSetHeaderRow(tableKey, headerRowIndex, customColumnNames));
+    } else {
+      doSetHeaderRow(tableKey, headerRowIndex, customColumnNames);
+    }
+  };
+
+  const doCleanTable = async (tableKey: string, config: any) => {
+    if (maxStepReached > 5) await invalidateDownstream(5);
     setLoading(true);
     setError(null);
     try {
@@ -549,7 +667,16 @@ export default function App() {
     }
   };
 
-  const handleCleanGroup = async (groupId: string, config: any) => {
+  const handleCleanTable = (tableKey: string, config: any) => {
+    if (maxStepReached > 5) {
+      guardedAction(5, () => doCleanTable(tableKey, config));
+    } else {
+      doCleanTable(tableKey, config);
+    }
+  };
+
+  const doCleanGroup = async (groupId: string, config: any) => {
+    if (maxStepReached > 5) await invalidateDownstream(5);
     setLoading(true);
     setError(null);
     try {
@@ -573,6 +700,14 @@ export default function App() {
     }
   };
 
+  const handleCleanGroup = async (groupId: string, config: any) => {
+    if (maxStepReached > 5) {
+      guardedAction(5, () => doCleanGroup(groupId, config));
+    } else {
+      await doCleanGroup(groupId, config);
+    }
+  };
+
   const handleDedupPreview = async (groupId: string, columns: string[]) => {
     try {
       const res = await fetch("/api/dedup-preview", {
@@ -589,7 +724,8 @@ export default function App() {
     }
   };
 
-  const handleDedupApply = async (groupId: string, columns: string[]) => {
+  const doDedupApply = async (groupId: string, columns: string[]) => {
+    if (maxStepReached > 5) await invalidateDownstream(5);
     setLoading(true);
     setError(null);
     try {
@@ -615,6 +751,14 @@ export default function App() {
     }
   };
 
+  const handleDedupApply = (groupId: string, columns: string[]) => {
+    if (maxStepReached > 5) {
+      guardedAction(5, () => doDedupApply(groupId, columns));
+      return null;
+    }
+    return doDedupApply(groupId, columns);
+  };
+
   const handleAnalyzeColumns = async (groupId: string, columns: string[]) => {
     try {
       const res = await fetch("/api/analyze-column-format", {
@@ -632,7 +776,8 @@ export default function App() {
     }
   };
 
-  const handleApplyStandardize = async (groupId: string, actions: any[]) => {
+  const doApplyStandardize = async (groupId: string, actions: any[]) => {
+    if (maxStepReached > 5) await invalidateDownstream(5);
     setLoading(true);
     setError(null);
     try {
@@ -657,7 +802,16 @@ export default function App() {
     }
   };
 
-  const handleConcatApply = async (groupId: string, columns: string[]) => {
+  const handleApplyStandardize = async (groupId: string, actions: any[]) => {
+    if (maxStepReached > 5) {
+      guardedAction(5, () => doApplyStandardize(groupId, actions));
+    } else {
+      await doApplyStandardize(groupId, actions);
+    }
+  };
+
+  const doConcatApply = async (groupId: string, columns: string[]) => {
+    if (maxStepReached > 5) await invalidateDownstream(5);
     setLoading(true);
     setError(null);
     try {
@@ -683,7 +837,16 @@ export default function App() {
     }
   };
 
-  const handleDeleteConcatColumn = async (groupId: string, columnName: string) => {
+  const handleConcatApply = (groupId: string, columns: string[]) => {
+    if (maxStepReached > 5) {
+      guardedAction(5, () => doConcatApply(groupId, columns));
+      return null;
+    }
+    return doConcatApply(groupId, columns);
+  };
+
+  const doDeleteConcatColumn = async (groupId: string, columnName: string) => {
+    if (maxStepReached > 5) await invalidateDownstream(5);
     setLoading(true);
     setError(null);
     try {
@@ -707,6 +870,14 @@ export default function App() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleDeleteConcatColumn = (groupId: string, columnName: string) => {
+    if (maxStepReached > 5) {
+      guardedAction(5, () => doDeleteConcatColumn(groupId, columnName));
+      return null;
+    }
+    return doDeleteConcatColumn(groupId, columnName);
   };
 
   const fetchResultsPreviews = async () => {
@@ -762,11 +933,12 @@ export default function App() {
     setShowResultsPreview(true);
   };
 
-  const handleHeaderNormRun = async () => {
+  const doHeaderNormRun = async () => {
     if (!apiKey?.trim()) {
       setError("Please enter your API key to use AI features.");
       return;
     }
+    if (maxStepReached > 4) await invalidateDownstream(4);
     const controller = new AbortController();
     abortControllerRef.current = controller;
     setLoading(true);
@@ -793,15 +965,25 @@ export default function App() {
       const message = err?.name === "AbortError" ? "Request cancelled." : err.message;
       setError(message);
       addLog("Header Normalisation", "error", message);
-      setLastFailedAction(() => handleHeaderNormRun);
+      setLastFailedAction(() => doHeaderNormRun);
     } finally {
       abortControllerRef.current = null;
       setLoading(false);
       setAiLoading(false);
+      setLoadingMessage("");
     }
   };
 
-  const handleHeaderNormApply = async (decisions: Record<string, any[]>) => {
+  const handleHeaderNormRun = () => {
+    if (maxStepReached > 4) {
+      guardedAction(4, doHeaderNormRun);
+    } else {
+      doHeaderNormRun();
+    }
+  };
+
+  const doHeaderNormApply = async (decisions: Record<string, any[]>) => {
+    if (maxStepReached > 4) await invalidateDownstream(4);
     setLoading(true);
     setLoadingMessage("Applying header mappings...");
     setError(null);
@@ -823,14 +1005,24 @@ export default function App() {
       addLog("Header Normalisation", "error", err.message);
     } finally {
       setLoading(false);
+      setLoadingMessage("");
     }
   };
 
-  const handleGenerateAppendPlan = async () => {
+  const handleHeaderNormApply = (decisions: Record<string, any[]>) => {
+    if (maxStepReached > 4) {
+      guardedAction(4, () => doHeaderNormApply(decisions));
+    } else {
+      doHeaderNormApply(decisions);
+    }
+  };
+
+  const doGenerateAppendPlan = async () => {
     if (!apiKey?.trim()) {
       setError("Please enter your API key above to use AI features.");
       return;
     }
+    if (maxStepReached > 3) await invalidateDownstream(3);
     const controller = new AbortController();
     abortControllerRef.current = controller;
     setLoading(true);
@@ -889,11 +1081,20 @@ export default function App() {
       const message = err?.name === "AbortError" ? "Request cancelled. Please try again." : err.message;
       setError(message);
       addLog("Append Plan", "error", message);
-      setLastFailedAction(() => handleGenerateAppendPlan);
+      setLastFailedAction(() => doGenerateAppendPlan);
     } finally {
       abortControllerRef.current = null;
       setLoading(false);
       setAiLoading(false);
+      setLoadingMessage("");
+    }
+  };
+
+  const handleGenerateAppendPlan = () => {
+    if (maxStepReached > 3) {
+      guardedAction(3, doGenerateAppendPlan);
+    } else {
+      doGenerateAppendPlan();
     }
   };
 
@@ -906,9 +1107,10 @@ export default function App() {
     }).catch(err => console.error("Failed to sync groups to server:", err));
   }, [sessionId]);
 
-  const moveTableToGroup = (tableKey: string, targetGroupId: string | null) => {
+  const doMoveTableToGroup = async (tableKey: string, targetGroupId: string | null) => {
+    if (maxStepReached > 3) await invalidateDownstream(3);
     let tableData: any = null;
-    
+
     // Find the table and remove it from its current location
     const newAppendGroups = appendGroups.map(group => {
       if (group.tables.includes(tableKey)) {
@@ -947,7 +1149,16 @@ export default function App() {
     setAppendGroupMappings([]);
   };
 
-  const createNewGroup = (tableKeys: string[]) => {
+  const moveTableToGroup = (tableKey: string, targetGroupId: string | null) => {
+    if (maxStepReached > 3) {
+      guardedAction(3, () => doMoveTableToGroup(tableKey, targetGroupId));
+    } else {
+      doMoveTableToGroup(tableKey, targetGroupId);
+    }
+  };
+
+  const doCreateNewGroup = async (tableKeys: string[]) => {
+    if (maxStepReached > 3) await invalidateDownstream(3);
     const newGroupId = `manual_group_${Date.now()}`;
     const newGroup = {
       group_id: newGroupId,
@@ -971,7 +1182,16 @@ export default function App() {
     syncGroupsToServer(finalGroups, newUnassigned);
   };
 
-  const renameGroup = (groupId: string, newName: string) => {
+  const createNewGroup = (tableKeys: string[]) => {
+    if (maxStepReached > 3) {
+      guardedAction(3, () => doCreateNewGroup(tableKeys));
+    } else {
+      doCreateNewGroup(tableKeys);
+    }
+  };
+
+  const doRenameGroup = async (groupId: string, newName: string) => {
+    if (maxStepReached > 3) await invalidateDownstream(3);
     const updatedGroups = appendGroups.map(g =>
       g.group_id === groupId ? { ...g, group_name: newName } : g
     );
@@ -979,7 +1199,16 @@ export default function App() {
     syncGroupsToServer(updatedGroups, unassigned);
   };
 
-  const excludeTable = (tableKey: string) => {
+  const renameGroup = (groupId: string, newName: string) => {
+    if (maxStepReached > 3) {
+      guardedAction(3, () => doRenameGroup(groupId, newName));
+    } else {
+      doRenameGroup(groupId, newName);
+    }
+  };
+
+  const doExcludeTable = async (tableKey: string) => {
+    if (maxStepReached > 3) await invalidateDownstream(3);
     const newGroups = appendGroups.map(g => ({
       ...g, tables: g.tables.filter((t: string) => t !== tableKey)
     })).filter(g => g.tables.length > 0);
@@ -991,7 +1220,16 @@ export default function App() {
     syncGroupsToServer(newGroups, newUnassigned);
   };
 
-  const restoreTable = (tableKey: string) => {
+  const excludeTable = (tableKey: string) => {
+    if (maxStepReached > 3) {
+      guardedAction(3, () => doExcludeTable(tableKey));
+    } else {
+      doExcludeTable(tableKey);
+    }
+  };
+
+  const doRestoreTable = async (tableKey: string) => {
+    if (maxStepReached > 3) await invalidateDownstream(3);
     setExcludedTables(prev => prev.filter(t => t !== tableKey));
     const newUnassigned = [...unassigned, { table_key: tableKey, reason: "Restored" }];
     setUnassigned(newUnassigned);
@@ -999,11 +1237,20 @@ export default function App() {
     syncGroupsToServer(appendGroups, newUnassigned);
   };
 
-  const handleGenerateAppendMapping = async () => {
+  const restoreTable = (tableKey: string) => {
+    if (maxStepReached > 3) {
+      guardedAction(3, () => doRestoreTable(tableKey));
+    } else {
+      doRestoreTable(tableKey);
+    }
+  };
+
+  const doGenerateAppendMapping = async () => {
     if (!apiKey?.trim()) {
       setError("Please enter your API key to use AI features.");
       return;
     }
+    if (maxStepReached > 3) await invalidateDownstream(3);
     const controller = new AbortController();
     abortControllerRef.current = controller;
     setLoading(true);
@@ -1021,15 +1268,25 @@ export default function App() {
       const message = err?.name === "AbortError" ? "Request cancelled. Please try again." : err.message;
       setError(message);
       addLog("Append Mapping", "error", message);
-      setLastFailedAction(() => handleGenerateAppendMapping);
+      setLastFailedAction(() => doGenerateAppendMapping);
     } finally {
       abortControllerRef.current = null;
       setLoading(false);
       setAiLoading(false);
+      setLoadingMessage("");
     }
   };
 
-  const handleExecuteAppend = async () => {
+  const handleGenerateAppendMapping = () => {
+    if (maxStepReached > 3) {
+      guardedAction(3, doGenerateAppendMapping);
+    } else {
+      doGenerateAppendMapping();
+    }
+  };
+
+  const doExecuteAppend = async () => {
+    if (maxStepReached > 3) await invalidateDownstream(3);
     setLoading(true);
     setLoadingMessage("Stacking your data into unified tables...");
     setError(null);
@@ -1056,9 +1313,18 @@ export default function App() {
     } catch (err: any) {
       setError(err.message);
       addLog("Append Execute", "error", err.message);
-      setLastFailedAction(() => handleExecuteAppend);
+      setLastFailedAction(() => doExecuteAppend);
     } finally {
       setLoading(false);
+      setLoadingMessage("");
+    }
+  };
+
+  const handleExecuteAppend = () => {
+    if (maxStepReached > 3) {
+      guardedAction(3, doExecuteAppend);
+    } else {
+      doExecuteAppend();
     }
   };
 
@@ -1421,17 +1687,19 @@ export default function App() {
                     apiKey={apiKey}
                     mergeOutputs={mergeOutputs}
                     addLog={addLog}
+                    setAiLoading={setAiLoading}
+                    setLoadingMessage={setLoadingMessage}
                   />
                 )}
 
               </motion.div>
             </AnimatePresence>
 
-            <LoadingOverlay isLoading={aiLoading} message={loadingMessage} onCancel={cancelAiRequest} />
 
           </div>
         </div>
         <StatusLog entries={statusLog} onClear={() => setStatusLog([])} />
+        <LoadingOverlay isLoading={aiLoading || !!loadingMessage} message={loadingMessage} onCancel={aiLoading ? cancelAiRequest : undefined} />
 
         {mergeOutputs.length > 0 && !outputsPanelOpen && step >= 6 && (
           <motion.button
@@ -1478,6 +1746,19 @@ export default function App() {
           title="Results Preview"
         />
       )}
+
+      <StepChangeWarningDialog
+        open={!!pendingInvalidation}
+        onCancel={() => setPendingInvalidation(null)}
+        onConfirm={async () => {
+          if (pendingInvalidation) {
+            await invalidateDownstream(pendingInvalidation.step);
+            const action = pendingInvalidation.action;
+            setPendingInvalidation(null);
+            action();
+          }
+        }}
+      />
       </div>
     </div>
   );

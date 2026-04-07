@@ -161,6 +161,7 @@ export default function Merging(props: MergingProps) {
     } finally {
       setRecommendLoading(false);
       setAiLoading(false);
+      setLoadingMessage("");
     }
   }, [sessionId, apiKey, groupSchema, mergeBaseGroupId, groupNameMap, addLog, setAiLoading, setLoadingMessage, setMergeBaseGroupId, setMergeBaseRecommendation, setError]);
 
@@ -242,6 +243,7 @@ export default function Merging(props: MergingProps) {
       addLog("Merge", "error", err.message);
     } finally {
       setColumnsLoading(false);
+      setLoadingMessage("");
     }
   }, [sessionId, mergeBaseGroupId, mergeSourceGroupId, apiKey, addLog, setError, setLoadingMessage, setMergeCommonColumns]);
 
@@ -498,6 +500,7 @@ export default function Merging(props: MergingProps) {
       addLog("Merge", "error", err.message || "Skip merge failed");
     } finally {
       setAiLoading(false);
+      setLoadingMessage("");
     }
   }, [sessionId, groupSchema, mergeBaseGroupId, groupNameMap, addLog, setError, setAiLoading, setLoadingMessage, setMergeResult, setMergeHistory, setStep, setMergeOutputs, setOutputsPanelOpen, onRegisterMergedGroup]);
 

@@ -49,6 +49,8 @@ import Dashboard from "./components/dashboard/Dashboard";
 import ProcurementViewsStep from "./components/procurement/ProcurementViewsStep";
 import ContextModal from "./components/email/ContextModal";
 import EmailStep from "./components/email/EmailStep";
+import LoadingOverlay from "./components/common/LoadingOverlay";
+import StepChangeWarningDialog from "./components/common/StepChangeWarningDialog";
 
 const SIDEBAR_ITEMS = [
   { name: "Upload", steps: [1] as AppStep[] },
@@ -98,6 +100,7 @@ export default function App() {
   const prevStepRef = useRef<AppStep>(1);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState("");
   const [error, setError] = useState("");
 
   const [file, setFile] = useState<File | null>(null);
@@ -137,6 +140,59 @@ export default function App() {
     if (apiKey) localStorage.setItem(LS_API_KEY, apiKey);
     else localStorage.removeItem(LS_API_KEY);
   }, [apiKey]);
+
+  // ── Step-aware cache invalidation ──────────────────────────────────
+  const [pendingInvalidation, setPendingInvalidation] = useState<{
+    step: number;
+    action: () => void;
+  } | null>(null);
+
+  const invalidateDownstream = useCallback(
+    async (fromStep: number) => {
+      if (fromStep < 3) {
+        setSavedAiMappings(null);
+        setSavedStandardFields(null);
+        setConfirmedMapping({});
+        setCastReport(null);
+      }
+      if (fromStep < 5) {
+        setAvailableViews([]);
+        setViewResults([]);
+      }
+      if (fromStep < 8) {
+        setEmailContext(null);
+        setGeneratedEmail(null);
+        setEmailSubject("");
+        setEmailFallback(null);
+        setEmailError(null);
+      }
+      setMaxStepReached(fromStep as AppStep);
+      // Clear backend artifacts
+      if (sessionId) {
+        try {
+          await fetch("/api/invalidate-downstream", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sessionId, fromStep }),
+          });
+        } catch (err) {
+          console.error("Backend invalidation failed:", err);
+        }
+      }
+    },
+    [sessionId],
+  );
+
+  const guardedAction = useCallback(
+    (targetStep: number, action: () => void) => {
+      if (maxStepReached > targetStep) {
+        setPendingInvalidation({ step: targetStep, action });
+      } else {
+        action();
+      }
+    },
+    [maxStepReached],
+  );
 
   useEffect(() => {
     localStorage.removeItem(LS_SESSION_KEY);
@@ -196,7 +252,7 @@ export default function App() {
 
   /* ──── Upload (step 1 -> 2) ──── */
 
-  const handleUpload = useCallback(async () => {
+  const doUpload = useCallback(async () => {
     if (!file) {
       setError("Please select a file or folder to upload.");
       return;
@@ -207,7 +263,12 @@ export default function App() {
       );
       return;
     }
+    // Re-upload: wipe existing session cache first
+    if (sessionId) {
+      await invalidateDownstream(0);
+    }
     setLoading(true);
+    setLoadingMessage("Uploading and extracting your data…");
     setError("");
     try {
       const result = await uploadFile(file);
@@ -222,14 +283,24 @@ export default function App() {
       setError(err.message || "Upload failed");
     } finally {
       setLoading(false);
+      setLoadingMessage("");
     }
-  }, [file]);
+  }, [file, sessionId, invalidateDownstream]);
+
+  const handleUpload = useCallback(() => {
+    if (sessionId && maxStepReached > 1) {
+      guardedAction(1, doUpload);
+    } else {
+      doUpload();
+    }
+  }, [sessionId, maxStepReached, guardedAction, doUpload]);
 
   /* ──── Inventory table operations ──── */
 
-  const handleDeleteTable = useCallback(
+  const doDeleteTable = useCallback(
     async (tableKey: string) => {
       if (!sessionId) return;
+      if (maxStepReached > 2) await invalidateDownstream(2);
       setLoading(true);
       setError("");
       try {
@@ -242,16 +313,28 @@ export default function App() {
         setLoading(false);
       }
     },
-    [sessionId]
+    [sessionId, maxStepReached, invalidateDownstream]
   );
 
-  const handleSetHeaderRow = useCallback(
+  const handleDeleteTable = useCallback(
+    (tableKey: string) => {
+      if (maxStepReached > 2) {
+        guardedAction(2, () => doDeleteTable(tableKey));
+      } else {
+        doDeleteTable(tableKey);
+      }
+    },
+    [maxStepReached, guardedAction, doDeleteTable]
+  );
+
+  const doSetHeaderRow = useCallback(
     async (
       tableKey: string,
       rowIndex: number,
       customNames?: Record<number, string>
     ) => {
       if (!sessionId) return;
+      if (maxStepReached > 2) await invalidateDownstream(2);
       setLoading(true);
       setError("");
       try {
@@ -265,12 +348,24 @@ export default function App() {
         setLoading(false);
       }
     },
-    [sessionId]
+    [sessionId, maxStepReached, invalidateDownstream]
   );
 
-  const handleDeleteRows = useCallback(
+  const handleSetHeaderRow = useCallback(
+    (tableKey: string, rowIndex: number, customNames?: Record<number, string>) => {
+      if (maxStepReached > 2) {
+        guardedAction(2, () => doSetHeaderRow(tableKey, rowIndex, customNames));
+      } else {
+        doSetHeaderRow(tableKey, rowIndex, customNames);
+      }
+    },
+    [maxStepReached, guardedAction, doSetHeaderRow]
+  );
+
+  const doDeleteRows = useCallback(
     async (tableKey: string, rowIds: (string | number)[]) => {
       if (!sessionId) return;
+      if (maxStepReached > 2) await invalidateDownstream(2);
       setLoading(true);
       setError("");
       try {
@@ -289,7 +384,18 @@ export default function App() {
         setLoading(false);
       }
     },
-    [sessionId]
+    [sessionId, maxStepReached, invalidateDownstream]
+  );
+
+  const handleDeleteRows = useCallback(
+    (tableKey: string, rowIds: (string | number)[]) => {
+      if (maxStepReached > 2) {
+        guardedAction(2, () => doDeleteRows(tableKey, rowIds));
+      } else {
+        doDeleteRows(tableKey, rowIds);
+      }
+    },
+    [maxStepReached, guardedAction, doDeleteRows]
   );
 
   /* ──── Column mapping (step 3) ──── */
@@ -297,17 +403,21 @@ export default function App() {
   const handleRequestMapping = useCallback(async () => {
     if (!sessionId) throw new Error("No session");
     setLoading(true);
+    setLoadingMessage("AI is detecting your column mappings…");
     try {
       return await mapColumns(sessionId, apiKey);
     } finally {
       setLoading(false);
+      setLoadingMessage("");
     }
   }, [sessionId, apiKey]);
 
-  const handleConfirmMapping = useCallback(
+  const doConfirmMapping = useCallback(
     async (mapping: Record<string, string | null>) => {
       if (!sessionId) throw new Error("No session");
+      if (maxStepReached > 3) await invalidateDownstream(3);
       setLoading(true);
+      setLoadingMessage("Confirming mappings and casting data…");
       try {
         setConfirmedMapping(mapping);
         const result = await confirmMapping(sessionId, mapping);
@@ -318,17 +428,35 @@ export default function App() {
         return result.castReport;
       } finally {
         setLoading(false);
+        setLoadingMessage("");
       }
     },
-    [sessionId]
+    [sessionId, maxStepReached, invalidateDownstream]
+  );
+
+  const handleConfirmMapping = useCallback(
+    (mapping: Record<string, string | null>) => {
+      if (maxStepReached > 3) {
+        return new Promise<CastReport>((resolve) => {
+          guardedAction(3, async () => {
+            const result = await doConfirmMapping(mapping);
+            resolve(result);
+          });
+        });
+      }
+      return doConfirmMapping(mapping);
+    },
+    [maxStepReached, guardedAction, doConfirmMapping]
   );
 
   /* ──── Compute views (step 5 -> 6) ──── */
 
-  const handleComputeViews = useCallback(
+  const doComputeViews = useCallback(
     async (selectedViews: string[], config: ViewConfig) => {
       if (!sessionId) throw new Error("No session");
+      if (maxStepReached > 5) await invalidateDownstream(5);
       setLoading(true);
+      setLoadingMessage("Computing views and generating charts…");
       setError("");
       try {
         const result = await computeViews(sessionId, selectedViews, config);
@@ -337,11 +465,11 @@ export default function App() {
 
         if (apiKey && apiKey.trim()) {
           const summaryViews = result.views.filter(
-            (v) => !v.error && v.viewId !== "category_drilldown"
+            (v: ViewResult) => !v.error && v.viewId !== "category_drilldown"
           );
-          summaryViews.forEach((v) => {
+          summaryViews.forEach((v: ViewResult) => {
             generateSummary(sessionId, v.viewId, apiKey)
-              .then(({ viewId, summary }) => {
+              .then(({ viewId, summary }: { viewId: string; summary: string }) => {
                 setViewResults((prev) =>
                   prev.map((vr) =>
                     vr.viewId === viewId ? { ...vr, aiSummary: summary } : vr
@@ -356,9 +484,29 @@ export default function App() {
         throw err;
       } finally {
         setLoading(false);
+        setLoadingMessage("");
       }
     },
-    [sessionId, apiKey]
+    [sessionId, apiKey, maxStepReached, invalidateDownstream]
+  );
+
+  const handleComputeViews = useCallback(
+    (selectedViews: string[], config: ViewConfig) => {
+      if (maxStepReached > 5) {
+        return new Promise<void>((resolve, reject) => {
+          guardedAction(5, async () => {
+            try {
+              await doComputeViews(selectedViews, config);
+              resolve();
+            } catch (err) {
+              reject(err);
+            }
+          });
+        });
+      }
+      return doComputeViews(selectedViews, config);
+    },
+    [maxStepReached, guardedAction, doComputeViews]
   );
 
   /* ──── Recompute single view (dashboard slider changes) ──── */
@@ -366,13 +514,14 @@ export default function App() {
   const handleRecomputeView = useCallback(
     async (viewId: string, config: ViewConfig): Promise<ViewResult> => {
       if (!sessionId) throw new Error("No session");
+      if (maxStepReached > 6) await invalidateDownstream(6);
       const result = await recomputeView(sessionId, viewId, config);
       setViewResults((prev) =>
         prev.map((v) => (v.viewId === viewId ? result.view : v))
       );
       return result.view;
     },
-    [sessionId]
+    [sessionId, maxStepReached, invalidateDownstream]
   );
 
   /* ──── Exports ──── */
@@ -413,6 +562,7 @@ export default function App() {
       setShowContextModal(false);
       setEmailContext(context);
       setEmailLoading(true);
+      setLoadingMessage("Generating email with AI…");
       setEmailError(null);
       setEmailFallback(null);
       setGeneratedEmail(null);
@@ -431,6 +581,7 @@ export default function App() {
         setEmailError(err.message || "Email generation failed");
       } finally {
         setEmailLoading(false);
+        setLoadingMessage("");
       }
     },
     [sessionId, apiKey]
@@ -722,6 +873,7 @@ export default function App() {
               </AnimatePresence>
             </div>
           </div>
+          <LoadingOverlay isLoading={!!loadingMessage} message={loadingMessage} />
         </main>
       </div>
 
@@ -731,6 +883,19 @@ export default function App() {
           onCancel={() => setShowContextModal(false)}
         />
       )}
+
+      <StepChangeWarningDialog
+        open={!!pendingInvalidation}
+        onCancel={() => setPendingInvalidation(null)}
+        onConfirm={async () => {
+          if (pendingInvalidation) {
+            await invalidateDownstream(pendingInvalidation.step);
+            const action = pendingInvalidation.action;
+            setPendingInvalidation(null);
+            action();
+          }
+        }}
+      />
     </div>
   );
 }

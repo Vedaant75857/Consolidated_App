@@ -5,7 +5,7 @@ import zipfile
 
 from flask import Blueprint, jsonify, request
 
-from shared.db import get_session_db, set_meta, get_meta, session_exists
+from shared.db import get_session_db, set_meta, get_meta, delete_meta, get_all_meta_keys, session_exists
 from services.column_mapper import STANDARD_FIELDS
 from services.file_loader import (
     load_zip_to_session,
@@ -273,5 +273,68 @@ def delete_rows():
             "preview": preview,
             "inventoryRow": inventory_row,
         })
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+# ── Step-aware cache invalidation ──────────────────────────────────────
+
+_STEP_META_KEYS: dict[int, list[str]] = {
+    3: ["ai_mappings", "mapping", "cast_report"],
+    4: ["executive_summary"],
+    5: ["view_results"],
+}
+
+_STEP_TABLES: dict[int, list[str]] = {
+    3: ["analysis_data", "_null_rows"],
+}
+
+
+@upload_bp.route("/invalidate-downstream", methods=["POST"])
+def invalidate_downstream():
+    """Clear all cached artifacts for steps after *fromStep*."""
+    try:
+        body = request.get_json(force=True)
+        session_id = body.get("sessionId")
+        from_step = int(body.get("fromStep", 0))
+
+        if not session_id or not session_exists(session_id):
+            return jsonify({"error": "Invalid session"}), 400
+
+        conn = get_session_db(session_id)
+
+        if from_step == 0:
+            # Full session wipe (re-upload scenario)
+            for key in get_all_meta_keys(conn):
+                conn.execute("DELETE FROM _meta WHERE key = ?", (key,))
+            # Drop all user tables (keep system tables)
+            tables = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '_%'"
+            ).fetchall()
+            for (tbl,) in tables:
+                conn.execute(f"DROP TABLE IF EXISTS [{tbl}]")
+            # Also drop registry-tracked tables
+            try:
+                regs = conn.execute("SELECT data_table, raw_table FROM _table_registry").fetchall()
+                for dt, rt in regs:
+                    if dt:
+                        conn.execute(f"DROP TABLE IF EXISTS [{dt}]")
+                    if rt:
+                        conn.execute(f"DROP TABLE IF EXISTS [{rt}]")
+                conn.execute("DELETE FROM _table_registry")
+            except Exception:
+                pass  # registry may not exist yet
+            conn.commit()
+        else:
+            for step_num in range(from_step + 1, 9):
+                for key in _STEP_META_KEYS.get(step_num, []):
+                    conn.execute("DELETE FROM _meta WHERE key = ?", (key,))
+                for tbl in _STEP_TABLES.get(step_num, []):
+                    conn.execute(f"DROP TABLE IF EXISTS [{tbl}]")
+            set_meta(conn, "step", from_step)
+            conn.commit()
+
+        conn.close()
+        return jsonify({"ok": True})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500

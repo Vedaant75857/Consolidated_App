@@ -575,6 +575,33 @@ def transfer_to_analyzer():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route('/api/reset-normalization', methods=['POST'])
+def reset_normalization():
+    """Re-copy df from data_vault, discarding all normalization changes."""
+    try:
+        body = request.get_json(silent=True) or {}
+        table_key = body.get('tableKey')
+        if table_key and table_key in state.data_vault:
+            state.df = state.data_vault[table_key].copy()
+        elif state.data_vault:
+            # Fallback: re-copy the first (or only) table
+            first_key = next(iter(state.data_vault))
+            state.df = state.data_vault[first_key].copy()
+        return jsonify({"ok": True, "rows": len(state.df) if state.df is not None else 0})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route('/api/reset-state', methods=['POST'])
+def reset_state():
+    """Full state reset for re-upload scenario."""
+    state.df = None
+    state.data_vault = {}
+    state.filename = None
+    state.import_id = None
+    return jsonify({"ok": True})
+
+
 @app.route('/api/download', methods=['GET'])
 def download():
     if state.df is None:

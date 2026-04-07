@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import {
   Loader2, ArrowRight, CheckCircle2,
   Download, Sparkles, Building2, Globe, Calendar, DollarSign,
@@ -65,9 +65,11 @@ interface NormDashboardProps {
   activeTab?: string;
   setActiveTab?: (tab: string) => void;
   addLog?: (stepName: string, type: LogEntry["type"], message: string) => void;
+  setLoadingMessage?: (msg: string) => void;
+  setLoadingOnCancel?: (cb: (() => void) | null) => void;
 }
 
-export default function NormDashboard({ apiKey, activeTab = "supplier_name", setActiveTab, addLog }: NormDashboardProps) {
+export default function NormDashboard({ apiKey, activeTab = "supplier_name", setActiveTab, addLog, setLoadingMessage, setLoadingOnCancel }: NormDashboardProps) {
   const [completedOps, setCompletedOps] = useState<Set<string>>(new Set());
   const [activeOp, setActiveOp] = useState<string | null>(null);
   const [opResults, setOpResults] = useState<Record<string, string>>({});
@@ -180,6 +182,8 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
     }
   }, []);
 
+  const normControllerRef = useRef<AbortController | null>(null);
+
   const handleRunOperation = useCallback(async (agentId: string) => {
     if (agentId === "currency_conversion") {
       if (!currencySpendColumn || !currencyCodeColumn) {
@@ -189,7 +193,19 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
     }
     setActiveOp(agentId);
     const opLabel = OPERATIONS.find(o => o.id === agentId)?.label || agentId;
+    setLoadingMessage?.("Running " + opLabel + "…");
     log("info", "Running " + opLabel + "…");
+
+    const controller = new AbortController();
+    normControllerRef.current = controller;
+    setLoadingOnCancel?.(() => () => {
+      controller.abort();
+      normControllerRef.current = null;
+      setActiveOp(null);
+      setLoadingMessage?.("");
+      setLoadingOnCancel?.(null);
+      log("info", opLabel + " cancelled.");
+    });
 
     const agentKwargs: any = {};
     if (agentId === "supplier_country" && supplierCountryColumn) {
@@ -217,6 +233,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ agent_id: agentId, kwargs: agentKwargs, apiKey }),
+        signal: controller.signal,
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -232,12 +249,17 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       await fetchOperationPreview();
       log("success", opLabel + ": " + data.message);
     } catch (err: any) {
-      setOpResults(prev => ({ ...prev, [agentId]: "Error: " + err.message }));
-      log("error", opLabel + ": " + err.message);
+      if (err.name !== "AbortError") {
+        setOpResults(prev => ({ ...prev, [agentId]: "Error: " + err.message }));
+        log("error", opLabel + ": " + err.message);
+      }
     } finally {
+      normControllerRef.current = null;
       setActiveOp(null);
+      setLoadingMessage?.("");
+      setLoadingOnCancel?.(null);
     }
-  }, [apiKey, fetchOperationPreview, log, supplierCountryColumn, dateFormat, currencySpendColumn, currencyCodeColumn, currencyDateColumn, scopeYear, fxOverrides]);
+  }, [apiKey, fetchOperationPreview, log, supplierCountryColumn, dateFormat, currencySpendColumn, currencyCodeColumn, currencyDateColumn, scopeYear, fxOverrides, setLoadingMessage, setLoadingOnCancel]);
 
   const handleAssess = useCallback(async () => {
     if (!currencyCodeColumn) {
@@ -245,6 +267,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       return;
     }
     setAssessLoading(true);
+    setLoadingMessage?.("Assessing your data…");
     setAssessResult(null);
     setAssessError(null);
     setConversionMetrics(null);
@@ -273,8 +296,9 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       setAssessError(err.message || "Assessment failed");
     } finally {
       setAssessLoading(false);
+      setLoadingMessage?.("");
     }
-  }, [currencyCodeColumn, currencySpendColumn, currencyDateColumn]);
+  }, [currencyCodeColumn, currencySpendColumn, currencyDateColumn, setLoadingMessage]);
 
   const handleAssessSupplierCountry = useCallback(async () => {
     if (!supplierCountryColumn) {
@@ -282,6 +306,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       return;
     }
     setScAssessLoading(true);
+    setLoadingMessage?.("Assessing your data…");
     setScAssessResult(null);
     setScAssessError(null);
     setCountryNormMetrics(null);
@@ -298,8 +323,9 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       setScAssessError(err.message || "Assessment failed");
     } finally {
       setScAssessLoading(false);
+      setLoadingMessage?.("");
     }
-  }, [supplierCountryColumn]);
+  }, [supplierCountryColumn, setLoadingMessage]);
 
   useEffect(() => {
     if (
@@ -312,10 +338,46 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
     }
   }, [activeTab, operationPreview.columns.length, operationPreviewLoading, fetchOperationPreview]);
 
-  const handleDownload = useCallback(() => {
+  const downloadControllerRef = useRef<AbortController | null>(null);
+
+  const handleDownload = useCallback(async () => {
     log("info", "Downloading normalised data…");
-    window.location.href = "/api/download";
-  }, [log]);
+    setLoadingMessage?.("Downloading normalised data…");
+
+    const controller = new AbortController();
+    downloadControllerRef.current = controller;
+    setLoadingOnCancel?.(() => () => {
+      controller.abort();
+      downloadControllerRef.current = null;
+      setLoadingMessage?.("");
+      setLoadingOnCancel?.(null);
+      log("info", "Download cancelled.");
+    });
+
+    try {
+      const res = await fetch("/api/download", { signal: controller.signal });
+      if (!res.ok) throw new Error("Download failed");
+      const blob = await res.blob();
+      const disposition = res.headers.get("content-disposition");
+      const match = disposition?.match(/filename="?([^"]+)"?/);
+      const filename = match?.[1] || "normalised_data.xlsx";
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      log("success", "Download complete.");
+    } catch (err: any) {
+      if (err.name !== "AbortError") {
+        log("error", "Download failed: " + err.message);
+      }
+    } finally {
+      downloadControllerRef.current = null;
+      setLoadingMessage?.("");
+      setLoadingOnCancel?.(null);
+    }
+  }, [log, setLoadingMessage, setLoadingOnCancel]);
 
   // Send to Analyzer state
   const [showAnalyzerConfirm, setShowAnalyzerConfirm] = useState(false);
