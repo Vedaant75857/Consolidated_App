@@ -117,6 +117,7 @@ export default function App() {
   const [dedupResults, setDedupResults] = useState<Record<string, any>>({});
   const [standardizeConfigs, setStandardizeConfigs] = useState<Record<string, any>>({});
   const [concatConfigs, setConcatConfigs] = useState<Record<string, Array<{ column_name: string; source_columns: string[] }>>>({});
+  const [removedColumns, setRemovedColumns] = useState<Record<string, string[]>>({});
 
   // Step 6-7: Guided Merge
   const [mergeBaseGroupId, setMergeBaseGroupId] = useState<string>("");
@@ -221,6 +222,7 @@ export default function App() {
         setDedupResults({});
         setStandardizeConfigs({});
         setConcatConfigs({});
+        setRemovedColumns({});
       }
       if (fromStep < 6) {
         setMergeBaseGroupId("");
@@ -299,6 +301,7 @@ export default function App() {
       if (s.cleaningConfigs) setCleaningConfigs(s.cleaningConfigs);
       if (s.standardizeConfigs) setStandardizeConfigs(s.standardizeConfigs);
       if (s.concatConfigs) setConcatConfigs(s.concatConfigs);
+      if (s.removedColumns) setRemovedColumns(s.removedColumns);
       if (s.mergeOutputs) setMergeOutputs(s.mergeOutputs);
 
       const sid = s.sessionId;
@@ -345,7 +348,7 @@ export default function App() {
       const persistable = {
         sessionId, step, maxStepReached,
         inventory, previews, uploadWarnings,
-        cleaningConfigs, standardizeConfigs, concatConfigs,
+        cleaningConfigs, standardizeConfigs, concatConfigs, removedColumns,
         headerNormDecisions, headerNormStandardFields,
         appendGroups, unassigned, excludedTables,
         appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
@@ -358,7 +361,7 @@ export default function App() {
   }, [
     sessionId, step, maxStepReached,
     inventory, previews, uploadWarnings,
-    cleaningConfigs, standardizeConfigs, concatConfigs,
+    cleaningConfigs, standardizeConfigs, concatConfigs, removedColumns,
     headerNormDecisions, headerNormStandardFields,
     appendGroups, unassigned, excludedTables,
     appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
@@ -880,6 +883,77 @@ export default function App() {
     return doDeleteConcatColumn(groupId, columnName);
   };
 
+  // ── Column Removal handlers ──────────────────────────────────────
+  const doRemoveColumns = async (groupId: string, columns: string[]) => {
+    if (maxStepReached > 5) await invalidateDownstream(5);
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/remove-columns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, groupId, columns }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data) throw new Error(data?.error || "Failed to remove columns. Please ensure the backend server is running.");
+      if (data.groupRow) {
+        setGroupSchema((prev) => prev.map((gs) => gs.group_id === groupId ? { ...gs, ...data.groupRow } : gs));
+      }
+      setRemovedColumns((prev) => ({ ...prev, [groupId]: data.removedColumns || [] }));
+      addLog("Column Removal", "success", `Removed ${columns.length} column(s) from "${groupNameMap[groupId] || groupId}"`);
+      return data;
+    } catch (err: any) {
+      setError(err.message);
+      addLog("Column Removal", "error", err.message);
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRemoveColumns = (groupId: string, columns: string[]) => {
+    if (maxStepReached > 5) {
+      guardedAction(5, () => doRemoveColumns(groupId, columns));
+      return null;
+    }
+    return doRemoveColumns(groupId, columns);
+  };
+
+  const doRestoreColumns = async (groupId: string, columns: string[]) => {
+    if (maxStepReached > 5) await invalidateDownstream(5);
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/restore-columns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, groupId, columns }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data) throw new Error(data?.error || "Failed to restore columns. Please ensure the backend server is running.");
+      if (data.groupRow) {
+        setGroupSchema((prev) => prev.map((gs) => gs.group_id === groupId ? { ...gs, ...data.groupRow } : gs));
+      }
+      setRemovedColumns((prev) => ({ ...prev, [groupId]: data.removedColumns || [] }));
+      addLog("Column Removal", "success", `Restored column(s) in "${groupNameMap[groupId] || groupId}"`);
+      return data;
+    } catch (err: any) {
+      setError(err.message);
+      addLog("Column Removal", "error", err.message);
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRestoreColumns = (groupId: string, columns: string[]) => {
+    if (maxStepReached > 5) {
+      guardedAction(5, () => doRestoreColumns(groupId, columns));
+      return null;
+    }
+    return doRestoreColumns(groupId, columns);
+  };
+
   const fetchResultsPreviews = async () => {
     if (!sessionId) return;
     try {
@@ -957,6 +1031,7 @@ export default function App() {
       setDedupResults({});
       setStandardizeConfigs({});
       setConcatConfigs({});
+      setRemovedColumns({});
       const totalCols = (data.tables || []).reduce((s: number, t: any) => s + (t.decisions?.length || 0), 0);
       addLog("Header Normalisation", "success", `Mapped ${totalCols} columns across ${data.tables?.length || 0} table(s)`);
       const normGroupIds = (data.tables || []).map((t: any) => t.tableKey);
@@ -999,6 +1074,7 @@ export default function App() {
       setDedupResults({});
       setStandardizeConfigs({});
       setConcatConfigs({});
+      setRemovedColumns({});
       setStep(5);
     } catch (err: any) {
       setError(err.message);
@@ -1068,6 +1144,7 @@ export default function App() {
       setDedupResults({});
       setStandardizeConfigs({});
       setConcatConfigs({});
+      setRemovedColumns({});
       setMergeBaseGroupId("");
       setMergeSourceGroupId("");
       setMergeResult(null);
@@ -1309,6 +1386,7 @@ export default function App() {
       setDedupResults({});
       setStandardizeConfigs({});
       setConcatConfigs({});
+      setRemovedColumns({});
       addLog("Append Execute", "success", `Appended into ${(data.groupSchema || []).length} group(s)`);
     } catch (err: any) {
       setError(err.message);
@@ -1622,6 +1700,9 @@ export default function App() {
                   concatConfigs={concatConfigs}
                   onConcatApply={handleConcatApply}
                   onDeleteConcatColumn={handleDeleteConcatColumn}
+                  removedColumns={removedColumns}
+                  onRemoveColumns={handleRemoveColumns}
+                  onRestoreColumns={handleRestoreColumns}
                   onProceed={() => setStep(6)}
                   onSkip={() => setStep(6)}
                 />

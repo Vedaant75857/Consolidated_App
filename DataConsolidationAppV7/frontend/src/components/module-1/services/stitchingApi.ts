@@ -63,6 +63,16 @@ export async function cleanGroup(sessionId: string, groupId: string, config: any
   return jsonPost("/clean-group", { sessionId, groupId, config });
 }
 
+// --- Column Removal ---
+
+export async function removeColumns(sessionId: string, groupId: string, columns: string[]): Promise<any> {
+  return jsonPost("/remove-columns", { sessionId, groupId, columns });
+}
+
+export async function restoreColumns(sessionId: string, groupId: string, columns: string[]): Promise<any> {
+  return jsonPost("/restore-columns", { sessionId, groupId, columns });
+}
+
 // --- Append ---
 
 export async function saveAppendGroups(sessionId: string, appendGroups: any[], unassigned: any[]): Promise<void> {

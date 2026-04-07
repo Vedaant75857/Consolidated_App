@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { Fragment, useCallback, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { BarChart3, ChevronDown, Loader2, RefreshCw, TableProperties } from "lucide-react";
 import { SurfaceCard, itemVariants } from "../common/ui";
@@ -37,6 +37,11 @@ function renderBoldMarkdown(text: string): React.ReactNode {
       part
     )
   );
+}
+
+function formatSpendLabel(value: number, label: string | null): string {
+  const formatted = Math.round(value).toLocaleString();
+  return label ? `${formatted} (${label})` : formatted;
 }
 
 /* ── Props ─────────────────────────────────────────────────────────────── */
@@ -356,49 +361,110 @@ export default function ExecutiveSummary({
                                     bg: "bg-neutral-100 dark:bg-neutral-800",
                                     text: "text-neutral-400 dark:text-neutral-500",
                                   };
+                              const currencyQuality: any[] | undefined = col.stats?.currencyQuality;
 
                               return (
-                                <tr
-                                  key={col.parameterKey}
-                                  className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors"
-                                >
-                                  <td className="px-6 py-3">
-                                    <span
-                                      className={`font-medium ${
-                                        col.mapped
-                                          ? "text-neutral-800 dark:text-neutral-200"
-                                          : "text-neutral-400 dark:text-neutral-500 italic"
-                                      }`}
-                                    >
-                                      {col.columnName}
-                                    </span>
-                                  </td>
-                                  <td className="px-4 py-3 text-center">
-                                    <span
-                                      className={`inline-block px-3 py-1 rounded-lg text-xs font-bold tabular-nums ${colors.bg} ${colors.text}`}
-                                    >
-                                      {col.mapped
-                                        ? `${col.fillRate.toFixed(1)}%`
-                                        : "N/A"}
-                                    </span>
-                                  </td>
-                                  <td className="px-6 py-3">
-                                    <span
-                                      className={`text-sm leading-relaxed ${
-                                        col.mapped
-                                          ? "text-neutral-700 dark:text-neutral-300"
-                                          : "text-neutral-400 dark:text-neutral-500 italic"
-                                      }`}
-                                    >
-                                      {renderBoldMarkdown(
-                                        col.insight ||
-                                          (col.mapped
-                                            ? ""
-                                            : "Column not present in data.")
+                                <Fragment key={col.parameterKey}>
+                                  <tr className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors">
+                                    <td className="px-6 py-3">
+                                      <span
+                                        className={`font-medium ${
+                                          col.mapped
+                                            ? "text-neutral-800 dark:text-neutral-200"
+                                            : "text-neutral-400 dark:text-neutral-500 italic"
+                                        }`}
+                                      >
+                                        {col.columnName}
+                                      </span>
+                                    </td>
+                                    <td className="px-4 py-3 text-center">
+                                      <span
+                                        className={`inline-block px-3 py-1 rounded-lg text-xs font-bold tabular-nums ${colors.bg} ${colors.text}`}
+                                      >
+                                        {col.mapped
+                                          ? `${col.fillRate.toFixed(1)}%`
+                                          : "N/A"}
+                                      </span>
+                                    </td>
+                                    <td className="px-6 py-3">
+                                      {group.group === "Description" && col.mapped && (
+                                        <ul className="text-sm text-neutral-700 dark:text-neutral-300 mb-2 space-y-1 list-disc list-inside">
+                                          <li>
+                                            No. of alphanumeric values:{" "}
+                                            <strong>{(col.stats.alphanumericCount ?? 0).toLocaleString()}</strong>
+                                          </li>
+                                          <li>
+                                            Total non-procurable spend:{" "}
+                                            <strong>
+                                              {col.stats.nonProcurableSpend != null
+                                                ? formatSpendLabel(col.stats.nonProcurableSpend, col.stats.currencyLabel)
+                                                : "N/A"}
+                                            </strong>
+                                          </li>
+                                        </ul>
                                       )}
-                                    </span>
-                                  </td>
-                                </tr>
+                                      <span
+                                        className={`text-sm leading-relaxed ${
+                                          col.mapped
+                                            ? "text-neutral-700 dark:text-neutral-300"
+                                            : "text-neutral-400 dark:text-neutral-500 italic"
+                                        }`}
+                                      >
+                                        {renderBoldMarkdown(
+                                          col.insight ||
+                                            (col.mapped
+                                              ? ""
+                                              : "Column not present in data.")
+                                        )}
+                                      </span>
+                                    </td>
+                                  </tr>
+                                  {group.group === "Currency" && col.mapped && currencyQuality && currencyQuality.length > 0 && (
+                                    <tr>
+                                      <td colSpan={3} className="px-6 py-4">
+                                        <div className="rounded-xl border border-neutral-200 dark:border-neutral-700 overflow-hidden">
+                                          <div className="px-4 py-2.5 bg-neutral-50 dark:bg-neutral-800/60 border-b border-neutral-200 dark:border-neutral-700">
+                                            <h4 className="text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                                              Currency Quality Analysis
+                                            </h4>
+                                          </div>
+                                          <table className="w-full text-sm">
+                                            <thead>
+                                              <tr className="bg-neutral-50/50 dark:bg-neutral-800/30 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                                                <th className="px-4 py-2.5">Currency Code</th>
+                                                <th className="px-4 py-2.5 text-center">% of Rows Covered</th>
+                                                <th className="px-4 py-2.5 text-right">Total Amount in Local Currency</th>
+                                                <th className="px-4 py-2.5 text-right">Total Amount in Reporting Currency</th>
+                                              </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                                              {currencyQuality.map((cq: any) => (
+                                                <tr key={cq.currencyCode} className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors">
+                                                  <td className="px-4 py-2 font-medium text-neutral-800 dark:text-neutral-200">
+                                                    {cq.currencyCode}
+                                                  </td>
+                                                  <td className="px-4 py-2 text-center tabular-nums text-neutral-700 dark:text-neutral-300">
+                                                    {cq.rowPct.toFixed(1)}%
+                                                  </td>
+                                                  <td className="px-4 py-2 text-right tabular-nums text-neutral-700 dark:text-neutral-300">
+                                                    {col.stats.hasLocalSpend
+                                                      ? Math.round(cq.localSpend ?? 0).toLocaleString()
+                                                      : "N/A"}
+                                                  </td>
+                                                  <td className="px-4 py-2 text-right tabular-nums text-neutral-700 dark:text-neutral-300">
+                                                    {col.stats.hasReportingSpend
+                                                      ? Math.round(cq.reportingSpend ?? 0).toLocaleString()
+                                                      : "N/A"}
+                                                  </td>
+                                                </tr>
+                                              ))}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  )}
+                                </Fragment>
                               );
                             })}
                           </tbody>

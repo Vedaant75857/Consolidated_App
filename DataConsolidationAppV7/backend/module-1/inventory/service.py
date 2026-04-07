@@ -715,3 +715,200 @@ def delete_concat_column(
         "groupRow": {"group_id": group_id, "rows": n_rows, "cols": len(out_cols), "columns": out_cols},
         "concatColumns": group_concats,
     }
+
+
+# ── Column Removal ───────────────────────────────────────────────────
+
+def _colrem_backup_name(group_id: str) -> str:
+    return safe_table_name("colrem_bak", group_id)
+
+
+def remove_columns(
+    conn: sqlite3.Connection,
+    group_id: str,
+    columns: list[str],
+) -> dict[str, Any]:
+    """Remove selected columns from a group table, backing them up for restore."""
+    sql_name = lookup_sql_name(conn, group_id)
+    if not sql_name or not table_exists(conn, sql_name):
+        raise ValueError(f"Table not found for group: {group_id}")
+
+    existing_cols = read_table_columns(conn, sql_name)
+    missing = [c for c in columns if c not in existing_cols]
+    if missing:
+        raise ValueError(f"Columns not found: {', '.join(missing)}")
+
+    kept = [c for c in existing_cols if c not in set(columns)]
+    if not kept:
+        raise ValueError("Cannot remove all columns — at least one must remain.")
+
+    tbl = quote_id(sql_name)
+    backup_name = _colrem_backup_name(group_id)
+    q_backup = quote_id(backup_name)
+
+    # Build backup: store removed columns + a rownum key for later join
+    removed_select = ", ".join(quote_id(c) for c in columns)
+
+    if table_exists(conn, backup_name):
+        # Backup already exists from prior removals — add new columns to it
+        # We need to rebuild the backup table with existing + new columns
+        existing_backup_cols = read_table_columns(conn, backup_name)
+        # Only backup columns that aren't already in backup
+        new_to_backup = [c for c in columns if c not in existing_backup_cols]
+        if new_to_backup:
+            # Join existing backup with new columns from main table using rownum
+            new_cols_select = ", ".join(f"m.{quote_id(c)}" for c in new_to_backup)
+            old_cols_select = ", ".join(f"b.{quote_id(c)}" for c in existing_backup_cols if c != "__rownum__")
+            tmp_bak = safe_table_name("tmp_colrem_bak", group_id)
+            drop_table(conn, tmp_bak)
+            conn.execute(
+                f"CREATE TABLE {quote_id(tmp_bak)} AS "
+                f"SELECT b.__rownum__, {old_cols_select}, {new_cols_select} "
+                f"FROM {q_backup} b "
+                f"INNER JOIN ("
+                f"  SELECT ROW_NUMBER() OVER() AS __rownum__, {removed_select} FROM {tbl}"
+                f") m ON b.__rownum__ = m.__rownum__"
+            )
+            conn.commit()
+            drop_table(conn, backup_name)
+            conn.execute(f"ALTER TABLE {quote_id(tmp_bak)} RENAME TO {q_backup}")
+            conn.commit()
+    else:
+        # Create fresh backup with rownum + removed columns
+        conn.execute(
+            f"CREATE TABLE {q_backup} AS "
+            f"SELECT ROW_NUMBER() OVER() AS __rownum__, {removed_select} FROM {tbl}"
+        )
+        conn.commit()
+
+    # Rebuild main table without removed columns
+    work = _work_name(group_id)
+    shadow = _shadow_name(group_id)
+    drop_table(conn, work)
+    conn.execute(f"CREATE TABLE {quote_id(work)} AS SELECT * FROM {tbl}")
+    conn.commit()
+    select_list = ", ".join(quote_id(c) for c in kept)
+    _rebuild_from_select(conn, work, shadow, select_list)
+    drop_table(conn, sql_name)
+    conn.execute(f"ALTER TABLE {quote_id(work)} RENAME TO {quote_id(sql_name)}")
+    conn.commit()
+
+    # Update removedColumns meta
+    removed_meta: dict = get_meta(conn, "removedColumns") or {}
+    group_removed: list = removed_meta.get(group_id, [])
+    for c in columns:
+        if c not in group_removed:
+            group_removed.append(c)
+    removed_meta[group_id] = group_removed
+    set_meta(conn, "removedColumns", removed_meta)
+
+    # Update groupSchemaTableRows
+    out_cols = read_table_columns(conn, sql_name)
+    n_rows = table_row_count(conn, sql_name)
+    group_schema = get_meta(conn, "groupSchemaTableRows") or []
+    for gs in group_schema:
+        if gs.get("group_id") == group_id:
+            gs["rows"] = n_rows
+            gs["cols"] = len(out_cols)
+            gs["columns"] = out_cols
+            gs["columns_preview"] = ", ".join(out_cols[:60]) + (" ..." if len(out_cols) > 60 else "")
+            break
+    set_meta(conn, "groupSchemaTableRows", group_schema)
+
+    return {
+        "groupRow": {"group_id": group_id, "rows": n_rows, "cols": len(out_cols), "columns": out_cols},
+        "removedColumns": group_removed,
+    }
+
+
+def restore_columns(
+    conn: sqlite3.Connection,
+    group_id: str,
+    columns: list[str],
+) -> dict[str, Any]:
+    """Restore previously removed columns from backup."""
+    sql_name = lookup_sql_name(conn, group_id)
+    if not sql_name or not table_exists(conn, sql_name):
+        raise ValueError(f"Table not found for group: {group_id}")
+
+    removed_meta: dict = get_meta(conn, "removedColumns") or {}
+    group_removed: list = removed_meta.get(group_id, [])
+    not_removed = [c for c in columns if c not in group_removed]
+    if not_removed:
+        raise ValueError(f"Columns were not removed: {', '.join(not_removed)}")
+
+    backup_name = _colrem_backup_name(group_id)
+    if not table_exists(conn, backup_name):
+        raise ValueError("Backup table not found — cannot restore columns.")
+
+    backup_cols = read_table_columns(conn, backup_name)
+    missing_in_backup = [c for c in columns if c not in backup_cols]
+    if missing_in_backup:
+        raise ValueError(f"Columns not found in backup: {', '.join(missing_in_backup)}")
+
+    tbl = quote_id(sql_name)
+    q_backup = quote_id(backup_name)
+
+    # Get current row counts
+    main_rows = table_row_count(conn, sql_name)
+    backup_rows = table_row_count(conn, backup_name)
+
+    # Rebuild main table with restored columns via rownum join
+    main_cols = read_table_columns(conn, sql_name)
+    main_select = ", ".join(f"m.{quote_id(c)}" for c in main_cols)
+    restore_select = ", ".join(f"b.{quote_id(c)}" for c in columns)
+
+    work = _work_name(group_id)
+    drop_table(conn, work)
+
+    # Add rownum to main for joining
+    conn.execute(
+        f"CREATE TABLE {quote_id(work)} AS "
+        f"SELECT {main_select}, {restore_select} "
+        f"FROM ("
+        f"  SELECT ROW_NUMBER() OVER() AS __rownum__, * FROM {tbl}"
+        f") m "
+        f"LEFT JOIN {q_backup} b ON m.__rownum__ = b.__rownum__"
+    )
+    conn.commit()
+    drop_table(conn, sql_name)
+    conn.execute(f"ALTER TABLE {quote_id(work)} RENAME TO {quote_id(sql_name)}")
+    conn.commit()
+
+    # Update removed columns meta
+    group_removed = [c for c in group_removed if c not in set(columns)]
+    removed_meta[group_id] = group_removed
+    set_meta(conn, "removedColumns", removed_meta)
+
+    # If all columns restored, rebuild backup without them; if empty, drop backup
+    remaining_backup_cols = [c for c in backup_cols if c not in set(columns) and c != "__rownum__"]
+    if remaining_backup_cols:
+        # Rebuild backup with only remaining columns
+        bak_select = "__rownum__, " + ", ".join(quote_id(c) for c in remaining_backup_cols)
+        tmp_bak = safe_table_name("tmp_colrem_bak", group_id)
+        drop_table(conn, tmp_bak)
+        conn.execute(f"CREATE TABLE {quote_id(tmp_bak)} AS SELECT {bak_select} FROM {q_backup}")
+        conn.commit()
+        drop_table(conn, backup_name)
+        conn.execute(f"ALTER TABLE {quote_id(tmp_bak)} RENAME TO {q_backup}")
+        conn.commit()
+    else:
+        drop_table(conn, backup_name)
+
+    # Update groupSchemaTableRows
+    out_cols = read_table_columns(conn, sql_name)
+    n_rows = table_row_count(conn, sql_name)
+    group_schema = get_meta(conn, "groupSchemaTableRows") or []
+    for gs in group_schema:
+        if gs.get("group_id") == group_id:
+            gs["rows"] = n_rows
+            gs["cols"] = len(out_cols)
+            gs["columns"] = out_cols
+            gs["columns_preview"] = ", ".join(out_cols[:60]) + (" ..." if len(out_cols) > 60 else "")
+            break
+    set_meta(conn, "groupSchemaTableRows", group_schema)
+
+    return {
+        "groupRow": {"group_id": group_id, "rows": n_rows, "cols": len(out_cols), "columns": out_cols},
+        "removedColumns": group_removed,
+    }

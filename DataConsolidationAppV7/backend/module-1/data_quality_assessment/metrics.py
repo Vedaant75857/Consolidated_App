@@ -32,15 +32,18 @@ NON_PROCURABLE_KEYWORDS: list[str] = [
 ]
 
 # Pre-compiled regex buckets for date format detection
-_DATE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("YYYY-MM-DD", re.compile(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}$")),
-    ("DD/MM/YYYY", re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$")),
-    ("DD-MM-YYYY", re.compile(r"^\d{1,2}-\d{1,2}-\d{4}$")),
-    ("MM/DD/YYYY", re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$")),
-    ("DD.MM.YYYY", re.compile(r"^\d{1,2}\.\d{1,2}\.\d{4}$")),
-    ("YYYYMMDD",   re.compile(r"^\d{8}$")),
-    ("YYYY",       re.compile(r"^\d{4}$")),
-]
+# Unambiguous patterns (order doesn't matter)
+_PAT_YEAR_FIRST  = re.compile(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}$")
+_PAT_DOT_SEP     = re.compile(r"^\d{1,2}\.\d{1,2}\.\d{4}$")
+_PAT_COMPACT8    = re.compile(r"^\d{8}$")
+_PAT_YEAR_ONLY   = re.compile(r"^\d{4}$")
+# Ambiguous patterns (need DMY/MDY heuristic to resolve)
+_PAT_SLASH_SEP   = re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$")
+_PAT_DASH_SEP    = re.compile(r"^\d{1,2}-\d{1,2}-\d{4}$")
+# Cleaning helpers (adapted from Module 2 normalization agent)
+_TIME_SUFFIX_RE  = re.compile(r'\s+\d{1,2}:\d{2}(:\d{2})?(\s*(AM|PM))?$', re.IGNORECASE)
+_ISO_T_RE        = re.compile(r'T\d{2}:\d{2}(:\d{2})?(\..*?)?(Z|[+-]\d{2}:\d{2})?$', re.IGNORECASE)
+_MONTHS_RE       = re.compile(r'(?i)^(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)')
 
 _YEAR_RE = re.compile(r"((?:19|20)\d{2})")
 
@@ -95,12 +98,61 @@ def compute_fill_rates(
 
 # ── date metrics ───────────────────────────────────────────────────────────
 
-def _detect_format(value: str) -> str:
-    """Classify a single date string into a format bucket."""
+def _profile_dmy_mdy(values: list[str]) -> str:
+    """Score a list of date strings to determine DMY vs MDY order.
+
+    Adapted from Module 2's ``_profile_date_series`` heuristic.
+    Returns ``'DMY'`` or ``'MDY'``.
+    """
+    score_dmy = score_mdy = 0
+    for raw in values:
+        s = str(raw).strip()
+        if _PAT_COMPACT8.match(s):
+            continue
+        # Normalise separators
+        s = _ISO_T_RE.sub("", _TIME_SUFFIX_RE.sub("", s).strip()).strip()
+        s = re.sub(r"[/\.\s,]+", "-", s)
+        parts = s.split("-")
+        if len(parts) < 2:
+            continue
+        p0, p1 = parts[0], parts[1]
+        try:
+            if int(p0) > 12:
+                score_dmy += 1
+        except ValueError:
+            pass
+        try:
+            if int(p1) > 12:
+                score_mdy += 1
+        except ValueError:
+            pass
+        if _MONTHS_RE.match(p0):
+            score_mdy += 1
+        if _MONTHS_RE.match(p1):
+            score_dmy += 1
+    return "MDY" if score_mdy > score_dmy else "DMY"
+
+
+def _detect_format(value: str, order: str = "DMY") -> str:
+    """Classify a single date string into a format bucket.
+
+    *order* (``'DMY'`` or ``'MDY'``) resolves ambiguous slash/dash patterns.
+    """
     v = value.strip()
-    for label, pat in _DATE_PATTERNS:
-        if pat.match(v):
-            return label
+    # Unambiguous patterns first
+    if _PAT_YEAR_FIRST.match(v):
+        return "YYYY-MM-DD"
+    if _PAT_DOT_SEP.match(v):
+        return "DD.MM.YYYY"
+    if _PAT_COMPACT8.match(v):
+        return "YYYYMMDD"
+    if _PAT_YEAR_ONLY.match(v):
+        return "YYYY"
+    # Ambiguous slash/dash patterns — use heuristic order
+    if _PAT_SLASH_SEP.match(v):
+        return "DD/MM/YYYY" if order == "DMY" else "MM/DD/YYYY"
+    if _PAT_DASH_SEP.match(v):
+        return "DD-MM-YYYY" if order == "DMY" else "MM-DD-YYYY"
     return "other"
 
 
@@ -145,6 +197,9 @@ def compute_date_metrics(
     min_year = str(min(years)) if years else None
     max_year = str(max(years)) if years else None
 
+    # Profile DMY vs MDY order from the sampled values
+    order = _profile_dmy_mdy([str(r["v"]) for r in rows])
+
     # Format consistency per FILE_NAME
     format_consistency: dict[str, Any] = {}
     if has_file_name:
@@ -161,7 +216,7 @@ def compute_date_metrics(
             ).fetchall()
             counts: dict[str, int] = {}
             for sr in sampled:
-                fmt = _detect_format(str(sr["v"]))
+                fmt = _detect_format(str(sr["v"]), order)
                 counts[fmt] = counts.get(fmt, 0) + 1
             dominant = max(counts, key=counts.get) if counts else "unknown"
             format_consistency[fname] = {
@@ -178,7 +233,7 @@ def compute_date_metrics(
         ).fetchall()
         counts = {}
         for sr in sampled:
-            fmt = _detect_format(str(sr["v"]))
+            fmt = _detect_format(str(sr["v"]), order)
             counts[fmt] = counts.get(fmt, 0) + 1
         dominant = max(counts, key=counts.get) if counts else "unknown"
         format_consistency["_global"] = {

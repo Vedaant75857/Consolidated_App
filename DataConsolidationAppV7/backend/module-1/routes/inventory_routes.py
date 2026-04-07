@@ -15,6 +15,8 @@ from inventory.service import (
     apply_column_standardize,
     concat_columns_apply,
     delete_concat_column,
+    remove_columns,
+    restore_columns,
 )
 from inventory.dtype_defaults import STANDARD_FIELD_DTYPES
 
@@ -194,6 +196,46 @@ def delete_concat_column_route():
 
         conn = get_session_db(session_id)
         result = delete_concat_column(conn, group_id, column_name)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@inventory_bp.route("/remove-columns", methods=["POST"])
+def remove_columns_route():
+    """Remove selected columns from a group table (with backup for restore)."""
+    try:
+        body = request.get_json(force=True)
+        session_id = body.get("sessionId")
+        group_id = body.get("groupId")
+        columns = body.get("columns") or []
+        if not session_id or not group_id or not columns:
+            return jsonify({"error": "Missing sessionId, groupId, or columns."}), 400
+
+        conn = get_session_db(session_id)
+        result = remove_columns(conn, group_id, columns)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@inventory_bp.route("/restore-columns", methods=["POST"])
+def restore_columns_route():
+    """Restore previously removed columns from backup."""
+    try:
+        body = request.get_json(force=True)
+        session_id = body.get("sessionId")
+        group_id = body.get("groupId")
+        columns = body.get("columns") or []
+        if not session_id or not group_id or not columns:
+            return jsonify({"error": "Missing sessionId, groupId, or columns."}), 400
+
+        conn = get_session_db(session_id)
+        result = restore_columns(conn, group_id, columns)
         return jsonify(result)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
