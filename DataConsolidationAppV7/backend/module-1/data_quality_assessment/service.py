@@ -15,6 +15,7 @@ from shared.db import get_meta, read_table_columns, table_exists, table_row_coun
 
 from .ai_prompt import generate_dqa_insights
 from .metrics import (
+    compute_alphanumeric_spend,
     compute_currency_metrics,
     compute_currency_quality_analysis,
     compute_date_metrics,
@@ -83,6 +84,12 @@ _PARETO_SPEND_PREFERENCE: list[str] = [
     "PO Total Amount in reporting currency",
     "Total Amount paid in Local Currency",
     "PO Total Amount in Local Currency",
+]
+
+# Preferred spend column for alphanumeric spend (reporting first, then local)
+_ALPHA_SPEND_PREFERENCE: list[str] = [
+    "Total Amount paid in Reporting Currency",
+    "Total Amount paid in Local Currency",
 ]
 
 
@@ -289,6 +296,19 @@ def run_data_quality_assessment(
 
     # Description (standard + concatenated description columns)
     all_desc_candidates = DESCRIPTION_COLUMNS + concat_desc_cols
+    # Resolve spend column for alphanumeric spend
+    alpha_spend_col: str | None = None
+    for c in _ALPHA_SPEND_PREFERENCE:
+        if c in available:
+            alpha_spend_col = c
+            break
+    # Only show per-currency breakdown when using a local currency column;
+    # reporting currency columns already have a single denomination.
+    _LOCAL_SPEND_COLS = {"Total Amount paid in Local Currency", "PO Total Amount in Local Currency"}
+    alpha_currency_col: str | None = (
+        currency_cols[0] if currency_cols and alpha_spend_col in _LOCAL_SPEND_COLS else None
+    )
+
     desc_entries: list[dict[str, Any]] = []
     for col in all_desc_candidates:
         key = _make_key("description", col)
@@ -300,6 +320,11 @@ def run_data_quality_assessment(
             )
             stats.update(np_stats)
             stats["currencyLabel"] = _detect_currency_label(pareto_spend_col, conn, table_name, available)
+            # Alphanumeric spend
+            alpha_stats = compute_alphanumeric_spend(
+                conn, table_name, col, alpha_spend_col, alpha_currency_col
+            )
+            stats.update(alpha_stats)
             desc_entries.append({
                 "columnName": col,
                 "parameterKey": key,

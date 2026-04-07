@@ -402,16 +402,16 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
 
       const analyzerSessionId: string = data.analyzerSessionId;
       if (!analyzerSessionId || typeof analyzerSessionId !== "string") {
-        throw new Error("Transfer succeeded but no session ID was returned by the Analyzer.");
+        throw new Error("Transfer succeeded but no session ID was returned by the Summarizer.");
       }
       localStorage.setItem("summarizer_api_key", apiKey);
       const url = `${ANALYZER_FE}?sessionId=${encodeURIComponent(analyzerSessionId)}&source=normalizer`;
       window.open(url, "_blank");
-      setAnalyzerSendResult({ ok: true, message: "Opened Data Analyzer in a new tab" });
-      log("success", "Data sent to Data Analyzer successfully.");
+      setAnalyzerSendResult({ ok: true, message: "Opened Spend Summarizer in a new tab" });
+      log("success", "Data sent to Spend Summarizer successfully.");
     } catch (err: any) {
       setAnalyzerSendResult({ ok: false, message: err.message || "Send failed" });
-      log("error", "Failed to send to Data Analyzer: " + (err.message || "Unknown error"));
+      log("error", "Failed to send to Spend Summarizer: " + (err.message || "Unknown error"));
     } finally {
       setSendingToAnalyzer(false);
       setShowTransferOverlay(false);
@@ -422,7 +422,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
   const transferOverlayEl = (
     <TransferOverlay
       visible={showTransferOverlay}
-      destinationName="Spend Analyzer"
+      destinationName="Spend Summarizer"
       sourceName="Data Normalizer"
     />
   );
@@ -455,10 +455,10 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
           </div>
         </SurfaceCard>
 
-        <SurfaceCard title="Send to Data Analyzer" subtitle="Transfer your normalized data to the Summarization Module" icon={BarChart3}>
+        <SurfaceCard title="Send to Spend Summarizer" subtitle="Transfer your normalized data to the Summarization Module" icon={BarChart3}>
           <div className="space-y-4">
             <p className="text-sm text-neutral-600 dark:text-neutral-400">
-              Send the current normalized dataset directly to the Data Analyzer for procurement analysis, views, and email generation.
+              Send the current normalized dataset directly to the Spend Summarizer for procurement analysis, views, and email generation.
             </p>
 
             {/* Confirmation / action area */}
@@ -472,7 +472,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                   className="flex items-center gap-3 p-3 rounded-xl bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800"
                 >
                   <p className="text-sm font-medium text-red-700 dark:text-red-300 flex-1">
-                    Send normalized data to Data Analyzer?
+                    Send normalized data to Spend Summarizer?
                   </p>
                   <button
                     onClick={handleSendToAnalyzer}
@@ -496,7 +496,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                     disabled={sendingToAnalyzer}
                   >
                     {sendingToAnalyzer ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <BarChart3 className="w-4 h-4 mr-2" />}
-                    {sendingToAnalyzer ? "Sending..." : "Send to Analyzer"}
+                    {sendingToAnalyzer ? "Sending..." : "Send to Summarizer"}
                   </PrimaryButton>
                 </motion.div>
               )}
@@ -732,7 +732,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                       className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors disabled:opacity-50"
                     >
                       {sendingToAnalyzer ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <BarChart3 className="w-3.5 h-3.5" />}
-                      Send to Analyzer
+                      Send to Summarizer
                     </button>
                   </div>
                 </div>
@@ -963,7 +963,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                       className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors disabled:opacity-50"
                     >
                       {sendingToAnalyzer ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <BarChart3 className="w-3.5 h-3.5" />}
-                      Send to Analyzer
+                      Send to Summarizer
                     </button>
                   </div>
                 </div>

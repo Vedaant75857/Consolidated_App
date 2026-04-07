@@ -37,7 +37,7 @@ const APPS = [
     tag: "Module 2",
   },
   {
-    title: "Spend Analyzer",
+    title: "Spend Summarizer",
     description:
       "Upload procurement data, map columns with AI, and generate interactive spend dashboards with charts, Pareto analysis, and exportable PDF reports.",
     url: import.meta.env.VITE_ANALYZER_FE ?? "http://localhost:3004",

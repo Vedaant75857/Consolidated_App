@@ -1,4 +1,4 @@
-"""Executive Summary – Data Quality Assessment for the Spend Analyzer.
+"""Executive Summary – Data Quality Assessment for the Spend Summarizer.
 
 Self-contained service that computes fill rates, group-specific metrics,
 and generates AI insights for a fixed set of target procurement columns.
@@ -238,13 +238,15 @@ def _compute_date_metrics(
         counts[fmt] = counts.get(fmt, 0) + 1
     dominant = max(counts, key=counts.get) if counts else "unknown"
 
+    total_sampled = sum(counts.values())
+    format_pcts = {fmt: round(_safe_pct(ct, total_sampled)) for fmt, ct in counts.items()}
     return {
         "minYear": str(min(years)) if years else None,
         "maxYear": str(max(years)) if years else None,
         "formatConsistency": {
             "_global": {
                 "dominantFormat": dominant,
-                "formatCounts": counts,
+                "formatCounts": format_pcts,
                 "consistent": len(counts) <= 1,
             }
         },
@@ -259,6 +261,7 @@ def _compute_spend_metrics(
     qc = _quote_id(column)
     row = conn.execute(
         f"SELECT "
+        f"  COUNT(*) AS total, "
         f"  SUM(CASE WHEN typeof({qc}) IN ('real','integer') OR "
         f"       (typeof({qc}) = 'text' AND TRIM({qc}) GLOB '*[0-9]*' "
         f"        AND TRIM({qc}) NOT GLOB '*[^0-9.eE+-]*') "
@@ -273,10 +276,11 @@ def _compute_spend_metrics(
         f"       THEN 1 END) AS numeric_ct "
         f'FROM "analysis_data"'
     ).fetchone()
+    total: int = int(row[0] or 0)
     return {
-        "totalSpend": float(row[0] or 0),
-        "nonNumericCount": int(row[1] or 0),
-        "numericCount": int(row[2] or 0),
+        "totalSpend": round(float(row[1] or 0)),
+        "nonNumericPct": round(_safe_pct(int(row[2] or 0), total)),
+        "numericPct": round(_safe_pct(int(row[3] or 0), total)),
     }
 
 
@@ -370,6 +374,7 @@ def _compute_description_metrics(
 
     sql = (
         f"SELECT "
+        f"  COUNT(*) AS total, "
         f"  COUNT(CASE WHEN {nn} "
         f"       AND LENGTH(TRIM(CAST({qc} AS TEXT))) - LENGTH(REPLACE(TRIM(CAST({qc} AS TEXT)), ' ', '')) = 0 "
         f"       THEN 1 END) AS one_word, "
@@ -385,12 +390,13 @@ def _compute_description_metrics(
         f'FROM "analysis_data"'
     )
     row = conn.execute(sql).fetchone()
+    total: int = int(row[0] or 0)
     return {
-        "oneWordCount": int(row[0] or 0),
-        "multiWordCount": int(row[1] or 0),
-        "avgCharLength": round(float(row[2] or 0), 1),
-        "nullProxyCount": int(row[3] or 0),
-        "alphanumericCount": int(row[4] or 0),
+        "oneWordPct": round(_safe_pct(int(row[1] or 0), total)),
+        "multiWordPct": round(_safe_pct(int(row[2] or 0), total)),
+        "avgCharLength": round(float(row[3] or 0)),
+        "nullProxyPct": round(_safe_pct(int(row[4] or 0), total)),
+        "alphanumericPct": round(_safe_pct(int(row[5] or 0), total)),
     }
 
 
@@ -428,8 +434,74 @@ def _compute_non_procurable_spend(
     )
     row = conn.execute(sql).fetchone()
     return {
-        "nonProcurableSpend": round(float(row[0] or 0), 2),
+        "nonProcurableSpend": round(float(row[0] or 0)),
         "spendColumnUsed": spend_column,
+    }
+
+
+# ── alphanumeric spend ────────────────────────────────────────────────────
+
+def _compute_alphanumeric_spend(
+    conn: sqlite3.Connection,
+    desc_column: str,
+    spend_column: str | None,
+    currency_column: str | None,
+) -> dict[str, Any]:
+    """Sum spend for rows with alphanumeric descriptions, optionally grouped by currency."""
+    if spend_column is None:
+        return {
+            "alphanumericSpendTotal": None,
+            "alphanumericSpendByCurrency": None,
+            "alphanumericSpendColumn": None,
+        }
+
+    qd = _quote_id(desc_column)
+    qs = _quote_id(spend_column)
+    nn_d = _nn(qd)
+
+    alphanumeric_cond = (
+        f"(TRIM(CAST({qd} AS TEXT)) GLOB '*[A-Za-z]*' "
+        f" OR TRIM(CAST({qd} AS TEXT)) GLOB '*[0-9]*')"
+    )
+    numeric_spend = (
+        f"(typeof({qs}) IN ('real','integer') OR "
+        f" (typeof({qs}) = 'text' AND TRIM({qs}) GLOB '*[0-9]*' "
+        f"  AND TRIM({qs}) NOT GLOB '*[^0-9.eE+-]*'))"
+    )
+
+    # Total alphanumeric spend
+    total_row = conn.execute(
+        f"SELECT SUM(CASE WHEN {numeric_spend} THEN CAST({qs} AS REAL) ELSE 0 END) AS alpha_spend "
+        f'FROM "analysis_data" '
+        f"WHERE {nn_d} AND {alphanumeric_cond}"
+    ).fetchone()
+    alpha_total = round(float(total_row[0] or 0))
+
+    # Per-currency breakdown (top 5 + Others)
+    by_currency: list[dict[str, Any]] | None = None
+    if currency_column is not None:
+        qc = _quote_id(currency_column)
+        rows = conn.execute(
+            f"SELECT UPPER(TRIM(CAST({qc} AS TEXT))) AS code, "
+            f"  SUM(CASE WHEN {numeric_spend} THEN CAST({qs} AS REAL) ELSE 0 END) AS spend "
+            f'FROM "analysis_data" '
+            f"WHERE {nn_d} AND {alphanumeric_cond} "
+            f"  AND {_nn(qc)} "
+            f"GROUP BY UPPER(TRIM(CAST({qc} AS TEXT))) "
+            f"ORDER BY spend DESC"
+        ).fetchall()
+        top_5 = [
+            {"code": str(r[0]), "spend": round(float(r[1] or 0))}
+            for r in rows[:5]
+        ]
+        if len(rows) > 5:
+            top_5.append({"code": "Others", "spend": None})
+        by_currency = top_5
+
+    return {
+        "alphanumericSpendTotal": alpha_total,
+        "alphanumericSpendByCurrency": by_currency,
+        "alphanumericSpendColumn": spend_column,
     }
 
 
@@ -486,8 +558,8 @@ def _compute_currency_quality_analysis(
                 "currencyCode": str(r[0]),
                 "rowCount": row_ct,
                 "rowPct": _safe_pct(row_ct, total_rows),
-                "localSpend": round(local_val, 2) if local_val is not None else None,
-                "reportingSpend": round(reporting_val, 2) if reporting_val is not None else None,
+                "localSpend": round(local_val) if local_val is not None else None,
+                "reportingSpend": round(reporting_val) if reporting_val is not None else None,
             })
         else:
             has_others = True
@@ -502,8 +574,8 @@ def _compute_currency_quality_analysis(
             "currencyCode": "Others",
             "rowCount": others_row_ct,
             "rowPct": _safe_pct(others_row_ct, total_rows),
-            "localSpend": round(others_local, 2) if local_spend_col else None,
-            "reportingSpend": round(others_reporting, 2) if reporting_spend_col else None,
+            "localSpend": round(others_local) if local_spend_col else None,
+            "reportingSpend": round(others_reporting) if reporting_spend_col else None,
         })
 
     return result
@@ -517,53 +589,115 @@ DQA_SYSTEM_PROMPT = """\
 You are a senior procurement data-quality consultant at a top-tier management
 consulting firm.  You will receive a JSON payload containing computed metrics
 for a client's procurement dataset, grouped by parameter category (Date,
-Spend, Supplier, Currency, Description).
+Spend, Supplier, Description, Currency).
 
-For **each** entry in the "columns" array of every parameter group, write a
-concise, actionable insight (2–4 sentences).  Speak directly to the data
-steward / analyst.  Reference the key metric numbers (fill rate, year span,
-vendor concentration, etc.) using **bold** where impactful.
+For **each** entry in the "columns" array of every parameter group, produce a
+concise, actionable insight as a **newline-separated bullet list**.  Speak
+directly to the data steward / analyst.
+
+### Critical rules
+
+1. Each ``insight`` value MUST be a newline-separated markdown bullet list.
+   Every bullet starts with ``- ``.
+2. You MUST use the **exact** pre-computed percentage and spend values from the
+   metrics payload.  Do NOT recalculate, round differently, or approximate.
+3. Use markdown ``**bold**`` for key numbers only.
+4. Keep each bullet short, actionable, and easy to scan — one insight per
+   bullet.
+5. Add a brief interpretation after the metric where useful (e.g.
+   "— strong coverage for trend analysis").
+6. Display all spend / monetary values as whole numbers with comma
+   separators (e.g. **1,234,567**).  No decimal places on spend figures.
+7. Display ``avgCharLength`` as a whole number (no decimals).
+8. For alphanumeric spend, the backend provides at most 5 currencies
+   plus an ``Others`` entry (with ``spend: null``).  Display the top 5
+   with their spend values and append just ``(Others)`` with no number.
 
 ### Guidelines per parameter:
 
 **Date columns**
-- State the year range (e.g. "Data spans **2019–2024**").
-- Flag any format inconsistencies across the data.  If all values use the
-  same format, say so.
-- Note if the fill rate is low and what downstream analyses may be affected.
+Metrics provided: ``minYear``, ``maxYear``, ``formatConsistency`` (with
+``formatCounts`` as % per format, ``dominantFormat``, ``consistent`` flag),
+``fillRate`` (on the column entry).
+
+Required bullets:
+- Year range: ``- Data spans **{minYear}–{maxYear}**``
+- Dominant format + %: ``- Dominant format: **{dominantFormat}** (**{pct}%** of values)``
+  — if multiple formats exist, list each with its %.
+- Fill rate: ``- Fill rate: **{fillRate}%**`` — if low (<80%), note downstream
+  impact (e.g. "may affect trend analysis").
+- If format inconsistency across files: add a bullet summarising the
+  inconsistency.
 
 **Spend columns**
-- Report the total spend figure (use friendly formatting: $1.2B, €450M, etc.).
-- Flag non-numeric values if present.
-- If both reporting and local currency exist, note both; otherwise state which
-  is available.
+Metrics provided: ``totalSpend``, ``numericPct``, ``nonNumericPct``,
+``fillRate``.
+
+Required bullets:
+- Total spend: ``- Total spend: **{friendly amount}**`` (use $1.2B, €450M
+  etc. friendly formatting).
+- Fill rate: ``- Fill rate: **{fillRate}%**``
+- Numeric/non-numeric split: ``- Numeric values: **{numericPct}%**`` — if
+  ``nonNumericPct`` > 0, append: ``, Non-numeric: **{nonNumericPct}%** — requires cleansing``
+- If both reporting and local currency columns exist, add a bullet noting
+  both are available.
+- Add an interpretation bullet on data completeness.
 
 **Supplier (Vendor Name)**
-- State unique vendor count.
-- If Pareto data is available, state how many vendors (count and %) cover 80%
-  of total spend—this is a key procurement insight.
-- If Pareto is not feasible, explain why.
+Metrics provided: ``uniqueVendors`` (raw count), ``paretoFeasible``,
+``paretoVendorCount`` (raw count), ``paretoVendorPct``, ``paretoMessage``,
+``fillRate``.
+
+Required bullets:
+- Unique vendors: ``- **{uniqueVendors}** unique vendors identified``
+- Fill rate: ``- Fill rate: **{fillRate}%**``
+- If Pareto feasible: ``- Pareto: **{paretoVendorCount}** vendors (**{paretoVendorPct}%**) cover **80%** of total spend``
+  — add interpretation (concentrated/fragmented supply base).
+- If Pareto not feasible: ``- Pareto analysis not feasible: {paretoMessage}``
+- Add interpretation bullet on vendor concentration / rationalization
+  opportunities.
 
 **Description columns**
-- Summarise one-word vs multi-word split and what that implies for
-  classification (spend cube) feasibility.
-- Flag null-proxy values (unclassified, NA, etc.) if the count is material.
-- Comment on average character length and what it says about description
-  richness.
-- Reference the alphanumeric value count — a high count relative to fill
-  rate suggests clean, usable text; a low count may indicate codes or
-  placeholder data.
-- If non-procurable spend is material (relative to total spend), highlight
-  it as a data-quality flag — these rows may need to be excluded from
-  category analysis.
+Metrics provided: ``alphanumericPct``, ``oneWordPct``, ``multiWordPct``,
+``nullProxyPct``, ``avgCharLength``, ``fillRate``, ``nonProcurableSpend``,
+``currencyLabel``, ``alphanumericSpendTotal``,
+``alphanumericSpendByCurrency`` (array of {code, spend} or null),
+``alphanumericSpendColumn``.
+
+Required bullets:
+- Alphanumeric values + spend: ``- Alphanumeric values: **{alphanumericPct}%**``
+  followed by alphanumeric spend.
+  * If ``alphanumericSpendByCurrency`` is null but ``alphanumericSpendTotal``
+    is present: append ``, Total alphanumeric spend: **{alphanumericSpendTotal} ({currencyLabel})**``
+  * If ``alphanumericSpendByCurrency`` has exactly 1 entry: append
+    ``, Total alphanumeric spend: **{spend} ({code})**``
+  * If multiple entries: append
+    ``, Total alphanumeric spend: **{spend1} ({code1})**, **{spend2} ({code2})**, ...``
+    (entries with ``spend: null`` like "Others" should show just the code with no number)
+  * If both are null: omit the spend part.
+- Non-procurable spend: ``- Total non-procurable spend: **{nonProcurableSpend} ({currencyLabel})**``
+  — flag if material relative to total spend.
+- Fill rate: ``- Fill rate: **{fillRate}%**`` — with interpretation.
+- One-word / multi-word: ``- One-word: **{oneWordPct}%**, Multi-word: **{multiWordPct}%**``
+  — comment on classification feasibility.
+- Avg length: ``- Avg length: **{avgCharLength}** characters`` — interpret
+  (short coded descriptions vs. rich text).
+- Null-proxy: ``- Null-proxy values: **{nullProxyPct}%**`` — interpret
+  (e.g. "low % → issue is coverage, not placeholders").
 
 **Currency columns**
-- List the currency codes found.
-- If many currencies exist, note multi-currency complexity.
-- If only one currency is present, note normalisation may not be needed.
-- If a currency quality breakdown is provided, highlight the dominant
-  currency by spend and note any long-tail currencies that cover a small
-  share of rows.
+Metrics provided: ``distinctCount`` (raw count), ``codes`` (list),
+``currencyQuality`` (per-currency breakdown with ``rowPct``, spend),
+``hasLocalSpend``, ``hasReportingSpend``, ``fillRate``.
+
+Required bullets:
+- Currencies detected: ``- **{distinctCount}** currencies detected: **{code1}**, **{code2}**, ...``
+- Fill rate: ``- Fill rate: **{fillRate}%**``
+- If single currency: ``- Single currency (**{code}**) — currency normalization may not be needed``
+- If multiple: ``- Multi-currency dataset — normalization required for cross-currency analysis``
+- If currency quality breakdown provided: ``- Dominant currency: **{code}** (**{rowPct}%** of rows)``
+  — note any long-tail currencies.
+- Add interpretation bullet on currency complexity.
 
 ### Output format
 
@@ -573,7 +707,7 @@ Return a JSON object:
   "parameterInsights": [
     {
       "parameterKey": "<group>__<column_name>",
-      "insight": "<your insight>"
+      "insight": "- bullet 1\\n- bullet 2\\n- bullet 3"
     }
   ]
 }
@@ -581,9 +715,7 @@ Return a JSON object:
 
 ``parameterKey`` must match **exactly** the keys provided in the input under
 each column entry (``"parameterKey"``).  Do NOT invent keys or omit any.
-
-Keep each insight to 2–4 sentences.  No bullet lists inside individual
-insights.  Use markdown **bold** for numbers only.
+Use ``\\n`` to separate bullets within the JSON string value.
 """
 
 
@@ -760,6 +892,20 @@ def run_executive_summary(
                 np_stats = _compute_non_procurable_spend(conn, fk, pareto_spend_col)
                 stats.update(np_stats)
                 stats["currencyLabel"] = PARETO_SPEND_FIELD if pareto_spend_col else None
+                # Alphanumeric spend
+                alpha_spend_col = "total_spend" if "total_spend" in available else (
+                    "local_spend" if "local_spend" in available else None
+                )
+                # Only break down by currency when using local_spend;
+                # total_spend is already in reporting currency (single denomination).
+                alpha_currency_col = (
+                    "currency" if "currency" in available and alpha_spend_col == "local_spend"
+                    else None
+                )
+                alpha_stats = _compute_alphanumeric_spend(
+                    conn, fk, alpha_spend_col, alpha_currency_col
+                )
+                stats.update(alpha_stats)
             else:
                 stats = {}
 

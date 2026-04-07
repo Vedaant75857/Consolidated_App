@@ -219,9 +219,11 @@ def compute_date_metrics(
                 fmt = _detect_format(str(sr["v"]), order)
                 counts[fmt] = counts.get(fmt, 0) + 1
             dominant = max(counts, key=counts.get) if counts else "unknown"
+            total_sampled = sum(counts.values())
+            format_pcts = {fmt: round(_safe_pct(ct, total_sampled)) for fmt, ct in counts.items()}
             format_consistency[fname] = {
                 "dominantFormat": dominant,
-                "formatCounts": counts,
+                "formatCounts": format_pcts,
                 "consistent": len(counts) <= 1,
             }
     else:
@@ -236,9 +238,11 @@ def compute_date_metrics(
             fmt = _detect_format(str(sr["v"]), order)
             counts[fmt] = counts.get(fmt, 0) + 1
         dominant = max(counts, key=counts.get) if counts else "unknown"
+        total_sampled = sum(counts.values())
+        format_pcts = {fmt: round(_safe_pct(ct, total_sampled)) for fmt, ct in counts.items()}
         format_consistency["_global"] = {
             "dominantFormat": dominant,
-            "formatCounts": counts,
+            "formatCounts": format_pcts,
             "consistent": len(counts) <= 1,
         }
 
@@ -265,6 +269,7 @@ def compute_spend_metrics(
     qc = quote_id(column)
     row = conn.execute(
         f"SELECT "
+        f"  COUNT(*) AS total, "
         f"  SUM(CASE WHEN TRIM({qc}) GLOB '*[0-9]*' "
         f"       AND TRIM({qc}) NOT GLOB '*[^0-9.eE+-]*' "
         f"       THEN CAST({qc} AS REAL) ELSE 0 END) AS total_spend, "
@@ -278,10 +283,11 @@ def compute_spend_metrics(
         f"       THEN 1 END) AS numeric_ct "
         f"FROM {tbl}"
     ).fetchone()
+    total: int = int(row["total"] or 0)
     return {
-        "totalSpend": float(row["total_spend"] or 0),
-        "nonNumericCount": int(row["non_numeric"] or 0),
-        "numericCount": int(row["numeric_ct"] or 0),
+        "totalSpend": round(float(row["total_spend"] or 0)),
+        "nonNumericPct": round(_safe_pct(int(row["non_numeric"] or 0), total)),
+        "numericPct": round(_safe_pct(int(row["numeric_ct"] or 0), total)),
     }
 
 
@@ -390,6 +396,7 @@ def compute_description_metrics(
 
     sql = (
         f"SELECT "
+        f"  COUNT(*) AS total, "
         f"  COUNT(CASE WHEN {nn} "
         f"       AND LENGTH(TRIM({qc})) - LENGTH(REPLACE(TRIM({qc}), ' ', '')) = 0 "
         f"       THEN 1 END) AS one_word, "
@@ -404,12 +411,13 @@ def compute_description_metrics(
         f"FROM {tbl}"
     )
     row = conn.execute(sql).fetchone()
+    total: int = int(row["total"] or 0)
     return {
-        "oneWordCount": int(row["one_word"] or 0),
-        "multiWordCount": int(row["multi_word"] or 0),
-        "avgCharLength": round(float(row["avg_len"] or 0), 1),
-        "nullProxyCount": int(row["proxy_ct"] or 0),
-        "alphanumericCount": int(row["alphanumeric_ct"] or 0),
+        "oneWordPct": round(_safe_pct(int(row["one_word"] or 0), total)),
+        "multiWordPct": round(_safe_pct(int(row["multi_word"] or 0), total)),
+        "avgCharLength": round(float(row["avg_len"] or 0)),
+        "nullProxyPct": round(_safe_pct(int(row["proxy_ct"] or 0), total)),
+        "alphanumericPct": round(_safe_pct(int(row["alphanumeric_ct"] or 0), total)),
     }
 
 
@@ -458,8 +466,86 @@ def compute_non_procurable_spend(
     )
     row = conn.execute(sql).fetchone()
     return {
-        "nonProcurableSpend": round(float(row["non_proc_spend"] or 0), 2),
+        "nonProcurableSpend": round(float(row["non_proc_spend"] or 0)),
         "spendColumnUsed": spend_column,
+    }
+
+
+# ── alphanumeric spend ────────────────────────────────────────────────────
+
+def compute_alphanumeric_spend(
+    conn: sqlite3.Connection,
+    table_name: str,
+    desc_column: str,
+    spend_column: str | None,
+    currency_column: str | None,
+) -> dict[str, Any]:
+    """Sum spend for rows with alphanumeric descriptions, optionally grouped by currency.
+
+    Args:
+        conn: SQLite connection.
+        table_name: Target table.
+        desc_column: Description column to check for alphanumeric content.
+        spend_column: Spend column to sum (None if unavailable).
+        currency_column: Currency code column for per-currency breakdown (None for single total).
+
+    Returns:
+        Dict with ``alphanumericSpendTotal``, ``alphanumericSpendByCurrency``,
+        and ``alphanumericSpendColumn``.
+    """
+    if spend_column is None:
+        return {
+            "alphanumericSpendTotal": None,
+            "alphanumericSpendByCurrency": None,
+            "alphanumericSpendColumn": None,
+        }
+
+    tbl = quote_id(table_name)
+    qd = quote_id(desc_column)
+    qs = quote_id(spend_column)
+    nn_d = _non_null_condition(qd)
+
+    alphanumeric_cond = (
+        f"(TRIM({qd}) GLOB '*[A-Za-z]*' OR TRIM({qd}) GLOB '*[0-9]*')"
+    )
+    numeric_spend = (
+        f"TRIM({qs}) GLOB '*[0-9]*' "
+        f"AND TRIM({qs}) NOT GLOB '*[^0-9.eE+-]*'"
+    )
+
+    # Total alphanumeric spend
+    total_row = conn.execute(
+        f"SELECT SUM(CASE WHEN {numeric_spend} THEN CAST({qs} AS REAL) ELSE 0 END) AS alpha_spend "
+        f"FROM {tbl} "
+        f"WHERE {nn_d} AND {alphanumeric_cond}"
+    ).fetchone()
+    alpha_total = round(float(total_row["alpha_spend"] or 0))
+
+    # Per-currency breakdown (top 5 + Others)
+    by_currency: list[dict[str, Any]] | None = None
+    if currency_column is not None:
+        qc = quote_id(currency_column)
+        rows = conn.execute(
+            f"SELECT UPPER(TRIM({qc})) AS code, "
+            f"  SUM(CASE WHEN {numeric_spend} THEN CAST({qs} AS REAL) ELSE 0 END) AS spend "
+            f"FROM {tbl} "
+            f"WHERE {nn_d} AND {alphanumeric_cond} "
+            f"  AND {qc} IS NOT NULL AND TRIM({qc}) != '' "
+            f"GROUP BY UPPER(TRIM({qc})) "
+            f"ORDER BY spend DESC"
+        ).fetchall()
+        top_5 = [
+            {"code": str(r["code"]), "spend": round(float(r["spend"] or 0))}
+            for r in rows[:5]
+        ]
+        if len(rows) > 5:
+            top_5.append({"code": "Others", "spend": None})
+        by_currency = top_5
+
+    return {
+        "alphanumericSpendTotal": alpha_total,
+        "alphanumericSpendByCurrency": by_currency,
+        "alphanumericSpendColumn": spend_column,
     }
 
 
@@ -556,8 +642,8 @@ def compute_currency_quality_analysis(
                 "currencyCode": str(r["code"]),
                 "rowCount": row_ct,
                 "rowPct": _safe_pct(row_ct, total_rows),
-                "localSpend": round(local_val, 2) if local_val is not None else None,
-                "reportingSpend": round(reporting_val, 2) if reporting_val is not None else None,
+                "localSpend": round(local_val) if local_val is not None else None,
+                "reportingSpend": round(reporting_val) if reporting_val is not None else None,
             })
         else:
             has_others = True
@@ -572,8 +658,8 @@ def compute_currency_quality_analysis(
             "currencyCode": "Others",
             "rowCount": others_row_ct,
             "rowPct": _safe_pct(others_row_ct, total_rows),
-            "localSpend": round(others_local, 2) if local_spend_col else None,
-            "reportingSpend": round(others_reporting, 2) if reporting_spend_col else None,
+            "localSpend": round(others_local) if local_spend_col else None,
+            "reportingSpend": round(others_reporting) if reporting_spend_col else None,
         })
 
     return result

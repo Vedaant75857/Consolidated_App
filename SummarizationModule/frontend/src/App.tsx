@@ -56,7 +56,7 @@ const SIDEBAR_ITEMS = [
   { name: "Upload", steps: [1] as AppStep[] },
   { name: "Data Preview", steps: [2] as AppStep[] },
   { name: "Map Columns", steps: [3] as AppStep[] },
-  { name: "Data Quality", steps: [4] as AppStep[] },
+  { name: "Spend Quality Assessment", steps: [4] as AppStep[] },
   { name: "Select Views", steps: [5] as AppStep[] },
   { name: "Dashboard", steps: [6] as AppStep[] },
   { name: "Procurement Views", steps: [7] as AppStep[] },
@@ -67,7 +67,7 @@ const STEP_META: Record<number, { title: string; description: string }> = {
   1: { title: "Upload", description: "Upload your procurement data files to begin analysis." },
   2: { title: "Data Preview", description: "Review extracted tables, adjust headers, and remove unwanted files." },
   3: { title: "Map Columns", description: "AI maps your columns to the standard procurement fields." },
-  4: { title: "Data Quality", description: "Executive summary of data quality across key procurement parameters." },
+  4: { title: "Spend Quality Assessment", description: "Assess whether your data is ready for accurate spend analysis and cube creation by evaluating coverage, structure, and key quality signals." },
   5: { title: "Select Views", description: "Choose which analyses to generate from your data." },
   6: { title: "Dashboard", description: "Review detailed view summaries and export results." },
   7: { title: "Spend X-ray Feasibility", description: "Check which procurement analysis views your data can support." },
@@ -656,7 +656,7 @@ export default function App() {
               <BarChart3 className="w-5 h-5 text-white" />
             </div>
             <div>
-              <h1 className="text-lg font-semibold tracking-tight text-neutral-900 dark:text-white">Spend Analyzer</h1>
+              <h1 className="text-lg font-semibold tracking-tight text-neutral-900 dark:text-white">Spend Summarizer</h1>
               <p className="text-[10px] text-neutral-400 dark:text-neutral-500 font-medium tracking-wide">Procurement analytics</p>
             </div>
           </div>
@@ -755,7 +755,7 @@ export default function App() {
                 <div className="flex items-start justify-between gap-6">
                   <div className="min-w-0">
                     <p className="text-xs font-semibold uppercase tracking-[0.2em] text-red-200">
-                      Spend Analyzer
+                      Spend Summarizer
                     </p>
                     <h2 className="mt-2 text-2xl font-semibold tracking-tight">{stepMeta.title}</h2>
                     <p className="mt-2 max-w-2xl text-sm text-red-50/90 leading-relaxed">{stepMeta.description}</p>

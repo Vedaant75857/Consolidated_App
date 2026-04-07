@@ -1072,16 +1072,17 @@ export default function DataCleaning({
                         <thead className="sticky top-0 z-10">
                           <tr className="bg-neutral-100/80 dark:bg-neutral-800/80 backdrop-blur">
                             {columns.map((col) => {
-                              const isSelected = concatSelectedCols.includes(col);
+                              const selectionIndex = concatSelectedCols.indexOf(col);
+                              const isSelected = selectionIndex !== -1;
                               return (
                                 <td key={col} className="px-3 py-2 text-center border-b border-neutral-200 dark:border-neutral-700">
                                   <button type="button" onClick={() => toggleConcatColumn(col)} className="mx-auto block">
-                                    <span className={`inline-flex items-center justify-center w-5 h-5 rounded border-2 transition-colors cursor-pointer ${
+                                    <span className={`inline-flex items-center justify-center w-5 h-5 rounded border-2 transition-colors cursor-pointer text-[10px] font-bold ${
                                       isSelected
                                         ? "bg-red-500 border-red-500 text-white"
                                         : "border-neutral-300 dark:border-neutral-600 hover:border-red-400"
                                     }`}>
-                                      {isSelected && <Check className="w-3 h-3" />}
+                                      {isSelected && (selectionIndex + 1)}
                                     </span>
                                   </button>
                                 </td>

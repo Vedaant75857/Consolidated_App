@@ -107,7 +107,7 @@ export default function MergeOutputsPanel({
     if (selectedVersion === null) return;
     setSending(true);
     setSendResult(null);
-    setTransferOverlay({ visible: true, destination: "Spend Analyzer" });
+    setTransferOverlay({ visible: true, destination: "Spend Summarizer" });
 
     try {
       const res = await fetch("/api/merge/transfer-to-analyzer", {
@@ -125,7 +125,7 @@ export default function MergeOutputsPanel({
       localStorage.setItem("summarizer_api_key", apiKey);
       const url = `${ANALYZER_FE}?sessionId=${encodeURIComponent(analyzerSessionId)}&source=stitcher`;
       window.open(url, "_blank");
-      setSendResult({ ok: true, message: "Opened Data Analyzer in a new tab" });
+      setSendResult({ ok: true, message: "Opened Spend Summarizer in a new tab" });
       setSelectionTarget(null);
       setSelectedVersion(null);
     } catch (err: any) {
@@ -200,7 +200,7 @@ export default function MergeOutputsPanel({
       : "bg-red-600 text-white hover:bg-red-700",
   };
 
-  const targetLabel = selectionTarget === "normalizer" ? "Data Normalizer" : "Data Analyzer";
+  const targetLabel = selectionTarget === "normalizer" ? "Data Normalizer" : "Spend Summarizer";
 
   return (
     <motion.aside
@@ -244,10 +244,10 @@ export default function MergeOutputsPanel({
               <button
                 onClick={() => { setSelectionTarget("analyzer"); setSendResult(null); }}
                 className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors"
-                title="Send an output to the Data Analyzer"
+                title="Send an output to the Spend Summarizer"
               >
                 <BarChart3 className="w-3.5 h-3.5" />
-                Send to Analyzer
+                Send to Summarizer
               </button>
               <button
                 onClick={handleDownloadAll}

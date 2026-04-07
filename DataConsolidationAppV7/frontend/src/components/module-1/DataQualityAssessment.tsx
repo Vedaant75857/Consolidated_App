@@ -67,12 +67,20 @@ function fillRateColor(rate: number): { bg: string; text: string } {
   return { bg: "bg-red-100 dark:bg-red-950/40", text: "text-red-700 dark:text-red-400" };
 }
 
-function formatCurrency(value: number, label: string | null): string {
-  const formatted = value.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-  return label ? `${formatted} (${label})` : formatted;
+function renderInsightMarkdown(text: string): ReactNode {
+  const lines = text.split('\n').filter(l => l.trim());
+  const hasBullets = lines.some(l => l.trim().startsWith('- '));
+  if (hasBullets) {
+    return (
+      <ul className="list-disc list-inside space-y-1">
+        {lines.map((line, i) => {
+          const content = line.replace(/^-\s*/, '');
+          return <li key={i}>{renderBoldMarkdown(content)}</li>;
+        })}
+      </ul>
+    );
+  }
+  return renderBoldMarkdown(text);
 }
 
 function tableNameForVersion(version: number): string {
@@ -368,7 +376,7 @@ export default function DataQualityAssessment({
 
                         return (
                           <Fragment key={col.parameterKey}>
-                            <tr className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors">
+                            <tr className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors align-top">
                               <td className="px-6 py-3">
                                 <span className={`font-medium ${col.mapped ? "text-neutral-800 dark:text-neutral-200" : "text-neutral-400 dark:text-neutral-500 italic"}`}>
                                   {col.columnName}
@@ -380,24 +388,10 @@ export default function DataQualityAssessment({
                                 </span>
                               </td>
                               <td className="px-6 py-3">
-                                {group.group === "Description" && col.mapped && (
-                                  <ul className="text-sm text-neutral-700 dark:text-neutral-300 mb-2 space-y-1 list-disc list-inside">
-                                    <li>
-                                      No. of alphanumeric values:{" "}
-                                      <strong>{(col.stats.alphanumericCount ?? 0).toLocaleString()}</strong>
-                                    </li>
-                                    <li>
-                                      Total non-procurable spend:{" "}
-                                      <strong>
-                                        {col.stats.nonProcurableSpend != null
-                                          ? formatCurrency(col.stats.nonProcurableSpend, col.stats.currencyLabel)
-                                          : "N/A"}
-                                      </strong>
-                                    </li>
-                                  </ul>
-                                )}
                                 <span className={`text-sm leading-relaxed ${col.mapped ? "text-neutral-700 dark:text-neutral-300" : "text-neutral-400 dark:text-neutral-500 italic"}`}>
-                                  {renderBoldMarkdown(col.insight || (col.mapped ? "" : "Column not present in data."))}
+                                  {col.mapped
+                                    ? renderInsightMarkdown(col.insight || "")
+                                    : renderBoldMarkdown(col.insight || "Column not present in data.")}
                                 </span>
                               </td>
                             </tr>
