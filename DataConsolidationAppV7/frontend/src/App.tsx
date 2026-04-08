@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
-import { Database, AlertCircle, CheckCircle2, KeyRound, RefreshCw, Package, Sun, Moon, Table2, ArrowLeft } from "lucide-react";
+import { Database, AlertCircle, CheckCircle2, KeyRound, RefreshCw, Package, Sun, Moon, Table2, ArrowLeft, ChevronLeft } from "lucide-react";
 import type { MergeOutput } from "./types";
 import { AnimatePresence, motion } from "motion/react";
 import DataLoading from "./components/module-1/DataLoading";
@@ -1784,16 +1784,16 @@ export default function App() {
 
         {mergeOutputs.length > 0 && !outputsPanelOpen && step >= 6 && (
           <motion.button
-            initial={{ scale: 0, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            whileHover={{ scale: 1.08 }}
-            whileTap={{ scale: 0.92 }}
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
             onClick={() => setOutputsPanelOpen(true)}
-            className="absolute bottom-20 right-6 z-30 w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-600 to-teal-600 text-white shadow-xl shadow-emerald-200/40 dark:shadow-emerald-900/30 flex items-center justify-center"
+            className="absolute right-0 top-1/2 -translate-y-1/2 z-30 w-8 h-14 rounded-l-xl bg-gradient-to-br from-emerald-600 to-teal-600 text-white shadow-lg flex items-center justify-center hover:from-emerald-700 hover:to-teal-700 transition-colors"
             title="Open Merge Outputs"
           >
-            <Package className="w-5 h-5" />
-            <span className="absolute -top-1 -right-1 min-w-[1.25rem] h-5 rounded-full bg-red-500 border-2 border-white text-[10px] font-bold flex items-center justify-center px-1">
+            <ChevronLeft className="w-5 h-5" />
+            <span className="absolute -top-2 -left-2 min-w-[1.25rem] h-5 rounded-full bg-red-500 border-2 border-white dark:border-neutral-900 text-[10px] font-bold text-white flex items-center justify-center px-1">
               {mergeOutputs.length}
             </span>
           </motion.button>

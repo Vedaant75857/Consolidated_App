@@ -495,7 +495,8 @@ def _compute_alphanumeric_spend(
             for r in rows[:5]
         ]
         if len(rows) > 5:
-            top_5.append({"code": "Others", "spend": None})
+            others_spend = sum(float(r[1] or 0) for r in rows[5:])
+            top_5.append({"code": "Others", "spend": round(others_spend)})
         by_currency = top_5
 
     return {
@@ -610,8 +611,9 @@ directly to the data steward / analyst.
    separators (e.g. **1,234,567**).  No decimal places on spend figures.
 7. Display ``avgCharLength`` as a whole number (no decimals).
 8. For alphanumeric spend, the backend provides at most 5 currencies
-   plus an ``Others`` entry (with ``spend: null``).  Display the top 5
-   with their spend values and append just ``(Others)`` with no number.
+   plus an ``Others`` entry whose ``spend`` is the aggregated total of
+   all remaining currencies.  Display every entry (including Others)
+   with its spend value.
 
 ### Guidelines per parameter:
 
@@ -630,12 +632,14 @@ Required bullets:
   inconsistency.
 
 **Spend columns**
-Metrics provided: ``totalSpend``, ``numericPct``, ``nonNumericPct``,
-``fillRate``.
+Metrics provided: ``totalSpend`` (may be null for local-currency columns
+where multi-currency breakdown is provided instead), ``numericPct``,
+``nonNumericPct``, ``fillRate``.
 
 Required bullets:
 - Total spend: ``- Total spend: **{friendly amount}**`` (use $1.2B, €450M
-  etc. friendly formatting).
+  etc. friendly formatting).  **Skip this bullet entirely** when
+  ``totalSpend`` is null — the per-currency breakdown replaces it.
 - Fill rate: ``- Fill rate: **{fillRate}%**``
 - Numeric/non-numeric split: ``- Numeric values: **{numericPct}%**`` — if
   ``nonNumericPct`` > 0, append: ``, Non-numeric: **{nonNumericPct}%** — requires cleansing``
@@ -673,7 +677,6 @@ Required bullets:
     ``, Total alphanumeric spend: **{spend} ({code})**``
   * If multiple entries: append
     ``, Total alphanumeric spend: **{spend1} ({code1})**, **{spend2} ({code2})**, ...``
-    (entries with ``spend: null`` like "Others" should show just the code with no number)
   * If both are null: omit the spend part.
 - Non-procurable spend: ``- Total non-procurable spend: **{nonProcurableSpend} ({currencyLabel})**``
   — flag if material relative to total spend.
@@ -874,6 +877,13 @@ def run_executive_summary(
                 stats = _compute_date_metrics(conn, fk)
             elif group_name == "Spend":
                 stats = _compute_spend_metrics(conn, fk)
+                # For local_spend, attach per-currency breakdown and suppress
+                # the meaningless cross-currency totalSpend aggregate.
+                if fk == "local_spend" and "currency" in available:
+                    stats["spendByCurrency"] = _compute_currency_quality_analysis(
+                        conn, "currency", fk, None, total_rows,
+                    )
+                    stats["totalSpend"] = None
             elif group_name == "Supplier":
                 stats = _compute_supplier_metrics(conn, fk, pareto_spend_col)
             elif group_name == "Currency":

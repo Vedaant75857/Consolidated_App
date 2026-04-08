@@ -293,13 +293,16 @@ def run_data_quality_assessment(
         if col in available:
             fr = fill_rates[col]
             stats = compute_spend_metrics(conn, table_name, col)
-            # Attach per-currency breakdown for local-currency spend columns
+            # Attach per-currency breakdown for local-currency spend columns.
+            # When a breakdown exists, totalSpend is meaningless (sums across
+            # different currencies), so we suppress it from the AI payload.
             paired_ccy = _SPEND_TO_CURRENCY_CODE.get(col)
             if paired_ccy and paired_ccy in available:
                 stats["spendByCurrency"] = compute_currency_quality_analysis(
                     conn, table_name, paired_ccy,
                     col, None, total_rows,
                 )
+                stats["totalSpend"] = None
             # Flag when the corresponding reporting-currency column is absent
             reporting_counterpart = _LOCAL_TO_REPORTING.get(col)
             if reporting_counterpart and reporting_counterpart not in available:

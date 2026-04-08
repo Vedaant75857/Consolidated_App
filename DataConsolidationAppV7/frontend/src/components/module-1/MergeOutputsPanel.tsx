@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { motion } from "motion/react";
-import { Download, Package, Trash2, X, Loader2, FileSpreadsheet, BarChart3, Database, CheckCircle2, AlertCircle } from "lucide-react";
+import { Download, Package, Trash2, X, Loader2, FileSpreadsheet, BarChart3, Database, CheckCircle2, AlertCircle, ChevronRight } from "lucide-react";
 
 import type { MergeOutput } from "../../types";
 import TransferOverlay from "../common/TransferOverlay";
@@ -204,12 +204,20 @@ export default function MergeOutputsPanel({
 
   return (
     <motion.aside
-      initial={{ x: 384, opacity: 0 }}
+      initial={{ x: 480, opacity: 0 }}
       animate={{ x: 0, opacity: 1 }}
-      exit={{ x: 384, opacity: 0 }}
+      exit={{ x: 480, opacity: 0 }}
       transition={{ type: "spring", damping: 26, stiffness: 300 }}
-      className="w-96 bg-white/95 dark:bg-neutral-900/95 backdrop-blur-xl border-l border-neutral-200/80 dark:border-neutral-700/80 flex flex-col z-10 shrink-0"
+      className="relative w-[480px] bg-white/95 dark:bg-neutral-900/95 backdrop-blur-xl border-l border-neutral-200/80 dark:border-neutral-700/80 flex flex-col z-10 shrink-0"
     >
+      {/* Collapse toggle on left edge center */}
+      <button
+        onClick={onClose}
+        className="absolute -left-4 top-1/2 -translate-y-1/2 z-20 w-8 h-14 rounded-l-xl bg-gradient-to-br from-emerald-600 to-teal-600 text-white shadow-lg flex items-center justify-center hover:from-emerald-700 hover:to-teal-700 transition-colors"
+        title="Collapse Merge Outputs"
+      >
+        <ChevronRight className="w-5 h-5" />
+      </button>
       <TransferOverlay
         visible={!!transferOverlay?.visible}
         destinationName={transferOverlay?.destination ?? ""}

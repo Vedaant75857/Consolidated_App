@@ -38,9 +38,10 @@ directly to the data steward / analyst.
 6. Display all spend / monetary values as whole numbers with comma
    separators (e.g. **1,234,567**).  No decimal places on spend figures.
 7. Display ``avgCharLength`` as a whole number (no decimals).
-8. For alphanumeric spend, the backend provides at most 5 currencies
-   plus an ``Others`` entry (with ``spend: null``).  Display the top 5
-   with their spend values and append just ``(Others)`` with no number.
+8. For alphanumeric and non-procurable spend, the backend provides at
+   most 5 currencies plus an ``Others`` entry whose ``spend`` is the
+   aggregated total of all remaining currencies.  Display every entry
+   (including Others) with its spend value.
 
 ### Guidelines per parameter:
 
@@ -59,12 +60,15 @@ Required bullets:
   inconsistency.
 
 **Spend columns**
-Metrics provided: ``totalSpend``, ``numericPct``, ``nonNumericPct``,
-``fillRate``, ``reportingCurrencyMissing`` (boolean, optional).
+Metrics provided: ``totalSpend`` (may be null for local-currency columns
+where multi-currency breakdown is provided instead), ``numericPct``,
+``nonNumericPct``, ``fillRate``, ``reportingCurrencyMissing`` (boolean,
+optional).
 
 Required bullets:
 - Total spend: ``- Total spend: **{friendly amount}**`` (use $1.2B, €450M
-  etc. friendly formatting).
+  etc. friendly formatting).  **Skip this bullet entirely** when
+  ``totalSpend`` is null — the per-currency breakdown replaces it.
 - Fill rate: ``- Fill rate: **{fillRate}%**``
 - Numeric/non-numeric split: ``- Numeric values: **{numericPct}%**`` — if
   ``nonNumericPct`` > 0, append: ``, Non-numeric: **{nonNumericPct}%** — requires cleansing``
@@ -108,14 +112,12 @@ Required bullets:
     ``, Total alphanumeric spend: **{spend} ({code})**``
   * If multiple entries: append
     ``, Total alphanumeric spend: **{spend1} ({code1})**, **{spend2} ({code2})**, ...``
-    (entries with ``spend: null`` like "Others" should show just the code with no number)
   * If both are null: omit the spend part.
 - Non-procurable spend: format identically to alphanumeric spend:
   * If ``nonProcurableSpendByCurrency`` has exactly 1 entry:
     ``- Total non-procurable spend: **{spend} ({code})**``
   * If ``nonProcurableSpendByCurrency`` has multiple entries:
     ``- Total non-procurable spend: **{spend1} ({code1})**, **{spend2} ({code2})**, ...``
-    (entries with ``spend: null`` like "Others" show just the code with no number)
   * If ``nonProcurableSpendByCurrency`` is null, fall back to:
     ``- Total non-procurable spend: **{nonProcurableSpend} ({currencyLabel})**``
   — flag if material relative to total spend.

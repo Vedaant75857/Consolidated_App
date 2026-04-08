@@ -494,7 +494,8 @@ def compute_non_procurable_spend(
             for r in rows[:5]
         ]
         if len(rows) > 5:
-            top_5.append({"code": "Others", "spend": None})
+            others_spend = sum(float(r["spend"] or 0) for r in rows[5:])
+            top_5.append({"code": "Others", "spend": round(others_spend)})
         by_currency = top_5
 
     return {
@@ -572,7 +573,8 @@ def compute_alphanumeric_spend(
             for r in rows[:5]
         ]
         if len(rows) > 5:
-            top_5.append({"code": "Others", "spend": None})
+            others_spend = sum(float(r["spend"] or 0) for r in rows[5:])
+            top_5.append({"code": "Others", "spend": round(others_spend)})
         by_currency = top_5
 
     return {

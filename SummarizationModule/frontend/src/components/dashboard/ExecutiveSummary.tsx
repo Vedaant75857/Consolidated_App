@@ -277,10 +277,6 @@ export default function ExecutiveSummary({
                                 <span className="font-medium text-neutral-800 dark:text-neutral-200">
                                   {item.displayName}
                                 </span>
-                                <span className="ml-2 text-xs text-emerald-600 dark:text-emerald-400">
-                                  ({item.filledRows.toLocaleString()} /{" "}
-                                  {item.totalRows.toLocaleString()})
-                                </span>
                               </td>
                               <td className="px-4 py-3 text-center">
                                 <span
@@ -373,6 +369,7 @@ export default function ExecutiveSummary({
                                     text: "text-neutral-400 dark:text-neutral-500",
                                   };
                               const currencyQuality: any[] | undefined = col.stats?.currencyQuality;
+                              const spendByCurrency: any[] | undefined = col.stats?.spendByCurrency;
 
                               return (
                                 <Fragment key={col.parameterKey}>
@@ -411,6 +408,45 @@ export default function ExecutiveSummary({
                                       </span>
                                     </td>
                                   </tr>
+                                  {group.group === "Spend" && col.mapped && spendByCurrency && spendByCurrency.length > 0 && (
+                                    <tr>
+                                      <td colSpan={3} className="px-6 py-4">
+                                        <div className="rounded-xl border border-neutral-200 dark:border-neutral-700 overflow-hidden">
+                                          <div className="px-4 py-2.5 bg-neutral-50 dark:bg-neutral-800/60 border-b border-neutral-200 dark:border-neutral-700">
+                                            <h4 className="text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                                              Spend by Currency
+                                            </h4>
+                                          </div>
+                                          <table className="w-full text-sm">
+                                            <thead>
+                                              <tr className="bg-neutral-50/50 dark:bg-neutral-800/30 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                                                <th className="px-4 py-2.5">Currency Code</th>
+                                                <th className="px-4 py-2.5 text-center">% of Rows Covered</th>
+                                                <th className="px-4 py-2.5 text-right">Total Amount in Local Currency</th>
+                                              </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                                              {spendByCurrency.map((cq: any) => (
+                                                <tr key={cq.currencyCode} className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors">
+                                                  <td className="px-4 py-2 font-medium text-neutral-800 dark:text-neutral-200">
+                                                    {cq.currencyCode}
+                                                  </td>
+                                                  <td className="px-4 py-2 text-center tabular-nums text-neutral-700 dark:text-neutral-300">
+                                                    {cq.rowPct.toFixed(1)}%
+                                                  </td>
+                                                  <td className="px-4 py-2 text-right tabular-nums text-neutral-700 dark:text-neutral-300">
+                                                    {cq.localSpend != null
+                                                      ? Math.round(cq.localSpend).toLocaleString()
+                                                      : "N/A"}
+                                                  </td>
+                                                </tr>
+                                              ))}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  )}
                                   {group.group === "Currency" && col.mapped && currencyQuality && currencyQuality.length > 0 && (
                                     <tr>
                                       <td colSpan={3} className="px-6 py-4">
