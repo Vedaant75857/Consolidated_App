@@ -1382,13 +1382,15 @@ def assess_currency_conversion(df, **kwargs):
     Returns: dict of warnings, candidate columns, default selections, etc.
     """
     currency_col = kwargs.get('currency_col')
-    
+    spend_col = kwargs.get('spend_col')
+    date_col = kwargs.get('date_col')
+
     date_cols = [
         c for c in df.columns
         if ("date" in str(c).lower() or "dob" in str(c).lower() or "time" in str(c).lower())
         and not str(c).startswith("Norm_Date_")
     ]
-    
+
     try:
         fx_data = load_fx_table()
         FX, LATEST_RATE, SUPPORTED_CURRENCIES, LATEST_PERIOD, FX_YEARLY, FX_YEARLY_MONTHS = fx_data
@@ -1401,30 +1403,85 @@ def assess_currency_conversion(df, **kwargs):
             "population": None,
             "unsupported_currencies": [],
         }
-        
+
     warnings_list = []
     supported_set = set(c.upper() for c in SUPPORTED_CURRENCIES) | {"USD"}
     needs_confirmation = False
-    
+    unsupported_list = []
+
     if currency_col and currency_col in df.columns:
         total_rows = len(df)
         pop_mask = df[currency_col].notna() & (df[currency_col].astype(str).str.strip() != "")
         n_populated = int(pop_mask.sum())
         pct = (n_populated / total_rows * 100) if total_rows > 0 else 0
-        
+
         if pct < 60:
             warnings_list.append(f"Currency column is only {pct:.1f}% populated (minimum threshold: 60%). Unpopulated rows will produce NaN.")
             needs_confirmation = True
-            
+
         ccy_values = df[currency_col].dropna().astype(str).str.strip().str.upper()
         ccy_values = ccy_values[ccy_values != ""]
         unsupported_counts = ccy_values[~ccy_values.isin(supported_set)].value_counts()
-        
+
         if not unsupported_counts.empty:
             total_affected = int(unsupported_counts.sum())
             details = ", ".join([f"{ccy}: {cnt}" for ccy, cnt in unsupported_counts.items()])
             warnings_list.append(f"Unsupported currency codes found affecting {total_affected} rows: {details}. These rows will produce NaN.")
             needs_confirmation = True
+
+            # --- Compute total_spend and year_month_breakdown per unsupported currency ---
+            ccy_col_upper = df[currency_col].astype(str).str.strip().str.upper()
+
+            # Clean spend column for numeric aggregation
+            spend_num = None
+            if spend_col and spend_col in df.columns:
+                s = df[spend_col].astype(str).str.strip().str.replace(r"[,$€£]", "", regex=True)
+                paren_mask = s.str.match(r"^\(.+\)$")
+                s = s.where(~paren_mask, "-" + s.str[1:-1])
+                spend_num = pd.to_numeric(s, errors="coerce")
+
+            # Parse dates for year/month breakdown
+            parsed_dates = None
+            if date_col and date_col in df.columns:
+                parsed_dates = pd.to_datetime(df[date_col], errors="coerce", dayfirst=False)
+                mask_failed = parsed_dates.isna() & df[date_col].notna()
+                if mask_failed.any():
+                    retry = pd.to_datetime(df.loc[mask_failed, date_col], errors="coerce", dayfirst=True)
+                    parsed_dates = parsed_dates.where(~mask_failed, retry)
+
+            for ccy, cnt in unsupported_counts.items():
+                row_mask = ccy_col_upper == ccy
+
+                # Total spend
+                total_spend = 0.0
+                if spend_num is not None:
+                    total_spend = float(spend_num[row_mask].sum())
+                    if pd.isna(total_spend):
+                        total_spend = 0.0
+
+                # Year-month breakdown
+                year_month_breakdown = {}
+                if parsed_dates is not None:
+                    ccy_dates = parsed_dates[row_mask].dropna()
+                    if not ccy_dates.empty:
+                        years = ccy_dates.dt.year
+                        months = ccy_dates.dt.strftime("%b")
+                        ym_df = pd.DataFrame({"year": years, "month": months}).drop_duplicates()
+                        for yr, grp in ym_df.groupby("year"):
+                            month_order = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+                            sorted_months = sorted(grp["month"].tolist(), key=lambda m: month_order.index(m) if m in month_order else 99)
+                            year_month_breakdown[int(yr)] = sorted_months
+
+                unsupported_list.append({
+                    "code": str(ccy),
+                    "row_count": int(cnt),
+                    "total_spend": round(total_spend, 2),
+                    "year_month_breakdown": year_month_breakdown,
+                })
+
+            # Sort by total_spend descending
+            unsupported_list.sort(key=lambda x: x["total_spend"], reverse=True)
+
     elif currency_col:
         warnings_list.append(f"Currency column '{currency_col}' not found.")
         needs_confirmation = True
@@ -1440,10 +1497,7 @@ def assess_currency_conversion(df, **kwargs):
             "pct_populated": round(pct, 1),
             "warn": pct < 60,
         } if (currency_col and currency_col in df.columns) else None,
-        "unsupported_currencies": [
-            {"code": str(ccy), "row_count": int(cnt)}
-            for ccy, cnt in unsupported_counts.items()
-        ] if (currency_col and currency_col in df.columns and not unsupported_counts.empty) else [],
+        "unsupported_currencies": unsupported_list,
     }
 
 def _coerce_spend_columns(raw_cols):
@@ -1460,6 +1514,7 @@ def normalize_spend_agent(df, api_key=None, **kwargs):
     scope_year = kwargs.get('scope_year')
     target_currency = kwargs.get('target_currency', 'USD').upper().strip()
     fx_overrides = kwargs.get('fx_overrides') or {}
+    fx_override_mode = kwargs.get('fx_override_mode', 'flat')
 
     conversion_mode = "monthly"
     if date_col == "No date col" or not date_col or date_col not in df.columns:
@@ -1492,6 +1547,7 @@ def normalize_spend_agent(df, api_key=None, **kwargs):
             scope_year=int(scope_year) if scope_year and str(scope_year).isdigit() else None,
             fx_data=fx_data,
             fx_overrides=fx_overrides,
+            fx_override_mode=fx_override_mode,
         )
 
         if conversion_mode == "monthly":

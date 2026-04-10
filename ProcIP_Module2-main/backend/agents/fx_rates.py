@@ -118,7 +118,8 @@ def run_conversion(
     date_col=None,
     scope_year=None,
     fx_data=None,
-    fx_overrides=None
+    fx_overrides=None,
+    fx_override_mode: str = "flat",
 ):
     df = df.copy()
     if fx_data is None:
@@ -126,25 +127,69 @@ def run_conversion(
     FX, LATEST_RATE, SUPPORTED_CURRENCIES, LATEST_PERIOD, FX_YEARLY, FX_YEARLY_MONTHS = fx_data
 
     # Inject user-provided overrides into local copies — never mutate the global cache
+    # Track which currencies have user overrides so we can disable fallback for them
+    _override_ccys = set()
+
     if fx_overrides:
         FX = dict(FX)
         LATEST_RATE = dict(LATEST_RATE)
         FX_YEARLY = dict(FX_YEARLY)
-        for raw_ccy, raw_rate in fx_overrides.items():
-            ccy = str(raw_ccy).strip().upper()
-            try:
-                rate = float(raw_rate)
-            except (TypeError, ValueError):
-                continue
-            LATEST_RATE[ccy] = rate
-            for (c, yr, mo) in list(FX.keys()):
-                if c == ccy:
-                    FX[(ccy, yr, mo)] = rate
-            for (c, yr) in list(FX_YEARLY.keys()):
-                if c == ccy:
+
+        if fx_override_mode == "yearly":
+            # fx_overrides = {"AED": {"2024": 3.67, "2025": 3.68}}
+            for ccy_raw, year_rates in fx_overrides.items():
+                ccy = str(ccy_raw).strip().upper()
+                if not isinstance(year_rates, dict):
+                    continue
+                _override_ccys.add(ccy)
+                for yr_raw, rate_raw in year_rates.items():
+                    try:
+                        yr = int(yr_raw)
+                        rate = float(rate_raw)
+                    except (TypeError, ValueError):
+                        continue
                     FX_YEARLY[(ccy, yr)] = rate
-            # If currency was never in FX table, LATEST_RATE injection above is sufficient
-            # (scope_year mode falls back to LATEST_RATE for unknowns)
+                    # Populate monthly FX so monthly resolution also finds them
+                    for mo in MONTH_ORDER:
+                        FX[(ccy, yr, mo)] = rate
+
+        elif fx_override_mode == "monthly":
+            # fx_overrides = {"AED": {"2024": {"Jan": 3.67, "Mar": 3.70}}}
+            for ccy_raw, year_dict in fx_overrides.items():
+                ccy = str(ccy_raw).strip().upper()
+                if not isinstance(year_dict, dict):
+                    continue
+                _override_ccys.add(ccy)
+                for yr_raw, month_rates in year_dict.items():
+                    try:
+                        yr = int(yr_raw)
+                    except (TypeError, ValueError):
+                        continue
+                    if not isinstance(month_rates, dict):
+                        continue
+                    for mo_raw, rate_raw in month_rates.items():
+                        try:
+                            rate = float(rate_raw)
+                        except (TypeError, ValueError):
+                            continue
+                        mo = str(mo_raw).strip()
+                        FX[(ccy, yr, mo)] = rate
+
+        else:
+            # Legacy flat mode: fx_overrides = {"AED": 3.67}
+            for raw_ccy, raw_rate in fx_overrides.items():
+                ccy = str(raw_ccy).strip().upper()
+                try:
+                    rate = float(raw_rate)
+                except (TypeError, ValueError):
+                    continue
+                LATEST_RATE[ccy] = rate
+                for (c, yr, mo) in list(FX.keys()):
+                    if c == ccy:
+                        FX[(ccy, yr, mo)] = rate
+                for (c, yr) in list(FX_YEARLY.keys()):
+                    if c == ccy:
+                        FX_YEARLY[(ccy, yr)] = rate
 
     fx_col = f"FX_rate_used_{spend_col}"
     out_col = f"{spend_col}_converted_inUSD"
@@ -185,6 +230,9 @@ def run_conversion(
             if pd.notna(year) and pd.notna(month):
                 rate = FX.get((ccy, int(year), month))
                 if rate is not None: return rate, False
+            # No fallback for user-override currencies — produce NaN if exact rate not found
+            if ccy in _override_ccys:
+                return np.nan, False
             rate = LATEST_RATE.get(ccy)
             return rate if rate is not None else np.nan, True
 
@@ -205,6 +253,9 @@ def run_conversion(
             if scope_year:
                 rate = FX_YEARLY.get((ccy, int(scope_year)))
                 if rate is not None: return rate, False
+            # No fallback for user-override currencies — produce NaN if exact rate not found
+            if ccy in _override_ccys:
+                return np.nan, False
             rate = LATEST_RATE.get(ccy)
             return rate if rate is not None else np.nan, True
 

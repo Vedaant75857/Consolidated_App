@@ -7,6 +7,13 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { SurfaceCard, PrimaryButton } from "../common/ui";
 import TransferOverlay from "../common/TransferOverlay";
+import UnsupportedCurrencyPanel, {
+  hasEmptyOverrides,
+  type UnsupportedCurrency,
+  type FxOverrideMode,
+  type YearlyOverrides,
+  type MonthlyOverrides,
+} from "./UnsupportedCurrencyPanel";
 import type { LogEntry } from "../module-1/StatusLog";
 
 const ANALYZER_FE = import.meta.env.VITE_ANALYZER_FE ?? "http://localhost:3004";
@@ -26,10 +33,6 @@ interface PopulationInfo {
   n_total: number;
   pct_populated: number;
   warn: boolean;
-}
-interface UnsupportedCurrency {
-  code: string;
-  row_count: number;
 }
 interface AssessResult {
   needs_confirmation: boolean;
@@ -112,7 +115,10 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
   const [assessLoading, setAssessLoading] = useState(false);
   const [assessResult, setAssessResult] = useState<AssessResult | null>(null);
   const [assessError, setAssessError] = useState<string | null>(null);
-  const [fxOverrides, setFxOverrides] = useState<Record<string, string>>({});
+  const [fxOverrideMode, setFxOverrideMode] = useState<FxOverrideMode>("yearly");
+  const [fxOverridesYearly, setFxOverridesYearly] = useState<YearlyOverrides>({});
+  const [fxOverridesMonthly, setFxOverridesMonthly] = useState<MonthlyOverrides>({});
+  const [showFxValidation, setShowFxValidation] = useState(false);
   const [conversionMetrics, setConversionMetrics] = useState<ConversionMetrics | null>(null);
 
   // Smart column auto-selection: call backend scoring endpoint when columns load.
@@ -228,6 +234,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
         log("error", "Select both a currency column and a spend column before running Currency Conversion.");
         return;
       }
+      // Nothing here — validation is handled by the button UI layer
     }
     setActiveOp(agentId);
     const opLabel = OPERATIONS.find(o => o.id === agentId)?.label || agentId;
@@ -261,12 +268,32 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       agentKwargs.date_col = currencyDateColumn;
       agentKwargs.scope_year = scopeYear;
       agentKwargs.target_currency = "USD";
-      const parsedOverrides: Record<string, number> = {};
-      Object.entries(fxOverrides).forEach(([ccy, val]) => {
-        const n = parseFloat(val as string);
-        if (!isNaN(n) && n > 0) parsedOverrides[ccy] = n;
-      });
-      agentKwargs.fx_overrides = parsedOverrides;
+      if (fxOverrideMode === "yearly") {
+        const parsed: Record<string, Record<string, number>> = {};
+        for (const [ccy, years] of Object.entries(fxOverridesYearly) as [string, Record<string, string>][]) {
+          parsed[ccy] = {};
+          for (const [yr, val] of Object.entries(years) as [string, string][]) {
+            const n = parseFloat(val);
+            if (!isNaN(n) && n > 0) parsed[ccy][yr] = n;
+          }
+        }
+        agentKwargs.fx_overrides = parsed;
+        agentKwargs.fx_override_mode = "yearly";
+      } else {
+        const parsed: Record<string, Record<string, Record<string, number>>> = {};
+        for (const [ccy, years] of Object.entries(fxOverridesMonthly) as [string, Record<string, Record<string, string>>][]) {
+          parsed[ccy] = {};
+          for (const [yr, months] of Object.entries(years) as [string, Record<string, string>][]) {
+            parsed[ccy][yr] = {};
+            for (const [mo, val] of Object.entries(months) as [string, string][]) {
+              const n = parseFloat(val);
+              if (!isNaN(n) && n > 0) parsed[ccy][yr][mo] = n;
+            }
+          }
+        }
+        agentKwargs.fx_overrides = parsed;
+        agentKwargs.fx_override_mode = "monthly";
+      }
     }
 
     try {
@@ -300,10 +327,11 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
     } finally {
       normControllerRef.current = null;
       setActiveOp(null);
+      setShowFxValidation(false);
       setLoadingMessage?.("");
       setLoadingOnCancel?.(null);
     }
-  }, [apiKey, fetchOperationPreview, log, supplierCountryColumn, regionColumn, dateFormat, currencySpendColumn, currencyCodeColumn, currencyDateColumn, scopeYear, fxOverrides, setLoadingMessage, setLoadingOnCancel]);
+  }, [apiKey, fetchOperationPreview, log, supplierCountryColumn, regionColumn, dateFormat, currencySpendColumn, currencyCodeColumn, currencyDateColumn, scopeYear, fxOverrideMode, fxOverridesYearly, fxOverridesMonthly, setLoadingMessage, setLoadingOnCancel]);
 
   const handleAssess = useCallback(async () => {
     if (!currencyCodeColumn) {
@@ -315,7 +343,9 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
     setAssessResult(null);
     setAssessError(null);
     setConversionMetrics(null);
-    setFxOverrides({});
+    setFxOverridesYearly({});
+    setFxOverridesMonthly({});
+    setShowFxValidation(false);
     try {
       const res = await fetch("/api/assess-currency-conversion", {
         method: "POST",
@@ -331,18 +361,34 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Assessment failed");
       setAssessResult(data as AssessResult);
-      const initialOverrides: Record<string, string> = {};
+      // Initialize empty yearly/monthly override structures from assessment data
+      const initYearly: YearlyOverrides = {};
+      const initMonthly: MonthlyOverrides = {};
+      const dateColSelected = currencyDateColumn !== "No date col";
       (data.unsupported_currencies || []).forEach((u: UnsupportedCurrency) => {
-        initialOverrides[u.code] = "";
+        const years = dateColSelected
+          ? Object.keys(u.year_month_breakdown || {})
+          : [scopeYear];
+        initYearly[u.code] = {};
+        initMonthly[u.code] = {};
+        for (const yr of years) {
+          initYearly[u.code][yr] = "";
+          initMonthly[u.code][yr] = {};
+          const months = u.year_month_breakdown?.[yr] || [];
+          for (const mo of months) {
+            initMonthly[u.code][yr][mo] = "";
+          }
+        }
       });
-      setFxOverrides(initialOverrides);
+      setFxOverridesYearly(initYearly);
+      setFxOverridesMonthly(initMonthly);
     } catch (err: any) {
       setAssessError(err.message || "Assessment failed");
     } finally {
       setAssessLoading(false);
       setLoadingMessage?.("");
     }
-  }, [currencyCodeColumn, currencySpendColumn, currencyDateColumn, setLoadingMessage]);
+  }, [currencyCodeColumn, currencySpendColumn, currencyDateColumn, scopeYear, setLoadingMessage]);
 
   const handleAssessSupplierCountry = useCallback(async () => {
     if (!supplierCountryColumn) {
@@ -983,7 +1029,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                     <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Currency Column <span className="text-red-500">*</span></label>
                     <select
                       value={currencyCodeColumn}
-                      onChange={(e) => { setCurrencyCodeColumn(e.target.value); setAssessResult(null); setConversionMetrics(null); setFxOverrides({}); }}
+                      onChange={(e) => { setCurrencyCodeColumn(e.target.value); setAssessResult(null); setConversionMetrics(null); setFxOverridesYearly({}); setFxOverridesMonthly({}); setShowFxValidation(false); }}
                       disabled={isRunning || loading}
                       className="w-full text-sm rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-red-500/40"
                     >
@@ -998,7 +1044,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                     <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Spend Column <span className="text-red-500">*</span></label>
                     <select
                       value={currencySpendColumn}
-                      onChange={(e) => { setCurrencySpendColumn(e.target.value); setAssessResult(null); setConversionMetrics(null); setFxOverrides({}); }}
+                      onChange={(e) => { setCurrencySpendColumn(e.target.value); setAssessResult(null); setConversionMetrics(null); setFxOverridesYearly({}); setFxOverridesMonthly({}); setShowFxValidation(false); }}
                       disabled={isRunning || loading}
                       className="w-full text-sm rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-red-500/40"
                     >
@@ -1015,7 +1061,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                     <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Date Column</label>
                     <select
                       value={currencyDateColumn}
-                      onChange={(e) => { setCurrencyDateColumn(e.target.value); setAssessResult(null); setConversionMetrics(null); setFxOverrides({}); }}
+                      onChange={(e) => { setCurrencyDateColumn(e.target.value); setAssessResult(null); setConversionMetrics(null); setFxOverridesYearly({}); setFxOverridesMonthly({}); setShowFxValidation(false); }}
                       disabled={isRunning || loading}
                       className="w-full text-sm rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-red-500/40"
                     >
@@ -1099,43 +1145,26 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                     </div>
                   )}
 
-                  {/* Unsupported currencies table */}
+                  {/* Unsupported currencies panel */}
                   {assessResult.unsupported_currencies.length > 0 && (
-                    <div className="space-y-2">
-                      <p className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-                        Unsupported currencies — enter rate (1 USD = X) or leave blank to skip those rows:
-                      </p>
-                      <div className="overflow-x-auto rounded-lg border border-neutral-200 dark:border-neutral-700">
-                        <table className="w-full text-sm">
-                          <thead className="bg-neutral-100 dark:bg-neutral-800">
-                            <tr className="text-left text-xs text-neutral-500">
-                              <th className="px-3 py-2 font-medium border-b border-neutral-200 dark:border-neutral-700">Currency</th>
-                              <th className="px-3 py-2 font-medium border-b border-neutral-200 dark:border-neutral-700">Rows Affected</th>
-                              <th className="px-3 py-2 font-medium border-b border-neutral-200 dark:border-neutral-700">Rate (1 USD = X)</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {assessResult.unsupported_currencies.map(u => (
-                              <tr key={u.code} className="border-b border-neutral-100 dark:border-neutral-800 last:border-0">
-                                <td className="px-3 py-2 font-mono font-semibold text-neutral-800 dark:text-neutral-200">{u.code}</td>
-                                <td className="px-3 py-2 text-neutral-600 dark:text-neutral-400">{u.row_count}</td>
-                                <td className="px-3 py-2">
-                                  <input
-                                    type="number"
-                                    min="0"
-                                    step="any"
-                                    value={fxOverrides[u.code] ?? ""}
-                                    onChange={e => setFxOverrides(prev => ({ ...prev, [u.code]: e.target.value }))}
-                                    placeholder="e.g. 3.67"
-                                    className="w-32 text-sm rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 px-2 py-1 focus:outline-none focus:ring-2 focus:ring-red-500/40"
-                                  />
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
+                    <UnsupportedCurrencyPanel
+                      currencies={assessResult.unsupported_currencies}
+                      dateColumnSelected={currencyDateColumn !== "No date col"}
+                      scopeYear={scopeYear}
+                      overrideMode={fxOverrideMode}
+                      onOverrideModeChange={(mode) => {
+                        setFxOverrideMode(mode);
+                        setFxOverridesYearly({});
+                        setFxOverridesMonthly({});
+                        setShowFxValidation(false);
+                      }}
+                      yearlyOverrides={fxOverridesYearly}
+                      onYearlyOverridesChange={setFxOverridesYearly}
+                      monthlyOverrides={fxOverridesMonthly}
+                      onMonthlyOverridesChange={setFxOverridesMonthly}
+                      showValidation={showFxValidation}
+                      disabled={isRunning || loading}
+                    />
                   )}
 
                   {assessResult.unsupported_currencies.length === 0 && assessResult.warnings.length === 0 && (
@@ -1145,14 +1174,46 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                     </div>
                   )}
 
-                  {/* Confirm & Run */}
-                  <PrimaryButton
-                    onClick={() => handleRunOperation(singleOp.id)}
-                    disabled={isRunning || loading}
-                  >
-                    {isRunning ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ArrowRight className="w-4 h-4 mr-2" />}
-                    {isRunning ? "Converting…" : "Confirm & Run"}
-                  </PrimaryButton>
+                  {/* Missing entries warning */}
+                  {showFxValidation && (
+                    <div className="flex gap-3 p-3 rounded-xl bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800">
+                      <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0 text-amber-500 dark:text-amber-400" />
+                      <p className="text-sm text-amber-700 dark:text-amber-300">
+                        Missing entries — rows with missing rates will not be converted.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Confirm & Run / Proceed anyway */}
+                  {showFxValidation ? (
+                    <button
+                      onClick={() => handleRunOperation(singleOp.id)}
+                      disabled={isRunning || loading}
+                      className="inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-xl bg-amber-500 hover:bg-amber-600 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isRunning ? <Loader2 className="w-4 h-4 animate-spin" /> : <AlertTriangle className="w-4 h-4" />}
+                      {isRunning ? "Converting…" : "Proceed anyway"}
+                    </button>
+                  ) : (
+                    <PrimaryButton
+                      onClick={() => {
+                        // Check for missing entries — if found, show warning + rename button instead of running
+                        if (assessResult && assessResult.unsupported_currencies.length > 0) {
+                          const dateColSelected = currencyDateColumn !== "No date col";
+                          const empty = hasEmptyOverrides(fxOverrideMode, assessResult.unsupported_currencies, fxOverridesYearly, fxOverridesMonthly, dateColSelected, scopeYear);
+                          if (empty) {
+                            setShowFxValidation(true);
+                            return;
+                          }
+                        }
+                        handleRunOperation(singleOp.id);
+                      }}
+                      disabled={isRunning || loading}
+                    >
+                      {isRunning ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ArrowRight className="w-4 h-4 mr-2" />}
+                      {isRunning ? "Converting…" : "Confirm & Run"}
+                    </PrimaryButton>
+                  )}
                 </div>
               )}
 
