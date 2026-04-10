@@ -60,6 +60,17 @@ interface CountryNormMetrics {
   ai_errors: string[];
 }
 
+interface RegionNormMetrics {
+  n_total: number;
+  n_empty: number;
+  n_normalized: number;
+  n_deterministic: number;
+  n_ai: number;
+  n_from_country: number;
+  n_unresolved: number;
+  ai_errors: string[];
+}
+
 interface NormDashboardProps {
   apiKey: string;
   activeTab?: string;
@@ -89,6 +100,13 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
   const [scAssessResult, setScAssessResult] = useState<{ population: PopulationInfo | null } | null>(null);
   const [scAssessError, setScAssessError] = useState<string | null>(null);
   const [countryNormMetrics, setCountryNormMetrics] = useState<CountryNormMetrics | null>(null);
+
+  // Region assess state
+  const [regionColumn, setRegionColumn] = useState("");
+  const [regionAssessLoading, setRegionAssessLoading] = useState(false);
+  const [regionAssessResult, setRegionAssessResult] = useState<{ population: PopulationInfo | null } | null>(null);
+  const [regionAssessError, setRegionAssessError] = useState<string | null>(null);
+  const [regionNormMetrics, setRegionNormMetrics] = useState<RegionNormMetrics | null>(null);
 
   // Currency conversion assess state
   const [assessLoading, setAssessLoading] = useState(false);
@@ -131,6 +149,17 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
           if (prev && cols.includes(prev)) return prev;
           return cols.find(c => /(supplier.?country|vendor.?country|^country$)/i.test(c)) ?? "";
         });
+
+        // Auto-detect region column (priority: region > SUPPLIER COUNTRY NORMALIZED > country)
+        setRegionColumn((prev: string) => {
+          if (prev && cols.includes(prev)) return prev;
+          const regionMatch = cols.find((c: string) => /region/i.test(c));
+          if (regionMatch) return regionMatch;
+          if (cols.includes("SUPPLIER COUNTRY NORMALIZED")) return "SUPPLIER COUNTRY NORMALIZED";
+          const scnMatch = cols.find((c: string) => /supplier.?country.?normalized/i.test(c));
+          if (scnMatch) return scnMatch;
+          return cols.find((c: string) => /(supplier.?country|vendor.?country|^country$)/i.test(c)) ?? "";
+        });
       } catch {
         // Fallback: replicate previous header-only logic so the UI is never left blank
         // if the backend is unavailable or /api/suggest-columns returns an error.
@@ -153,6 +182,15 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
             && !c.startsWith("Norm_Date_")
           );
           return fallback ?? "No date col";
+        });
+        setRegionColumn((prev: string) => {
+          if (prev && cols.includes(prev)) return prev;
+          const regionMatch = cols.find((c: string) => /region/i.test(c));
+          if (regionMatch) return regionMatch;
+          if (cols.includes("SUPPLIER COUNTRY NORMALIZED")) return "SUPPLIER COUNTRY NORMALIZED";
+          const scnMatch = cols.find((c: string) => /supplier.?country.?normalized/i.test(c));
+          if (scnMatch) return scnMatch;
+          return cols.find((c: string) => /(supplier.?country|vendor.?country|^country$)/i.test(c)) ?? "";
         });
       }
     };
@@ -211,6 +249,9 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
     if (agentId === "supplier_country" && supplierCountryColumn) {
       agentKwargs.country_col = supplierCountryColumn;
     }
+    if (agentId === "region" && regionColumn) {
+      agentKwargs.region_col = regionColumn;
+    }
     if (agentId === "date") {
       agentKwargs.user_format = dateFormat;
     }
@@ -246,6 +287,9 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       if (data.country_norm_metrics) {
         setCountryNormMetrics(data.country_norm_metrics);
       }
+      if (data.region_norm_metrics) {
+        setRegionNormMetrics(data.region_norm_metrics);
+      }
       await fetchOperationPreview();
       log("success", opLabel + ": " + data.message);
     } catch (err: any) {
@@ -259,7 +303,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       setLoadingMessage?.("");
       setLoadingOnCancel?.(null);
     }
-  }, [apiKey, fetchOperationPreview, log, supplierCountryColumn, dateFormat, currencySpendColumn, currencyCodeColumn, currencyDateColumn, scopeYear, fxOverrides, setLoadingMessage, setLoadingOnCancel]);
+  }, [apiKey, fetchOperationPreview, log, supplierCountryColumn, regionColumn, dateFormat, currencySpendColumn, currencyCodeColumn, currencyDateColumn, scopeYear, fxOverrides, setLoadingMessage, setLoadingOnCancel]);
 
   const handleAssess = useCallback(async () => {
     if (!currencyCodeColumn) {
@@ -327,6 +371,33 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
     }
   }, [supplierCountryColumn, setLoadingMessage]);
 
+  const handleAssessRegion = useCallback(async () => {
+    if (!regionColumn) {
+      setRegionAssessError("Select a region column first.");
+      return;
+    }
+    setRegionAssessLoading(true);
+    setLoadingMessage?.("Assessing your data…");
+    setRegionAssessResult(null);
+    setRegionAssessError(null);
+    setRegionNormMetrics(null);
+    try {
+      const res = await fetch("/api/assess-region", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kwargs: { region_col: regionColumn } }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Assessment failed");
+      setRegionAssessResult(data);
+    } catch (err: any) {
+      setRegionAssessError(err.message || "Assessment failed");
+    } finally {
+      setRegionAssessLoading(false);
+      setLoadingMessage?.("");
+    }
+  }, [regionColumn, setLoadingMessage]);
+
   useEffect(() => {
     if (
       activeTab !== "pipeline" &&
@@ -341,8 +412,8 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
   const downloadControllerRef = useRef<AbortController | null>(null);
 
   const handleDownload = useCallback(async () => {
-    log("info", "Downloading normalised data…");
-    setLoadingMessage?.("Downloading normalised data…");
+    log("info", "Downloading Excel…");
+    setLoadingMessage?.("Preparing Excel download…");
 
     const controller = new AbortController();
     downloadControllerRef.current = controller;
@@ -378,6 +449,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       setLoadingOnCancel?.(null);
     }
   }, [log, setLoadingMessage, setLoadingOnCancel]);
+
 
   // Send to Analyzer state
   const [showAnalyzerConfirm, setShowAnalyzerConfirm] = useState(false);
@@ -547,7 +619,8 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
             return col.startsWith("Norm_Date_");
           case "payment_terms":
             return (
-              col.startsWith("PAYMENT TERMS_NORMALIZED") ||
+              col.endsWith("_Normalized") ||
+              col.startsWith("Payment term duration") ||
               col.startsWith("Discount_Payment_Terms") ||
               col.startsWith("Payment_Terms_Doubt")
             );
@@ -570,8 +643,8 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
         icon={Icon}
       >
         <div className="space-y-4">
-          {/* Generic Run button — hidden for currency_conversion and supplier_country which use Assess flow */}
-          {singleOp.id !== "currency_conversion" && singleOp.id !== "supplier_country" && (
+          {/* Generic Run button — hidden for currency_conversion, supplier_country, and region which use Assess flow */}
+          {singleOp.id !== "currency_conversion" && singleOp.id !== "supplier_country" && singleOp.id !== "region" && (
             <div className="flex items-center gap-3">
               <PrimaryButton
                 onClick={() => handleRunOperation(singleOp.id)}
@@ -721,7 +794,161 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                       </div>
                     </div>
                   )}
-                  <div className="pt-3 mt-2 border-t border-emerald-200 dark:border-emerald-800">
+                  <div className="pt-3 mt-2 border-t border-emerald-200 dark:border-emerald-800 flex items-center gap-2">
+                    <PrimaryButton onClick={handleDownload}>
+                      <Download className="w-4 h-4 mr-2" />
+                      Download Excel
+                    </PrimaryButton>
+                    <button
+                      onClick={handleSendToAnalyzer}
+                      disabled={sendingToAnalyzer}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors disabled:opacity-50"
+                    >
+                      {sendingToAnalyzer ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <BarChart3 className="w-3.5 h-3.5" />}
+                      Send to Summarizer
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Region — Assess-first workflow */}
+          {singleOp.id === "region" && (
+            <div className="space-y-4">
+              {/* Recommendation callout */}
+              <div className="flex gap-3 p-3 rounded-xl bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 text-sm text-blue-700 dark:text-blue-300">
+                <Info className="w-4 h-4 mt-0.5 flex-shrink-0 text-blue-500 dark:text-blue-400" />
+                <p>It is recommended to complete <strong>Supplier Country</strong> normalization before performing Region normalization to ensure better accuracy.</p>
+              </div>
+
+              {/* Column selection */}
+              <div className="flex flex-col gap-3 p-4 rounded-xl bg-neutral-50 dark:bg-neutral-800/60 border border-neutral-200 dark:border-neutral-700">
+                <div className="flex-1 space-y-1">
+                  <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Region / Country Column <span className="text-red-500">*</span></label>
+                  <select
+                    value={regionColumn}
+                    onChange={(e) => { setRegionColumn(e.target.value); setRegionAssessResult(null); setRegionAssessError(null); }}
+                    disabled={isRunning || loading}
+                    className="w-full text-sm rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-red-500/40"
+                  >
+                    <option value="" disabled>Select Column</option>
+                    {operationPreview.columns.map(col => (
+                      <option key={col} value={col}>{col}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Assess button */}
+              <div className="flex items-center gap-3">
+                <PrimaryButton onClick={handleAssessRegion} disabled={regionAssessLoading || isRunning || loading}>
+                  {regionAssessLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Sparkles className="w-4 h-4 mr-2" />}
+                  {regionAssessLoading ? "Assessing…" : "Assess"}
+                </PrimaryButton>
+                {isCompleted && (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Completed
+                  </span>
+                )}
+              </div>
+
+              {/* Assess error */}
+              {regionAssessError && (
+                <div className="flex gap-3 p-3 rounded-xl bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800">
+                  <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0 text-red-500 dark:text-red-400" />
+                  <p className="text-xs text-red-700 dark:text-red-300">{regionAssessError}</p>
+                </div>
+              )}
+
+              {/* Assessment panel */}
+              {regionAssessResult && regionAssessResult.population && (
+                <div className="rounded-xl border border-neutral-200 dark:border-neutral-700 p-4 space-y-4 bg-neutral-50 dark:bg-neutral-800/60">
+                  {/* Population */}
+                  <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <span className="font-medium text-neutral-700 dark:text-neutral-300">Column population:</span>
+                    <span className={`font-semibold ${regionAssessResult.population.warn ? "text-amber-600" : "text-emerald-600"}`}>
+                      {regionAssessResult.population.pct_populated}%
+                    </span>
+                    <span className="text-neutral-500">
+                      ({regionAssessResult.population.n_populated} / {regionAssessResult.population.n_total} rows populated)
+                    </span>
+                    {regionAssessResult.population.warn && (
+                      <span className="text-xs text-amber-600 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 px-2 py-0.5 rounded-full">
+                        Below 60% threshold
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Column type message */}
+                  <div className="flex gap-3 p-3 rounded-xl bg-neutral-100 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700">
+                    <Info className="w-4 h-4 mt-0.5 flex-shrink-0 text-neutral-500" />
+                    <p className="text-sm text-neutral-600 dark:text-neutral-400">
+                      {/region/i.test(regionColumn)
+                        ? "Region will be normalized using the selected Region column."
+                        : "Region will be derived using the selected Country column."}
+                    </p>
+                  </div>
+
+                  {!regionAssessResult.population.warn && (
+                    <div className="flex gap-3 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800">
+                      <CheckCircle2 className="w-4 h-4 mt-0.5 flex-shrink-0 text-emerald-500 dark:text-emerald-400" />
+                      <p className="text-sm text-emerald-700 dark:text-emerald-300">Column is well populated. Ready to normalize.</p>
+                    </div>
+                  )}
+
+                  {/* Confirm & Run */}
+                  <PrimaryButton
+                    onClick={() => handleRunOperation(singleOp.id)}
+                    disabled={isRunning || loading}
+                  >
+                    {isRunning ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ArrowRight className="w-4 h-4 mr-2" />}
+                    {isRunning ? "Normalizing…" : "Confirm & Run"}
+                  </PrimaryButton>
+                </div>
+              )}
+
+              {/* Post-normalization summary */}
+              {regionNormMetrics && (
+                <div className="rounded-xl border border-emerald-200 dark:border-emerald-800 p-4 bg-emerald-50 dark:bg-emerald-950/20 space-y-1 text-sm">
+                  <p className="font-semibold text-emerald-800 dark:text-emerald-300 mb-2">Normalization Summary</p>
+                  <p className="text-emerald-700 dark:text-emerald-400">
+                    Total rows normalized: <strong>{regionNormMetrics.n_normalized}</strong> / {regionNormMetrics.n_total}
+                  </p>
+                  <p className="text-emerald-700 dark:text-emerald-400">
+                    Rows via deterministic lookup: <strong>{regionNormMetrics.n_deterministic}</strong>
+                  </p>
+                  <p className="text-emerald-700 dark:text-emerald-400">
+                    Rows normalized via AI: <strong>{regionNormMetrics.n_ai}</strong>
+                  </p>
+                  {regionNormMetrics.n_from_country > 0 && (
+                    <p className="text-emerald-700 dark:text-emerald-400">
+                      Blank regions filled from Country column: <strong>{regionNormMetrics.n_from_country}</strong>
+                    </p>
+                  )}
+                  {(regionNormMetrics.n_empty + regionNormMetrics.n_unresolved) > 0 && (
+                    <div className="mt-2 space-y-0.5 text-neutral-600 dark:text-neutral-400">
+                      <p className="font-medium">Rows not normalized:</p>
+                      {regionNormMetrics.n_empty > 0 && (
+                        <p className="ml-3">• Missing or empty values: {regionNormMetrics.n_empty}</p>
+                      )}
+                      {regionNormMetrics.n_unresolved > 0 && (
+                        <p className="ml-3">• Unrecognized region values: {regionNormMetrics.n_unresolved}</p>
+                      )}
+                    </div>
+                  )}
+                  {regionNormMetrics.ai_errors?.length > 0 && (
+                    <div className="flex gap-3 p-3 mt-2 rounded-xl bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800">
+                      <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0 text-amber-500 dark:text-amber-400" />
+                      <div className="space-y-1">
+                        <p className="text-xs font-medium text-amber-700 dark:text-amber-300">AI normalization errors:</p>
+                        {regionNormMetrics.ai_errors.map((err: string, i: number) => (
+                          <p key={i} className="text-xs text-amber-600 dark:text-amber-400">{err}</p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <div className="pt-3 mt-2 border-t border-emerald-200 dark:border-emerald-800 flex items-center gap-2">
                     <PrimaryButton onClick={handleDownload}>
                       <Download className="w-4 h-4 mr-2" />
                       Download Excel
@@ -952,7 +1179,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                       )}
                     </div>
                   )}
-                  <div className="pt-3 mt-2 border-t border-emerald-200 dark:border-emerald-800 flex items-center gap-3">
+                  <div className="pt-3 mt-2 border-t border-emerald-200 dark:border-emerald-800 flex items-center gap-2">
                     <PrimaryButton onClick={handleDownload}>
                       <Download className="w-4 h-4 mr-2" />
                       Download Excel
@@ -981,7 +1208,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                 {opResults[singleOp.id]}
               </div>
               {!opResults[singleOp.id].startsWith("Error") && (
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
                   <PrimaryButton onClick={handleDownload}>
                     <Download className="w-4 h-4 mr-2" />
                     Download Excel
@@ -1076,7 +1303,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
     <div className="space-y-6">
       <SurfaceCard title="Download Normalized Data" subtitle="Export your cleaned and standardized dataset" icon={Download}>
         <div className="space-y-4">
-          <div className="flex gap-3">
+          <div className="flex items-center gap-3">
             <PrimaryButton onClick={handleDownload} disabled={loading || activeOp !== null}>
               <Download className="w-4 h-4 mr-2" />
               Download Excel

@@ -13,3 +13,9 @@ __pycache__/
 .env*
 !.env.example
 .cursor/
+
+# PyInstaller exe build files
+launcher.py
+path_utils.py
+*.spec
+build.bat

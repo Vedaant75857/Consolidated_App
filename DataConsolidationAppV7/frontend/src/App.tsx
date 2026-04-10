@@ -481,6 +481,9 @@ export default function App() {
       }),
     });
 
+    console.log(res);
+    console.log(await res.clone().text());
+
     const payload = await res.json();
     if (!res.ok || payload?.ok === false) {
       const missing = payload?.missing_requirements;

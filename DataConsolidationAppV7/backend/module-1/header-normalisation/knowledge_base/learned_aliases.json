@@ -242,7 +242,8 @@
   ],
   "Vendor Address": [
     "LONG ADDRESS",
-    "ADDRESS LINE 1 - ADD1"
+    "ADDRESS LINE 1 - ADD1",
+    "STREET_ADDRESS"
   ],
   "Company Country": [
     "COUNTRY"

@@ -739,6 +739,163 @@ Return JSON ONLY:
 }}"""
 
 
+_PAYMENT_TERMS_ENGLISH_PROMPT = """You are a payment terms normalization engine.
+
+Your task is to convert each raw payment term into a single, consistent, standardized English payment-term expression.
+
+Goal:
+- Translate any language into English
+- Repair obvious encoding corruption where possible
+- Preserve the business meaning
+- Remove noise, repetition, and formatting inconsistencies
+- Convert each raw value into the closest clear standardized English payment term
+- Return valid JSON mapping each raw value to its standardized English value
+
+Important behavior:
+- Do not return UNKNOWN
+- Do not reject incomplete, awkward, duplicated, or corrupted terms
+- Always produce the closest standardized English payment-term interpretation based on the wording present
+- If the input is vague, normalize it into the most reasonable generic English payment term supported by the text
+- Normalize by business meaning, not by literal wording
+
+General process:
+
+1. Clean the text
+   - Trim spaces
+   - Remove duplicate repeated clauses if they do not change meaning
+   - Collapse repeated separators such as ; ;; , extra spaces, or duplicated fragments
+   - Repair obvious encoding corruption when the intended wording is clear
+     Example: DÃAS -> DÍAS
+
+2. Interpret the payment logic
+   Detect whether the text expresses:
+   - net days
+   - days from invoice
+   - days from receipt of invoice
+   - end-of-month timing
+   - due date anchored to a calendar day/month
+   - cash discount / early payment discount
+   - advance payment
+   - immediate payment
+   - installment or milestone payment
+   - contractual / other generic payment wording
+
+3. Ignore irrelevant noise unless it affects payment timing
+   Ignore or remove:
+   - payment method text such as bank transfer or wire transfer
+   - reference-number instructions
+   - supplier/customer/account identifiers
+   - duplicated wording
+   - non-timing administrative text
+
+4. Standardize into clear English terms
+   Prefer concise, repeatable, business-friendly expressions.
+
+Standard output patterns:
+
+Day-count terms:
+- <N> DAYS NET
+- <N> DAYS FROM INVOICE
+- <N> DAYS FROM RECEIPT OF INVOICE
+- <N> DAYS EOM
+- <N> DAYS FROM DELIVERY
+- <N> DAYS FROM DOWN PAYMENT INVOICE
+
+Discount terms:
+- <N> DAYS NET WITH <PERCENT>% CASH DISCOUNT
+- <N> DAYS FROM INVOICE WITH <PERCENT>% CASH DISCOUNT
+- <N> DAYS EOM WITH <PERCENT>% CASH DISCOUNT
+
+Calendar-based due-date terms:
+- DUE BY END OF MONTH
+- DUE BY END OF NEXT MONTH
+- DUE BY <DAY> OF NEXT MONTH
+- DUE BY END OF MONTH IN <N> MONTHS
+- DUE BY <DAY> OF MONTH IN <N> MONTHS
+- DUE ON <ORDINAL DAY> OF SECOND MONTH FOLLOWING INVOICE
+- DUE ON <ORDINAL DAY> OF <N>TH MONTH FOLLOWING INVOICE
+
+Advance / immediate terms:
+- IMMEDIATE PAYMENT
+- ADVANCE PAYMENT
+- <PERCENT>% ADVANCE
+- <PERCENT>% ADVANCE, BALANCE IN <N> DAYS
+- <PERCENT>% ADVANCE, BALANCE BEFORE DELIVERY
+
+Installment / split-payment terms:
+- <PERCENT>% IN <N> DAYS, <PERCENT>% IN <N> DAYS, ...
+- CUSTOM MILESTONE PAYMENT TERMS
+
+Contract / generic terms:
+- PAYMENT ACCORDING TO CONTRACT
+- OTHER PAYMENT TERMS
+
+Normalization logic:
+
+A. If only a number of days is given with no explicit reference point:
+   output <N> DAYS NET
+
+B. If the text refers to invoice date, facture date, factuurdatum, fecha factura, invoicing date, or equivalent:
+   output <N> DAYS FROM INVOICE
+
+C. If the text refers to receipt of invoice:
+   output <N> DAYS FROM RECEIPT OF INVOICE
+
+D. If the text refers to end of month or month-end:
+   output <N> DAYS EOM
+   or a calendar-based due-date form if that is more accurate
+
+E. If the text refers to a fixed calendar payment point:
+   normalize to a calendar-based due-date expression
+
+F. If the text includes a cash discount:
+   preserve the timing and discount in the normalized result
+   Example logic:
+   - WITHIN 14 DAYS 2% CASH DISCOUNT -> 14 DAYS NET WITH 2% CASH DISCOUNT
+   - WITHIN 30 DAYS 3% CASH DISCOUNT -> 30 DAYS NET WITH 3% CASH DISCOUNT
+
+G. If the text refers to advance payment, deposit payment, payment on receipt, or upfront payment:
+   normalize to IMMEDIATE PAYMENT, ADVANCE PAYMENT, or <PERCENT>% ADVANCE depending on what is explicitly stated
+
+H. If the text refers only to cash payment wording without a clear day count:
+   normalize to IMMEDIATE PAYMENT
+
+I. If the text is a generic label such as others, according to contract, or similar:
+   normalize to the closest standard English business term such as:
+   - OTHER PAYMENT TERMS
+   - PAYMENT ACCORDING TO CONTRACT
+
+J. If the input is zero-like, empty-like, or non-informative:
+   normalize to OTHER PAYMENT TERMS
+
+K. If two clauses are present and one is duplicated, keep only one meaningfully normalized output
+
+L. If two clauses are present and both carry meaning, combine them into one concise normalized English payment term
+
+Consistency requirements:
+
+- Similar meanings must always map to the same standardized output
+- Use uppercase only
+- Convert written numbers into digits
+- Preserve meaningful discounts, percentages, timing anchors, and milestone structure
+- Prefer the shortest clear English form that preserves the business meaning
+- Do not output raw noisy text
+- Do not output UNKNOWN
+
+Output requirements:
+
+- Return valid JSON only
+- Return one JSON object
+- Each key must be the original raw payment term exactly as provided
+- Each value must be the corresponding standardized English payment term
+- No markdown
+- No explanation
+- No commentary
+
+Input batch:
+{batch}"""
+
+
 def payment_terms_agent(df, api_key=None, **kwargs):
     """Normalize payment terms: regex pre-pass + concurrent AI for unknowns."""
     cost = CostTracker()
@@ -757,6 +914,18 @@ def payment_terms_agent(df, api_key=None, **kwargs):
     all_unique = df[target_col].dropna().astype(str).unique().tolist()
     all_unique = [v for v in all_unique if v.strip() and v.lower() not in ('nan', 'none', 'null')]
     print(f"  Payment Terms: {len(all_unique)} unique values from {len(df)} rows")
+
+    # AI-based English standardization (all unique values, no regex shortcut)
+    english_mapping = {}
+    if all_unique:
+        eng_sys = "Output JSON only. Follow the exact format specified."
+        eng_ai_mapping, cost = _batch_ai_mapping(
+            all_unique, eng_sys, _PAYMENT_TERMS_ENGLISH_PROMPT, api_key,
+            batch_size=80, max_workers=4, cost_tracker=cost,
+        )
+        for k, v in eng_ai_mapping.items():
+            if isinstance(v, str):
+                english_mapping[k] = v
 
     det_mapping = {}
     unresolved = []
@@ -781,11 +950,14 @@ def payment_terms_agent(df, api_key=None, **kwargs):
             if isinstance(v, dict):
                 det_mapping[k] = v
 
-    norm_col = "PAYMENT TERMS_NORMALIZED"
+    english_col = f"{target_col}_Normalized"
+    if english_col in df.columns:
+        english_col = f"{target_col}_Normalized_{target_col}"
+    norm_col = "Payment term duration"
     discount_col = "Discount_Payment_Terms"
     doubt_col = "Payment_Terms_Doubt"
     if norm_col in df.columns:
-        norm_col = f"PAYMENT TERMS_NORMALIZED_{target_col}"
+        norm_col = f"Payment term duration_{target_col}"
     if discount_col in df.columns:
         discount_col = f"Discount_Payment_Terms_{target_col}"
     if doubt_col in df.columns:
@@ -796,10 +968,12 @@ def payment_terms_agent(df, api_key=None, **kwargs):
         return r.get(field, '') if isinstance(r, dict) else ''
 
     s = df[target_col].astype(str)
+    english_norm_values = s.apply(lambda v: english_mapping.get(str(v), ''))
     norm_values = s.apply(lambda v: _get_field(v, 'days'))
     discount_values = s.apply(lambda v: _get_field(v, 'discount'))
     doubt_values = s.apply(lambda v: _get_field(v, 'doubt'))
     _upsert_adjacent_columns(df, target_col, [
+        (english_col, english_norm_values),
         (norm_col, norm_values),
         (discount_col, discount_values),
         (doubt_col, doubt_values),
@@ -809,27 +983,155 @@ def payment_terms_agent(df, api_key=None, **kwargs):
     doubt_count = (df[doubt_col] == 'Yes').sum()
 
     msg = (
-        f"[OK] Created '{norm_col}', '{discount_col}', '{doubt_col}' from '{target_col}' "
+        f"[OK] Created '{english_col}', '{norm_col}', '{discount_col}', '{doubt_col}' from '{target_col}' "
         f"({len(det_mapping)} terms, {discount_count} discounts, {doubt_count} doubts)"
     )
     return df, msg, cost.summary()
 
 
 def normalize_region_agent(df, api_key=None, **kwargs):
-    """Normalize regions: country-to-region lookup + AI for unknowns."""
+    """Normalize regions: country-to-region lookup + AI for unknowns.
+
+    Enhancements:
+    - Accepts region_col kwarg for user-selected column from frontend.
+    - Falls back to deriving Region from Country when no Region column exists.
+    - Resolves blank/empty Region cells using the corresponding Country value.
+    - Sends country context alongside region values to AI for better accuracy.
+    - Returns 4-tuple (df, message, cost_summary, metrics).
+    """
     cost = CostTracker()
     custom_sys = kwargs.get('custom_system', '')
     custom_inst = kwargs.get('custom_instructions', '')
 
-    target_col = _find_column(df, ['region'])
-    if not target_col:
-        return df, "[WARN] No Region column found.", cost.summary()
+    # ── Column resolution: user-selected kwarg takes priority ──
+    region_col_kwarg = kwargs.get('region_col')
+    if region_col_kwarg and region_col_kwarg in df.columns:
+        if 'region' in region_col_kwarg.lower():
+            region_col = region_col_kwarg
+            country_col = _find_column(df, ['country', 'supplier_country', 'supplier country', 'vendor country'])
+        else:
+            # User selected a country-type column → force fallback mode
+            region_col = None
+            country_col = region_col_kwarg
+    else:
+        region_col = _find_column(df, ['region'])
+        country_col = _find_column(df, ['country', 'supplier_country', 'supplier country', 'vendor country'])
 
-    all_unique = df[target_col].dropna().astype(str).unique().tolist()
+    # ── Fallback mode: no Region column → derive entirely from Country ──
+    if not region_col:
+        if not country_col:
+            return df, "[WARN] No Region or Country column found.", cost.summary(), None
+
+        all_countries = df[country_col].dropna().astype(str).str.strip().unique().tolist()
+        all_countries = [c for c in all_countries if c and c.lower() not in ('nan', 'none', '')]
+        print(f"  Region (from Country): {len(all_countries)} unique country values")
+
+        n_det_fallback = 0
+        det_mapping = {}
+        unresolved = []
+        for c in all_countries:
+            region = _lookup_region(c)
+            if not region:
+                std = _lookup_country(c)
+                if std:
+                    region = _lookup_region(std)
+            if region:
+                det_mapping[c] = region
+                n_det_fallback += 1
+            else:
+                unresolved.append(c)
+
+        print(f"  Deterministic: {len(det_mapping)} resolved, {len(unresolved)} -> AI")
+
+        n_ai_fallback = 0
+        if unresolved:
+            sys_msg = custom_sys or "JSON only"
+            prompt_tmpl = custom_inst if custom_inst else (
+                "Map each country to its region: 'NA', 'EMEA', 'APAC', 'LATAM'.\n\n"
+                "Input: {batch}\nReturn JSON: {{ \"Country\": \"Region\" }}"
+            )
+            ai_mapping, cost = _batch_ai_mapping(
+                unresolved, sys_msg, prompt_tmpl, api_key,
+                batch_size=80, max_workers=4, cost_tracker=cost,
+            )
+            n_ai_fallback = len(ai_mapping)
+            det_mapping.update(ai_mapping)
+
+        new_col = f"Norm_Region_{country_col}"
+        normalized = df[country_col].astype(str).str.strip().map(det_mapping).fillna('')
+        _upsert_adjacent_column(df, country_col, new_col, normalized)
+
+        n_total = len(df)
+        empty_mask = df[country_col].isna() | (df[country_col].astype(str).str.strip() == '')
+        n_empty = int(empty_mask.sum())
+        n_normalized = int((normalized != '').sum())
+        n_unresolved_fallback = len(unresolved) - n_ai_fallback
+
+        metrics = {
+            "n_total": n_total,
+            "n_empty": n_empty,
+            "n_normalized": n_normalized,
+            "n_deterministic": n_det_fallback,
+            "n_ai": n_ai_fallback,
+            "n_from_country": n_normalized,
+            "n_unresolved": n_unresolved_fallback,
+            "ai_errors": [],
+        }
+
+        msg = (f"[OK] No Region column present, thus Region column populated "
+               f"on the basis of Country column. {len(det_mapping)} mappings -> **{new_col}**.")
+        return df, msg, cost.summary(), metrics
+
+    # ── Normal mode: Region column exists ──
+    _BLANK_VALS = ('', 'nan', 'none')
+
+    all_unique = df[region_col].dropna().astype(str).unique().tolist()
+    all_unique = [v for v in all_unique if v.strip() and v.strip().lower() not in _BLANK_VALS]
     print(f"  Region: {len(all_unique)} unique values from {len(df)} rows")
 
-    country_col = _find_column(df, ['country', 'supplier_country', 'supplier country', 'vendor country'])
+    # ── Handle blank / empty Region cells via Country ──
+    blank_mask = df[region_col].isna() | df[region_col].astype(str).str.strip().str.lower().isin(_BLANK_VALS)
+    blank_region_mapping = {}  # row_index -> resolved region
 
+    if blank_mask.any() and country_col:
+        blank_rows = df.loc[blank_mask]
+        country_groups = {}  # country_str -> [row_indices]
+        for idx, row in blank_rows.iterrows():
+            cv = str(row[country_col]).strip()
+            if cv and cv.lower() not in _BLANK_VALS:
+                country_groups.setdefault(cv, []).append(idx)
+
+        unresolved_countries = []
+        for cv, indices in country_groups.items():
+            region = _lookup_region(cv)
+            if not region:
+                std = _lookup_country(cv)
+                if std:
+                    region = _lookup_region(std)
+            if region:
+                for idx in indices:
+                    blank_region_mapping[idx] = region
+            else:
+                unresolved_countries.append(cv)
+
+        if unresolved_countries:
+            sys_msg = custom_sys or "JSON only"
+            prompt_tmpl_blank = (
+                "Map each country to its region: 'NA', 'EMEA', 'APAC', 'LATAM'.\n\n"
+                "Input: {batch}\nReturn JSON: {{ \"Country\": \"Region\" }}"
+            )
+            ai_country_map, cost = _batch_ai_mapping(
+                unresolved_countries, sys_msg, prompt_tmpl_blank, api_key,
+                batch_size=80, max_workers=4, cost_tracker=cost,
+            )
+            for cv, indices in country_groups.items():
+                if cv in ai_country_map:
+                    for idx in indices:
+                        blank_region_mapping[idx] = ai_country_map[cv]
+
+        print(f"  Blank regions filled from Country: {len(blank_region_mapping)}")
+
+    # ── Deterministic resolution of non-blank region values ──
     det_mapping = {}
     unresolved = []
     for v in all_unique:
@@ -841,14 +1143,17 @@ def normalize_region_agent(df, api_key=None, **kwargs):
         else:
             unresolved.append(v)
 
+    n_det_direct = len(det_mapping)
+
+    # ── Country-based inference for unresolved region values ──
+    region_countries = {}  # region_val -> set of country values (for AI context)
     if unresolved and country_col:
-        country_to_val = {}
         for idx, row in df.iterrows():
-            rv = str(row[target_col]).strip()
+            rv = str(row[region_col]).strip()
             cv = str(row[country_col]).strip()
-            if rv in unresolved and cv:
-                country_to_val.setdefault(rv, set()).add(cv)
-        for rv, countries in country_to_val.items():
+            if rv in unresolved and cv and cv.lower() not in _BLANK_VALS:
+                region_countries.setdefault(rv, set()).add(cv)
+        for rv, countries in region_countries.items():
             for c in countries:
                 region = _lookup_region(c)
                 if not region:
@@ -860,25 +1165,76 @@ def normalize_region_agent(df, api_key=None, **kwargs):
                     break
         unresolved = [v for v in unresolved if v not in det_mapping]
 
+    n_det_inferred = len(det_mapping) - n_det_direct
+
     print(f"  Deterministic: {len(det_mapping)} resolved, {len(unresolved)} -> AI")
 
+    # ── AI fallback with enriched country context ──
+    n_ai_normal = 0
     if unresolved:
+        enriched_vals = []
+        for rv in unresolved:
+            countries = region_countries.get(rv, set())
+            if countries:
+                country_str = ', '.join(sorted(countries))
+                enriched_vals.append(f"{rv} (countries: {country_str})")
+            else:
+                enriched_vals.append(rv)
+
         sys_msg = custom_sys or "JSON only"
         prompt_tmpl = custom_inst if custom_inst else (
-            "Map to: 'NA', 'EMEA', 'APAC', 'LATAM'.\n\n"
+            "Map each region value to one of: 'NA', 'EMEA', 'APAC', 'LATAM'.\n"
+            "Each value may include associated country names in parentheses as hints.\n"
+            "Return keys as the original region value (without the parenthetical).\n\n"
             "Input: {batch}\nReturn JSON: {{ \"Original\": \"Standardized\" }}"
         )
-        ai_mapping, cost = _batch_ai_mapping(
-            unresolved, sys_msg, prompt_tmpl, api_key,
+        ai_mapping_raw, cost = _batch_ai_mapping(
+            enriched_vals, sys_msg, prompt_tmpl, api_key,
             batch_size=80, max_workers=4, cost_tracker=cost,
         )
-        det_mapping.update(ai_mapping)
+        for key, val in ai_mapping_raw.items():
+            clean_key = key.split(' (countries:')[0].strip() if ' (countries:' in key else key
+            if clean_key in unresolved:
+                det_mapping[clean_key] = val
+                n_ai_normal += 1
+            else:
+                det_mapping[key] = val
+                n_ai_normal += 1
 
-    new_col = f"Norm_Region_{target_col}"
-    normalized = df[target_col].astype(str).map(det_mapping).fillna(df[target_col])
-    _upsert_adjacent_column(df, target_col, new_col, normalized)
+    # ── Assemble output column ──
+    new_col = f"Norm_Region_{region_col}"
+    normalized = df[region_col].astype(str).map(det_mapping).fillna(df[region_col])
 
-    return df, f"[OK] Normalized {len(det_mapping)} regions -> **{new_col}**.", cost.summary()
+    if blank_region_mapping:
+        for idx, region_val in blank_region_mapping.items():
+            normalized.at[idx] = region_val
+
+    _upsert_adjacent_column(df, region_col, new_col, normalized)
+
+    blank_count = len(blank_region_mapping)
+    n_total = len(df)
+    n_blank_total = int(blank_mask.sum())
+    n_empty_final = n_blank_total - blank_count
+    n_unresolved_final = len([v for v in all_unique if v not in det_mapping])
+
+    metrics = {
+        "n_total": n_total,
+        "n_empty": n_empty_final,
+        "n_normalized": n_det_direct + n_det_inferred + n_ai_normal + blank_count,
+        "n_deterministic": n_det_direct + n_det_inferred,
+        "n_ai": n_ai_normal,
+        "n_from_country": blank_count,
+        "n_unresolved": n_unresolved_final,
+        "ai_errors": [],
+    }
+
+    msg_parts = [f"[OK] Normalized {len(det_mapping)} regions"]
+    if blank_count:
+        msg_parts.append(f"{blank_count} blank rows filled from Country")
+    msg_parts.append(f"-> **{new_col}**")
+    msg = ' | '.join(msg_parts) + '.'
+
+    return df, msg, cost.summary(), metrics
 
 
 def normalize_plant_agent(df, api_key=None, **kwargs):
@@ -977,6 +1333,34 @@ def assess_supplier_country(df, **kwargs):
 
     total_rows = len(df)
     pop_mask = df[country_col].notna() & (df[country_col].astype(str).str.strip() != "")
+    n_populated = int(pop_mask.sum())
+    pct = (n_populated / total_rows * 100) if total_rows > 0 else 0
+
+    return {
+        "population": {
+            "n_populated": n_populated,
+            "n_total": total_rows,
+            "pct_populated": round(pct, 1),
+            "warn": pct < 60,
+        },
+    }
+
+
+def assess_region(df, **kwargs):
+    """
+    Assess the dataset for region normalization.
+    Returns population stats for the selected region/country column.
+    """
+    region_col = kwargs.get('region_col')
+
+    if not region_col or region_col not in df.columns:
+        return {
+            "population": None,
+            "error": f"Column '{region_col}' not found." if region_col else "No column specified.",
+        }
+
+    total_rows = len(df)
+    pop_mask = df[region_col].notna() & (df[region_col].astype(str).str.strip() != "")
     n_populated = int(pop_mask.sum())
     pct = (n_populated / total_rows * 100) if total_rows > 0 else 0
 

@@ -4,11 +4,13 @@ import math
 import os
 import io
 import re as _re
+import threading
 import uuid
 import warnings
 from flask import Flask, request, jsonify, send_file
 from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS
+from openpyxl import Workbook
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
@@ -75,6 +77,70 @@ class AppState:
         self.import_id: str | None = None
 
 state = AppState()
+
+# ── Fast XLSX writer + background pre-generation cache ────────────────────────
+
+_cache_gen = 0                            # bumped on every state.df change
+_cache_buf: io.BytesIO | None = None      # finished XLSX bytes (in memory)
+_cache_thread: threading.Thread | None = None
+
+
+def _build_xlsx_buf(df) -> io.BytesIO:
+    """Build XLSX in memory using openpyxl write_only (Module 1 approach).
+
+    pd.to_excel with xlsxwriter constant_memory + BytesIO silently drops cell
+    data — this method is both correct and faster.
+    """
+    CHUNK = 5000
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet("Normalized Data")
+    ws.append([str(c) for c in df.columns])
+    for start in range(0, len(df), CHUNK):
+        chunk = df.iloc[start:start + CHUNK]
+        for row in chunk.itertuples(index=False, name=None):
+            ws.append([None if (isinstance(v, float) and pd.isna(v)) else v for v in row])
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+def _pregenerate_xlsx(df_snapshot, gen_id):
+    """Background thread: build XLSX buffer from a snapshot."""
+    global _cache_buf
+    try:
+        buf = _build_xlsx_buf(df_snapshot)
+        if gen_id == _cache_gen:  # only store if not already invalidated
+            _cache_buf = buf
+            logger.info("XLSX cache ready (gen=%s, %s bytes)", gen_id, len(buf.getvalue()))
+    except Exception as e:
+        logger.error("XLSX pre-generation failed: %s", e)
+
+
+def _trigger_xlsx_pregeneration():
+    """Snapshot state.df and start background XLSX generation."""
+    global _cache_gen, _cache_buf, _cache_thread
+    if state.df is None:
+        return
+    _cache_gen += 1
+    _cache_buf = None
+    snapshot = state.df.copy()
+    _cache_thread = threading.Thread(
+        target=_pregenerate_xlsx, args=(snapshot, _cache_gen), daemon=True,
+    )
+    _cache_thread.start()
+
+
+def _get_xlsx_bytes() -> io.BytesIO:
+    """Return XLSX buffer — waits for background thread if it's still running."""
+    if _cache_thread is not None and _cache_thread.is_alive():
+        logger.info("Download requested — waiting for background XLSX generation…")
+        _cache_thread.join()
+    if _cache_buf is not None:
+        return io.BytesIO(_cache_buf.getvalue())
+    # No background generation was triggered — build on the fly
+    return _build_xlsx_buf(state.df)
+
 
 def get_api_key():
     try:
@@ -424,7 +490,8 @@ def select_table():
         
     state.df = state.data_vault[table_key].copy()
     state.filename = table_key.split('::')[0]
-    
+    _trigger_xlsx_pregeneration()
+
     # Return 10-row preview for UI
     preview_df = state.df.head(10).fillna("").astype(str)
     
@@ -445,6 +512,23 @@ def assess_supplier_country_api():
     try:
         from agents.normalization import assess_supplier_country
         result = assess_supplier_country(state.df, **kwargs)
+        return jsonify(result)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/assess-region', methods=['POST'])
+def assess_region_api():
+    if state.df is None:
+        return jsonify({"error": "No file loaded"}), 400
+
+    data = request.json
+    kwargs = data.get('kwargs', {})
+
+    try:
+        from agents.normalization import assess_region
+        result = assess_region(state.df, **kwargs)
         return jsonify(result)
     except Exception as e:
         import traceback
@@ -490,12 +574,15 @@ def run_normalization():
         if isinstance(result, tuple) and len(result) >= 2:
             modified_df, message = result[0], result[1]
             state.df = modified_df
+            _trigger_xlsx_pregeneration()
             response = {"message": message, "columns": [str(c) for c in state.df.columns]}
             if len(result) >= 4 and result[3] is not None:
                 if agent_id == "currency_conversion":
                     response["conversion_metrics"] = result[3]
                 elif agent_id == "supplier_country":
                     response["country_norm_metrics"] = result[3]
+                elif agent_id == "region":
+                    response["region_norm_metrics"] = result[3]
             return jsonify(response)
         else:
             return jsonify({"error": "Unexpected return format from agent"}), 500
@@ -587,6 +674,7 @@ def reset_normalization():
             # Fallback: re-copy the first (or only) table
             first_key = next(iter(state.data_vault))
             state.df = state.data_vault[first_key].copy()
+        _trigger_xlsx_pregeneration()
         return jsonify({"ok": True, "rows": len(state.df) if state.df is not None else 0})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -606,20 +694,16 @@ def reset_state():
 def download():
     if state.df is None:
         return jsonify({"error": "No file loaded"}), 400
-        
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-        state.df.to_excel(writer, index=False, sheet_name='Normalized Data')
-        
-    buffer.seek(0)
-    
-    download_name = state.filename.rsplit('.', 1)[0] + "_normalized.xlsx" if state.filename else "normalized_data.xlsx"
-    
+
+    base = state.filename.rsplit('.', 1)[0] if state.filename else "normalized_data"
+
+    buf = _get_xlsx_bytes()
+
     return send_file(
-        buffer,
-        download_name=download_name,
+        buf,
+        download_name=f"{base}_normalized.xlsx",
         as_attachment=True,
-        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     )
 
 if __name__ == '__main__':

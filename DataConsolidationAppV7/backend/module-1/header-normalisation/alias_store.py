@@ -39,7 +39,20 @@ _RAW_ALIASES = _aliases_mod._RAW_ALIASES
 
 ALIAS_CAP = 75
 
-ALIASES_STORE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "knowledge_base")
+def _resolve_knowledge_base_dir() -> str:
+    """Return a writable knowledge_base directory, aware of PyInstaller frozen mode."""
+    if getattr(sys, "frozen", False):
+        import shutil
+        app_data = os.path.dirname(sys.executable)
+        writable_kb = os.path.join(app_data, "knowledge_base")
+        bundled_kb = os.path.join(sys._MEIPASS, "knowledge_base")  # type: ignore[attr-defined]
+        if not os.path.exists(writable_kb) and os.path.exists(bundled_kb):
+            shutil.copytree(bundled_kb, writable_kb)
+        return writable_kb
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "knowledge_base")
+
+
+ALIASES_STORE_DIR = _resolve_knowledge_base_dir()
 LEARNED_ALIASES_FILE = os.path.join(ALIASES_STORE_DIR, "learned_aliases.json")
 SNAPSHOT_DIR = os.path.join(ALIASES_STORE_DIR, "snapshots")
 

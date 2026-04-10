@@ -688,14 +688,14 @@ export default function DataLoading({
                         onClick={() => zipInputRef.current?.click()}
                         className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
                       >
-                        <FileText className="w-3.5 h-3.5" /> Browse Files
+                        <FileText className="w-3.5 h-3.5 cursor-pointer" /> Browse Files
                       </button>
                       <button
                         type="button"
                         onClick={() => folderInputRef.current?.click()}
                         className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
                       >
-                        <FolderOpen className="w-3.5 h-3.5" /> Browse Folder
+                        <FolderOpen className="w-3.5 h-3.5 cursor-pointer" /> Browse Folder
                       </button>
                     </div>
                   </div>

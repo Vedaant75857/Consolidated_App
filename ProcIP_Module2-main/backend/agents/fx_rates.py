@@ -11,6 +11,7 @@ MONTH_ORDER = ["Jan","Feb","Mar","Apr","May","Jun", "Jul","Aug","Sep","Oct","Nov
 TARGET_CURRENCY = "USD"
 
 def _candidate_reference_paths():
+    import sys as _sys
     base_dir = os.path.dirname(__file__)
     env_path = os.getenv('MONTHLY_FX_REFERENCE_PATH')
     candidates = [
@@ -18,8 +19,12 @@ def _candidate_reference_paths():
         os.path.join(base_dir, '..', '..', 'FX_rates_table.xlsx'),
         os.path.join(base_dir, '..', '..', '..', 'FX_rates_table.xlsx'),
         os.path.join(base_dir, '..', 'data', 'FX_rates_table.xlsx'),
-        os.path.join(base_dir, '..', '..', '..', 'DataConsolidationAppV7', 'backend', 'data', 'FX_rates_table.xlsx')
+        os.path.join(base_dir, '..', '..', '..', 'DataConsolidationAppV7', 'backend', 'data', 'FX_rates_table.xlsx'),
     ]
+    # PyInstaller frozen bundle: check next to the exe and in _MEIPASS
+    if getattr(_sys, "frozen", False):
+        candidates.append(os.path.join(os.path.dirname(_sys.executable), "FX_rates_table.xlsx"))
+        candidates.append(os.path.join(_sys._MEIPASS, "FX_rates_table.xlsx"))  # type: ignore[attr-defined]
     return [os.path.abspath(path) for path in candidates if path]
 
 def resolve_fx_reference_path(reference_path=None):

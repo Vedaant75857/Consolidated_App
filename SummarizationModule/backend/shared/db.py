@@ -1,9 +1,18 @@
 import json
 import os
 import sqlite3
+import sys
 from typing import Any
 
-SESSIONS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sessions")
+
+def _resolve_sessions_dir() -> str:
+    """Return a writable sessions directory, aware of PyInstaller frozen mode."""
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(sys.executable), "sessions_module3")
+    return os.path.join(os.path.dirname(os.path.dirname(__file__)), "sessions")
+
+
+SESSIONS_DIR = _resolve_sessions_dir()
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 
 

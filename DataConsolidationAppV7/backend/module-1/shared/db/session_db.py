@@ -8,11 +8,23 @@ Connections are cached for reuse within the same process.
 import os
 import re
 import sqlite3
+import sys
 import time
 import threading
 from collections import OrderedDict
 
-_DB_DIR = os.path.join(os.getcwd(), ".sessions")
+
+def _resolve_sessions_dir() -> str:
+    """Return the writable .sessions/ directory, aware of PyInstaller frozen mode."""
+    explicit = os.environ.get("SESSION_DB_DIR")
+    if explicit:
+        return explicit
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(sys.executable), ".sessions")
+    return os.path.join(os.getcwd(), ".sessions")
+
+
+_DB_DIR = _resolve_sessions_dir()
 os.makedirs(_DB_DIR, exist_ok=True)
 
 _db_cache: "OrderedDict[str, sqlite3.Connection]" = OrderedDict()
