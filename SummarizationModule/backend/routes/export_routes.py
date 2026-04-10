@@ -1,7 +1,7 @@
 from flask import Blueprint, Response, jsonify, request
 
 from shared.db import get_session_db, get_meta, session_exists
-from services.export_service import generate_csv
+from services.email.export_service import generate_csv
 
 export_bp = Blueprint("export", __name__)
 

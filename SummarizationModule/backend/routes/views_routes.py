@@ -4,9 +4,9 @@ import threading
 from flask import Blueprint, jsonify, request
 
 from shared.db import get_session_db, get_meta, set_meta, session_exists
-from services.view_engine import get_available_views, compute_views
-from services.ai_summary import generate_summary_for_view
-from services.data_quality import run_executive_summary
+from services.views.view_engine import get_available_views, compute_views
+from services.dashboard.ai_summary import generate_summary_for_view
+from services.spend_quality_assessment.data_quality import run_executive_summary
 
 logger = logging.getLogger(__name__)
 

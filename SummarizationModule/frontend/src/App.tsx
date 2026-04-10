@@ -41,10 +41,10 @@ import {
   getProcurementViews,
 } from "./api/client";
 import { ErrorBoundary } from "./components/common/ui";
-import DataLoading from "./components/upload/DataLoading";
+import DataLoading from "./components/data_preview/DataLoading";
 import ColumnMappingStep from "./components/mapping/ColumnMappingStep";
 import ViewSelectionStep from "./components/views/ViewSelectionStep";
-import DataQualityStep from "./components/dashboard/DataQualityStep";
+import DataQualityStep from "./components/spend_quality_assessment/DataQualityStep";
 import Dashboard from "./components/dashboard/Dashboard";
 import ProcurementViewsStep from "./components/procurement/ProcurementViewsStep";
 import ContextModal from "./components/email/ContextModal";

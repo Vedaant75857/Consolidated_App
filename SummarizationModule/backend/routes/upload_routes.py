@@ -6,8 +6,8 @@ import zipfile
 from flask import Blueprint, jsonify, request
 
 from shared.db import get_session_db, set_meta, get_meta, delete_meta, get_all_meta_keys, session_exists
-from services.column_mapper import STANDARD_FIELDS
-from services.file_loader import (
+from services.mapping.column_mapper import STANDARD_FIELDS
+from services.upload.file_loader import (
     load_zip_to_session,
     load_single_file,
     collect_column_info,

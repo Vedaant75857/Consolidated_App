@@ -7,12 +7,12 @@ from typing import Any
 import pandas as pd
 
 from shared.ai_client import call_ai_json
-from shared.db import get_meta, set_meta
+from shared.db import set_meta
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# 28 Standard Fields (sorted alphabetically by displayName)
+# 31 Standard Fields (sorted alphabetically by displayName)
 # ---------------------------------------------------------------------------
 
 STANDARD_FIELDS: list[dict[str, Any]] = [
@@ -164,11 +164,32 @@ STANDARD_FIELDS: list[dict[str, Any]] = [
         "aliases": ["PO Date", "Order Date", "Purchase Order Date"],
     },
     {
-        "fieldKey": "po_material_description",
-        "displayName": "PO Material Description",
+        "fieldKey": "invoice_description",
+        "displayName": "Invoice Description",
         "expectedType": "string",
-        "description": "Description of the material or item on the purchase order",
-        "aliases": ["Material Description", "Item Description", "PO Description"],
+        "description": "Free-text description from the invoice line item",
+        "aliases": ["Invoice Desc", "Invoice Line Description", "Invoice Text", "Inv Description"],
+    },
+    {
+        "fieldKey": "po_description",
+        "displayName": "PO Description",
+        "expectedType": "string",
+        "description": "Description of the purchase order line item",
+        "aliases": ["PO Desc", "Purchase Order Description", "PO Line Description", "PO Text", "PO Material Description"],
+    },
+    {
+        "fieldKey": "material_description",
+        "displayName": "Material Description",
+        "expectedType": "string",
+        "description": "Description of the material or item",
+        "aliases": ["Material Desc", "Item Description", "Material Text", "Product Description"],
+    },
+    {
+        "fieldKey": "gl_account_description",
+        "displayName": "GL Account Description",
+        "expectedType": "string",
+        "description": "Description of the General Ledger account",
+        "aliases": ["GL Desc", "GL Description", "General Ledger Description", "Account Description", "GL Account Desc"],
     },
     {
         "fieldKey": "po_material_number",
@@ -356,10 +377,30 @@ PER_FIELD_HINTS: dict[str, str] = {
   "order date", "purchase order date".
 - DO NOT confuse with: invoice date, goods receipt date, contract date.""",
 
-    "po_material_description": """PO MATERIAL DESCRIPTION:
-- Description of the material/item on the PO. Look for "material description",
-  "item description", "PO description", "PO line item description".
-- Free-text. DO NOT confuse with material number/code or vendor name.""",
+    "invoice_description": """INVOICE DESCRIPTION:
+- Free-text description from the invoice line item. Look for "invoice description",
+  "invoice line description", "invoice text", "inv description".
+- DO NOT confuse with PO description, material description, or GL account description.
+- Typically contains what was billed on the invoice line.""",
+
+    "po_description": """PO DESCRIPTION:
+- Description of the purchase order line item. Look for "PO description",
+  "purchase order description", "PO line description", "PO text",
+  "PO material description".
+- DO NOT confuse with invoice description, material description, or GL account description.
+- Describes what was ordered on the PO.""",
+
+    "material_description": """MATERIAL DESCRIPTION:
+- Description of the material or item (master data). Look for "material description",
+  "item description", "material text", "product description".
+- DO NOT confuse with invoice description, PO description, or GL account description.
+- Often a master-data description tied to a material/item number.""",
+
+    "gl_account_description": """GL ACCOUNT DESCRIPTION:
+- Description of the General Ledger account. Look for "GL description",
+  "GL account description", "general ledger description", "account description".
+- DO NOT confuse with invoice description, PO description, or material description.
+- Values are typically accounting category names like "Office Supplies", "Travel Expenses".""",
 
     "po_material_number": """PO MATERIAL NUMBER:
 - Material or item number on the PO. Look for "material number", "material code",
@@ -563,7 +604,7 @@ def build_typed_table(
     Returns:
         Cast report with per-field stats.
     """
-    from services.file_loader import _get_registry
+    from services.upload.file_loader import _get_registry
 
     registry = _get_registry(conn)
     data_tables = [r["data_table"] for r in registry]

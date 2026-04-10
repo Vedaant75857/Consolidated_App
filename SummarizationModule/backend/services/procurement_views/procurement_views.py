@@ -6,7 +6,7 @@ This is used purely for informational feasibility checks -- no computation.
 
 from typing import Any
 
-from services.column_mapper import STANDARD_FIELDS
+from services.mapping.column_mapper import STANDARD_FIELDS
 
 PROCUREMENT_VIEW_REGISTRY: list[dict[str, Any]] = [
     {
@@ -66,7 +66,7 @@ PROCUREMENT_VIEW_REGISTRY: list[dict[str, Any]] = [
         "requiredFields": [
             "invoice_line_qty",
             "invoice_line_qty_uom",
-            "po_material_description",
+            "material_description",
             "po_material_number",
             "local_spend",
             "supplier",
@@ -120,7 +120,7 @@ PROCUREMENT_VIEW_REGISTRY: list[dict[str, Any]] = [
             "invoice_line_qty",
             "plant_code",
             "plant_name",
-            "po_material_description",
+            "material_description",
             "po_material_number",
             "local_spend",
             "supplier",
@@ -135,7 +135,7 @@ PROCUREMENT_VIEW_REGISTRY: list[dict[str, Any]] = [
             "invoice_line_qty_uom",
             "payment_terms",
             "plant_code",
-            "po_material_description",
+            "material_description",
             "po_material_number",
             "price_per_uom",
             "local_spend",
@@ -156,7 +156,7 @@ PROCUREMENT_VIEW_REGISTRY: list[dict[str, Any]] = [
         "requiredFields": [
             "contract_indicator",
             "invoice_line_qty",
-            "po_material_description",
+            "material_description",
             "po_material_number",
             "price_per_uom",
             "local_spend",
@@ -205,7 +205,7 @@ PROCUREMENT_VIEW_REGISTRY: list[dict[str, Any]] = [
         "requiredFields": [
             "contract_indicator",
             "invoice_po_number",
-            "po_material_description",
+            "material_description",
             "po_material_number",
             "local_spend",
             "supplier",

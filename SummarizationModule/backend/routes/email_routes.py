@@ -3,7 +3,7 @@ import logging
 from flask import Blueprint, jsonify, request
 
 from shared.db import get_meta, session_exists, get_session_db
-from services.email_generator import generate_email, build_fallback_email
+from services.email.email_generator import generate_email, build_fallback_email
 
 logger = logging.getLogger(__name__)
 

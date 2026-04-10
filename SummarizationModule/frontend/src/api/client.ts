@@ -193,35 +193,61 @@ export function cleanupSession(sessionId: string) {
   }
 }
 
-/* ── Executive Summary (DQA) ─────────────────────────────────────────── */
+/* ── Spend Quality Assessment (Executive Summary) ────────────────────── */
 
-export interface ExecutiveSummaryColumn {
-  columnName: string;
-  parameterKey: string;
-  fillRate: number;
-  mapped: boolean;
-  stats: Record<string, any>;
-  insight: string;
+export interface DatePivotResult {
+  years: number[];
+  months: string[];
+  cells: Record<string, Record<string, number>>;
+  feasible: boolean;
+  message?: string;
 }
 
-export interface ExecutiveSummaryGroup {
-  group: string;
-  columns: ExecutiveSummaryColumn[];
+export interface ParetoThresholdMetrics {
+  totalSpend: number;
+  transactionCount: number;
+  uniqueTransactions: number;
+  supplierCount: number;
 }
 
-export interface FillRateSummaryItem {
+export interface ParetoAnalysisResult {
+  thresholds: number[];
+  metrics: Record<string, ParetoThresholdMetrics>;
+  feasible: boolean;
+  message?: string;
+  totalDatasetSpend: number;
+}
+
+export interface DescriptionTop10Item {
+  description: string;
+  spend: number;
+}
+
+export interface DescriptionBackendStats {
+  avgLength: number;
+  multiWordCount: number;
+  multiWordSpend: number;
+  nullProxyCount: number;
+  nullProxySpend: number;
+  totalPopulated: number;
+  totalSpend: number;
+}
+
+export interface DescriptionQualityItem {
   fieldKey: string;
   displayName: string;
-  filledRows: number;
-  totalRows: number;
-  fillRate: number;
-  uniqueValues: number;
+  mapped: boolean;
+  spendCovered: number | null;
+  top10: DescriptionTop10Item[];
+  backendStats: DescriptionBackendStats | null;
+  aiInsight: string;
 }
 
 export interface ExecutiveSummaryResult {
   totalRows: number;
-  parameters: ExecutiveSummaryGroup[];
-  fillRateSummary: FillRateSummaryItem[];
+  datePivot: DatePivotResult;
+  paretoAnalysis: ParetoAnalysisResult;
+  descriptionQuality: DescriptionQualityItem[];
 }
 
 export async function getExecutiveSummary(

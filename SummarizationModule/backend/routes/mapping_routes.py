@@ -3,13 +3,13 @@ import logging
 from flask import Blueprint, jsonify, request
 
 from shared.db import get_session_db, get_meta, set_meta, session_exists
-from services.column_mapper import (
+from services.mapping.column_mapper import (
     STANDARD_FIELDS,
     deterministic_match,
     ai_map_columns,
     build_typed_table,
 )
-from services.procurement_views import get_procurement_view_availability
+from services.procurement_views.procurement_views import get_procurement_view_availability
 
 logger = logging.getLogger(__name__)
 mapping_bp = Blueprint("mapping", __name__)
