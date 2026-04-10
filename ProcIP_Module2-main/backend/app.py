@@ -74,6 +74,7 @@ class AppState:
         self.df = None
         self.filename = None
         self.data_vault = {}
+        self.raw_vault = {}
         self.import_id: str | None = None
 
 state = AppState()
@@ -164,7 +165,8 @@ def upload_file():
     filename = file.filename.lower()
     buffer = file.read()
     
-    state.data_vault = {} 
+    state.data_vault = {}
+    state.raw_vault = {}
     inventory = []
     
     try:
@@ -185,6 +187,7 @@ def upload_file():
                                 df = pd.read_excel(excel_file, sheet_name=sheet, header=None)
                                 if not df.empty:
                                     state.data_vault[key] = df
+                                    state.raw_vault[key] = df.copy()
                                     inventory.append({"table_key": key, "rows": len(df), "cols": len(df.columns)})
                         elif lower.endswith('.csv'):
                             data = zf.read(name)
@@ -192,6 +195,7 @@ def upload_file():
                             df = pd.read_csv(io.BytesIO(data), header=None)
                             if not df.empty:
                                 state.data_vault[key] = df
+                                state.raw_vault[key] = df.copy()
                                 inventory.append({"table_key": key, "rows": len(df), "cols": len(df.columns)})
                     except Exception as e:
                         logger.error("Failed parsing %s: %s", name, e, exc_info=True)
@@ -205,12 +209,14 @@ def upload_file():
                         df = pd.read_excel(excel_file, sheet_name=sheet, header=None)
                         if not df.empty:
                             state.data_vault[key] = df
+                            state.raw_vault[key] = df.copy()
                             inventory.append({"table_key": key, "rows": len(df), "cols": len(df.columns)})
                 elif filename.endswith('.csv'):
                     key = f"{file.filename}::"
                     df = pd.read_csv(io.BytesIO(buffer), header=None)
                     if not df.empty:
                         state.data_vault[key] = df
+                        state.raw_vault[key] = df.copy()
                         inventory.append({"table_key": key, "rows": len(df), "cols": len(df.columns)})
             except Exception as e:
                 logger.error("Failed parsing directly uploaded file %s: %s", file.filename, e, exc_info=True)
@@ -230,17 +236,12 @@ def upload_file():
 def get_raw_preview():
     data = request.get_json(silent=True) or {}
     table_key = data.get('tableKey') or request.args.get('tableKey')
-    if table_key not in state.data_vault:
+    if table_key not in state.raw_vault:
         return jsonify({"error": "Table not found"}), 404
-    
-    df = state.data_vault[table_key]
+
+    df = state.raw_vault[table_key]
     preview_df = df.head(50).fillna("").astype(str).replace(["<NA>", "nan", "NaT", "None"], "")
     raw_list = preview_df.values.tolist()
-    
-    columns = [str(c) for c in df.columns]
-    if any(c.strip() for c in columns):
-        raw_list.insert(0, columns)
-        
     return jsonify({"rawPreview": raw_list})
 
 @app.route('/api/get-preview', methods=['GET'])
@@ -428,40 +429,45 @@ def set_header_row():
     table_key = data.get('tableKey')
     row_index = data.get('rowIndex')
     custom_names = data.get('customNames', {})
-    
-    if table_key not in state.data_vault: return jsonify({"error": "Table not found"}), 404
-    df = state.data_vault[table_key]
-    
-    if row_index is None or not (0 <= row_index < len(df)):
+
+    if table_key not in state.raw_vault:
+        return jsonify({"error": "Table not found"}), 404
+    raw_df = state.raw_vault[table_key]
+
+    if row_index is None or not (0 <= row_index < len(raw_df)):
         return jsonify({"error": "Invalid row index"}), 400
-        
-    new_headers = df.iloc[row_index].fillna("").astype(str).tolist()
+
+    # Build headers from the selected row in the immutable raw data
+    new_headers = raw_df.iloc[row_index].fillna("").astype(str).tolist()
     for col_idx_str, custom_name in custom_names.items():
         try:
             col_idx = int(col_idx_str)
-            if custom_name.strip(): new_headers[col_idx] = custom_name.strip()
-        except ValueError:
+            if 0 <= col_idx < len(new_headers) and custom_name.strip():
+                new_headers[col_idx] = custom_name.strip()
+        except (ValueError, IndexError):
             pass
-            
+
+    # Deduplicate and fill blanks
     final_headers = []
     seen = set()
     for i, h in enumerate(new_headers):
         h = h.strip()
-        if not h: h = f"Unnamed_{i}"
-        
+        if not h:
+            h = f"Unnamed_{i}"
         original = h
         counter = 1
         while h in seen:
             h = f"{original}_{counter}"
             counter += 1
-            
         seen.add(h)
         final_headers.append(h)
-        
-    df.columns = final_headers
-    state.data_vault[table_key] = df.iloc[row_index + 1:].reset_index(drop=True)
-    
-    return jsonify({"message": "Header row updated successfully", "rows": len(state.data_vault[table_key]), "columns": [str(c) for c in state.data_vault[table_key].columns]})
+
+    # Build processed table from raw data below the header row
+    processed = raw_df.iloc[row_index + 1:].copy().reset_index(drop=True)
+    processed.columns = final_headers
+    state.data_vault[table_key] = processed
+
+    return jsonify({"message": "Header row updated successfully", "rows": len(processed), "columns": final_headers})
 
 @app.route('/api/delete-rows', methods=['POST'])
 def delete_rows():
@@ -481,6 +487,7 @@ def delete_rows():
 def delete_table():
     table_key = request.json.get('tableKey')
     if table_key in state.data_vault: del state.data_vault[table_key]
+    if table_key in state.raw_vault: del state.raw_vault[table_key]
     return jsonify({"message": "Table deleted"})
 
 @app.route('/api/select-table', methods=['POST'])
@@ -685,6 +692,7 @@ def reset_state():
     """Full state reset for re-upload scenario."""
     state.df = None
     state.data_vault = {}
+    state.raw_vault = {}
     state.filename = None
     state.import_id = None
     return jsonify({"ok": True})

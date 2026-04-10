@@ -234,7 +234,15 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
         log("error", "Select both a currency column and a spend column before running Currency Conversion.");
         return;
       }
-      // Nothing here — validation is handled by the button UI layer
+      // First click with missing entries: show warning and stop. Second click: proceed.
+      if (assessResult && assessResult.unsupported_currencies.length > 0) {
+        const dateColSelected = currencyDateColumn !== "No date col";
+        const empty = hasEmptyOverrides(fxOverrideMode, assessResult.unsupported_currencies, fxOverridesYearly, fxOverridesMonthly, dateColSelected, scopeYear);
+        if (empty && !showFxValidation) {
+          setShowFxValidation(true);
+          return;
+        }
+      }
     }
     setActiveOp(agentId);
     const opLabel = OPERATIONS.find(o => o.id === agentId)?.label || agentId;
@@ -331,7 +339,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       setLoadingMessage?.("");
       setLoadingOnCancel?.(null);
     }
-  }, [apiKey, fetchOperationPreview, log, supplierCountryColumn, regionColumn, dateFormat, currencySpendColumn, currencyCodeColumn, currencyDateColumn, scopeYear, fxOverrideMode, fxOverridesYearly, fxOverridesMonthly, setLoadingMessage, setLoadingOnCancel]);
+  }, [apiKey, fetchOperationPreview, log, supplierCountryColumn, regionColumn, dateFormat, currencySpendColumn, currencyCodeColumn, currencyDateColumn, scopeYear, fxOverrideMode, fxOverridesYearly, fxOverridesMonthly, showFxValidation, assessResult, setLoadingMessage, setLoadingOnCancel]);
 
   const handleAssess = useCallback(async () => {
     if (!currencyCodeColumn) {
@@ -1184,36 +1192,14 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                     </div>
                   )}
 
-                  {/* Confirm & Run / Proceed anyway */}
-                  {showFxValidation ? (
-                    <button
-                      onClick={() => handleRunOperation(singleOp.id)}
-                      disabled={isRunning || loading}
-                      className="inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-xl bg-amber-500 hover:bg-amber-600 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {isRunning ? <Loader2 className="w-4 h-4 animate-spin" /> : <AlertTriangle className="w-4 h-4" />}
-                      {isRunning ? "Converting…" : "Proceed anyway"}
-                    </button>
-                  ) : (
-                    <PrimaryButton
-                      onClick={() => {
-                        // Check for missing entries — if found, show warning + rename button instead of running
-                        if (assessResult && assessResult.unsupported_currencies.length > 0) {
-                          const dateColSelected = currencyDateColumn !== "No date col";
-                          const empty = hasEmptyOverrides(fxOverrideMode, assessResult.unsupported_currencies, fxOverridesYearly, fxOverridesMonthly, dateColSelected, scopeYear);
-                          if (empty) {
-                            setShowFxValidation(true);
-                            return;
-                          }
-                        }
-                        handleRunOperation(singleOp.id);
-                      }}
-                      disabled={isRunning || loading}
-                    >
-                      {isRunning ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ArrowRight className="w-4 h-4 mr-2" />}
-                      {isRunning ? "Converting…" : "Confirm & Run"}
-                    </PrimaryButton>
-                  )}
+                  {/* Confirm & Run */}
+                  <PrimaryButton
+                    onClick={() => handleRunOperation(singleOp.id)}
+                    disabled={isRunning || loading}
+                  >
+                    {isRunning ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ArrowRight className="w-4 h-4 mr-2" />}
+                    {isRunning ? "Converting…" : "Confirm & Run"}
+                  </PrimaryButton>
                 </div>
               )}
 

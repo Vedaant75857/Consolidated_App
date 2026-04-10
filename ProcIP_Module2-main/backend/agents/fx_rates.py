@@ -312,6 +312,12 @@ def run_conversion(
         fx_rate_series = pd.Series(rate_values, index=df.index, dtype="Float64")
     fx_rate_series[~valid_all] = pd.NA
 
+    # Convert nullable Float64 to standard float64 (pd.NA → np.nan)
+    # so downstream .fillna("") in preview/download endpoints doesn't crash
+    if fx_rate_series.dtype == "Float64":
+        fx_rate_series = fx_rate_series.astype("float64")
+    converted_series = converted_series.astype("float64")
+
     spend_idx = df.columns.get_loc(spend_col)
     df.insert(spend_idx + 1, fx_col, fx_rate_series)
     df.insert(spend_idx + 2, out_col, converted_series)
