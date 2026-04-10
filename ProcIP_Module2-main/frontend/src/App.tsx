@@ -24,7 +24,7 @@ const NORM_OPS = [
   { id: "plant",               label: "Plant / Site",        icon: Building2 },
 ];
 
-const DISABLED_OPS = new Set(["supplier_name", "plant"]);
+const DISABLED_OPS = new Set(["supplier_name"]);
 
 /* ── Sidebar step descriptor ── */
 const SIDEBAR_STEPS = [

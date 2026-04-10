@@ -1238,51 +1238,62 @@ def normalize_region_agent(df, api_key=None, **kwargs):
 
 
 def normalize_plant_agent(df, api_key=None, **kwargs):
-    """Normalize plant/site names: deterministic cleanup + concurrent AI."""
+    """Normalize plant/site names across ALL matching columns: deterministic cleanup + concurrent AI."""
     cost = CostTracker()
     custom_sys = kwargs.get('custom_system', '')
     custom_inst = kwargs.get('custom_instructions', '')
 
-    target_col = _find_column(df, ['plant', 'site', 'location', 'facility'])
-    if not target_col:
+    # Find ALL columns matching plant/site keywords, skipping already-normalized output cols
+    plant_keywords = ['plant', 'site', 'location', 'facility']
+    target_cols = [
+        c for c in df.columns
+        if not c.startswith("Norm_Plant_")
+        and any(kw in str(c).lower() for kw in plant_keywords)
+    ]
+
+    if not target_cols:
         return df, "[WARN] No Plant column found.", cost.summary()
 
-    all_unique = df[target_col].dropna().astype(str).unique().tolist()
-    print(f"  Plant: {len(all_unique)} unique values from {len(df)} rows")
+    messages = []
+    for target_col in target_cols:
+        all_unique = df[target_col].dropna().astype(str).unique().tolist()
+        print(f"  Plant ({target_col}): {len(all_unique)} unique values from {len(df)} rows")
 
-    det_mapping = {}
-    unresolved = []
-    for v in all_unique:
-        cleaned = re.sub(r'[-_]\d{3,}$', '', str(v).strip())
-        cleaned = re.sub(r'\s*\(.*?\)\s*$', '', cleaned)
-        cleaned = _MULTI_SPACE.sub(' ', cleaned).strip()
-        if cleaned and cleaned != v:
-            det_mapping[v] = cleaned
-        else:
-            unresolved.append(v)
+        det_mapping = {}
+        unresolved = []
+        for v in all_unique:
+            cleaned = re.sub(r'[-_]\d{3,}$', '', str(v).strip())
+            cleaned = re.sub(r'\s*\(.*?\)\s*$', '', cleaned)
+            cleaned = _MULTI_SPACE.sub(' ', cleaned).strip()
+            if cleaned and cleaned != v:
+                det_mapping[v] = cleaned
+            else:
+                unresolved.append(v)
 
-    print(f"  Deterministic: {len(det_mapping)} resolved, {len(unresolved)} -> AI")
+        print(f"  Deterministic ({target_col}): {len(det_mapping)} resolved, {len(unresolved)} -> AI")
 
-    if unresolved:
-        sys_msg = custom_sys or "JSON only"
-        prompt_tmpl = custom_inst if custom_inst else (
-            "Clean Plant/Site/Location names:\n"
-            "- Remove trailing numeric codes, noise, parenthetical codes.\n"
-            "- Normalize whitespace and capitalization.\n"
-            "- Keep location meaning.\n\n"
-            "Input: {batch}\nReturn JSON: {{ \"Original\": \"Cleaned\" }}"
-        )
-        ai_mapping, cost = _batch_ai_mapping(
-            unresolved, sys_msg, prompt_tmpl, api_key,
-            batch_size=80, max_workers=4, cost_tracker=cost,
-        )
-        det_mapping.update(ai_mapping)
+        if unresolved:
+            sys_msg = custom_sys or "JSON only"
+            prompt_tmpl = custom_inst if custom_inst else (
+                "Clean Plant/Site/Location names:\n"
+                "- Remove trailing numeric codes, noise, parenthetical codes.\n"
+                "- Normalize whitespace and capitalization.\n"
+                "- Keep location meaning.\n\n"
+                "Input: {batch}\nReturn JSON: {{ \"Original\": \"Cleaned\" }}"
+            )
+            ai_mapping, cost = _batch_ai_mapping(
+                unresolved, sys_msg, prompt_tmpl, api_key,
+                batch_size=80, max_workers=4, cost_tracker=cost,
+            )
+            det_mapping.update(ai_mapping)
 
-    new_col = f"Norm_Plant_{target_col}"
-    normalized = df[target_col].astype(str).map(det_mapping).fillna(df[target_col])
-    _upsert_adjacent_column(df, target_col, new_col, normalized)
+        new_col = f"Norm_Plant_{target_col}"
+        normalized = df[target_col].astype(str).map(det_mapping).fillna(df[target_col])
+        _upsert_adjacent_column(df, target_col, new_col, normalized)
+        messages.append(f"**{target_col}** → {len(det_mapping)} values → **{new_col}**")
 
-    return df, f"[OK] Normalized {len(det_mapping)} plant names -> **{new_col}**.", cost.summary()
+    summary = "[OK] Normalized " + "; ".join(messages) + "."
+    return df, summary, cost.summary()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
