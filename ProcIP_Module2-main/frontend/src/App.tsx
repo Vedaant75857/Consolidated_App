@@ -48,6 +48,7 @@ export default function App() {
   const [filename, setFilename]               = useState<string | null>(null);
   const [loading, setLoading]                 = useState(false);
   const [loadingMessage, setLoadingMessage]   = useState("");
+  const [uploadProgress, setUploadProgress]   = useState<number | null>(null);
   const [loadingOnCancel, setLoadingOnCancel] = useState<(() => void) | null>(null);
   const [error, setError]                     = useState<string | null>(null);
 
@@ -172,16 +173,38 @@ export default function App() {
   const doUpload = async () => {
     if (!file) return;
     setLoading(true);
-    setLoadingMessage("Uploading and extracting your data…");
+    setUploadProgress(0);
+    setLoadingMessage("Uploading your data…");
     setError(null);
     addLog("UPLOAD", "info", "Uploading and extracting " + file.name + "…");
     try {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("sessionId", sessionId);
-      const res = await fetch("/api/upload", { method: "POST", body: formData });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+
+      const data: any = await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", "/api/upload");
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            setUploadProgress(Math.round((e.loaded / e.total) * 100));
+          }
+        };
+        xhr.upload.onload = () => {
+          setUploadProgress(null);
+          setLoadingMessage("Processing and extracting your data…");
+        };
+        xhr.onload = () => {
+          try {
+            const json = JSON.parse(xhr.responseText);
+            if (xhr.status >= 400) reject(new Error(json.error || "Upload failed"));
+            else resolve(json);
+          } catch { reject(new Error("Invalid server response")); }
+        };
+        xhr.onerror = () => reject(new Error("Network error during upload"));
+        xhr.send(formData);
+      });
+
       setInventory(data.inventory || []);
       setFilename(file.name);
       addLog("UPLOAD", "success", "Extracted " + (data.inventory?.length || 0) + " table(s) successfully.");
@@ -192,6 +215,7 @@ export default function App() {
     } finally {
       setLoading(false);
       setLoadingMessage("");
+      setUploadProgress(null);
     }
   };
 
@@ -484,7 +508,7 @@ export default function App() {
 
         {/* ─ Live pipeline activity (sticky bottom bar) ─ */}
         <StatusLog entries={statusLog} onClear={() => setStatusLog([])} />
-        <LoadingOverlay isLoading={!!loadingMessage} message={loadingMessage} onCancel={loadingOnCancel || undefined} />
+        <LoadingOverlay isLoading={!!loadingMessage} message={loadingMessage} onCancel={loadingOnCancel || undefined} progress={uploadProgress} />
 
         <StepChangeWarningDialog
           open={!!pendingInvalidation}

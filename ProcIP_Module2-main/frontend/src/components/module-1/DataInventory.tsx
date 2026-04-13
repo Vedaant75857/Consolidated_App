@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Loader2, ArrowRight, Trash2, RowsIcon, Check, Database, ChevronDown, ChevronRight, X, ExternalLink } from "lucide-react";
 import { motion } from "motion/react";
 import { SurfaceCard, PrimaryButton } from "../common/ui";
+import VirtualPreviewTable from "./VirtualPreviewTable";
 
 interface DataInventoryProps {
   inventory: any[];
@@ -260,45 +261,12 @@ const FormattedTable: React.FC<{ tableKey: string, setError: any, setLoading: an
         </div>
       )}
       <div className="p-4">
-        <div className="overflow-x-auto border border-neutral-200 rounded-lg max-h-[500px] shadow-sm">
-          <table className="min-w-full text-xs font-mono bg-white">
-            <thead className="bg-neutral-50 sticky top-0 z-10 shadow-sm border-b border-neutral-200">
-              <tr>
-                <th className="px-2 py-2 text-center w-8 border-r border-neutral-200 bg-neutral-50 sticky left-0 z-20 shadow-[1px_0_0_#e5e5e5]"></th>
-                <th className="px-2 py-2 text-center font-bold text-neutral-500 border-r border-neutral-200 w-12 whitespace-nowrap hidden md:table-cell">#</th>
-                {preview.columns.map((col, i) => (
-                  <th key={col + i} className="px-3 py-2 text-left font-bold text-neutral-500 whitespace-nowrap border-r border-neutral-200 last:border-r-0">
-                    {col}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-neutral-100">
-              {preview.rows.map((row, ri) => (
-                <tr key={ri} className={`transition-colors ${selectedRowIds.has(ri) ? "bg-red-50/50" : "hover:bg-neutral-50"}`}>
-                  <td className="px-2 py-1.5 text-center border-r border-neutral-100 bg-inherit sticky left-0 z-10 shadow-[1px_0_0_#f5f5f5]">
-                    <input type="checkbox" checked={selectedRowIds.has(ri)} onChange={() => toggleRowSelection(ri)} className="w-3.5 h-3.5 text-red-500 rounded border-neutral-300 focus:ring-red-500 cursor-pointer" />
-                  </td>
-                  <td className="px-2 py-1.5 text-center text-[10px] text-neutral-400 border-r border-neutral-100 hidden md:table-cell bg-inherit">
-                    {ri}
-                  </td>
-                  {preview.columns.map((col, ci) => (
-                    <td key={col + ci} className="px-3 py-1.5 whitespace-nowrap text-neutral-700 max-w-[200px] truncate border-r border-neutral-100 last:border-r-0">
-                      {row[col] != null && row[col] !== "" ? String(row[col]) : <span className="text-neutral-300 italic">null</span>}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-              {preview.rows.length === 0 && (
-                <tr>
-                  <td colSpan={preview.columns.length + 2} className="px-3 py-8 text-center text-neutral-400 italic">
-                    No rows currently exist.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+        <VirtualPreviewTable
+          columns={preview.columns}
+          rows={preview.rows}
+          selectedRowIds={selectedRowIds}
+          onToggleRow={toggleRowSelection}
+        />
         <div className="mt-2 text-[10px] text-neutral-500 text-right">Previewing top {preview.rows.length} rows</div>
       </div>
     </div>

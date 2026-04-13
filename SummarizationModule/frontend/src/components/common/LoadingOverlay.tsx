@@ -6,6 +6,8 @@ interface LoadingOverlayProps {
   isLoading: boolean;
   message?: string;
   onCancel?: () => void;
+  /** 0-100 upload progress; null/undefined = indeterminate spinner */
+  progress?: number | null;
 }
 
 const LIGHT_BG =
@@ -13,7 +15,7 @@ const LIGHT_BG =
 const DARK_BG =
   "linear-gradient(135deg, rgba(38,38,38,0.82) 0%, rgba(48,12,18,0.65) 100%)";
 
-export default function LoadingOverlay({ isLoading, message, onCancel }: LoadingOverlayProps) {
+export default function LoadingOverlay({ isLoading, message, onCancel, progress }: LoadingOverlayProps) {
   const { theme } = useTheme();
   if (!isLoading) return null;
 
@@ -70,6 +72,20 @@ export default function LoadingOverlay({ isLoading, message, onCancel }: Loading
         >
           {message || "Processing\u2026"}
         </p>
+
+        {typeof progress === "number" && (
+          <div className="w-full flex flex-col items-center gap-1.5">
+            <div className="w-full h-2 rounded-full bg-red-100 dark:bg-red-900/40 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-red-500 to-rose-500 transition-all duration-300 ease-out"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+            <span className="text-xs tabular-nums font-medium text-red-500/80 dark:text-red-400/80">
+              {progress}%
+            </span>
+          </div>
+        )}
 
         {onCancel && (
           <button

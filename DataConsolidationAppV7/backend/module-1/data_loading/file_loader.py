@@ -9,7 +9,7 @@ import sqlite3
 import zipfile
 from typing import Any, Iterator
 
-import openpyxl
+import pandas as pd
 
 from shared.db import (
     safe_table_name,
@@ -70,42 +70,51 @@ def _pad_row(row: list, max_cols: int) -> list:
     return list(row)
 
 
+def _df_row_to_list(row: tuple) -> list:
+    """Convert a DataFrame row tuple, replacing NaN with None."""
+    return [None if pd.isna(v) else v for v in row]
+
+
 def _load_excel_sheet(
     conn: sqlite3.Connection,
     table_key: str,
-    wb: openpyxl.Workbook,
+    excel_file: pd.ExcelFile,
     sheet_name: str,
     warnings: list[dict],
     commit: bool = True,
 ) -> None:
-    """Load a single Excel sheet using an already-open workbook (single-pass)."""
+    """Load a single Excel sheet via calamine (fast Rust parser).
+
+    Streams rows directly from the DataFrame into SQLite without
+    materializing a full intermediate list.
+    """
     try:
-        ws = wb[sheet_name]
-        all_rows = [list(r) for r in ws.iter_rows(values_only=True)]
-        if not all_rows:
+        df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
+        if df.empty:
             return
 
-        header_raw = all_rows[0]
-        max_cols = max(len(r) for r in all_rows)
-        if max_cols <= 0:
-            max_cols = len(header_raw) if header_raw else 1
+        max_cols = len(df.columns)
+        header_raw = _df_row_to_list(next(df.itertuples(index=False, name=None)))
 
+        # Raw table: stream all DataFrame rows
         raw_cols = [f"RAW_{i + 1}" for i in range(max_cols)]
         raw_name = safe_table_name("raw", table_key)
         store_table_streaming(
             conn, raw_name, raw_cols,
-            (_pad_row(r, max_cols) for r in all_rows),
+            (_df_row_to_list(r) for r in df.itertuples(index=False, name=None)),
             commit=commit,
         )
 
+        # Data table: skip header row, clean + add metadata columns
         base_header = _clean_header(header_raw)
         file_name = _file_name_from_key(table_key)
         header = _META_COLUMNS + base_header
         num_base = len(base_header)
 
-        def _clean_gen():
+        def _clean_gen() -> Iterator[list]:
             record_id = 0
-            for r in all_rows[1:]:
+            for raw_tuple in df.iloc[1:].itertuples(index=False, name=None):
+                r = _df_row_to_list(raw_tuple)
                 if _is_empty_row(r):
                     continue
                 record_id += 1
@@ -128,34 +137,48 @@ def _load_csv(
     warnings: list[dict],
     commit: bool = True,
 ) -> None:
-    """Load a CSV file using a single parse pass."""
+    """Load a CSV file, streaming rows into SQLite without holding full list.
+
+    Uses three lightweight passes over the same in-memory text string:
+    1. Quick scan for header and max column width
+    2. Stream into raw table
+    3. Stream into data table (skip header, clean cells)
+    """
     try:
         text = csv_bytes.decode("utf-8", errors="replace")
-        all_rows = list(_iter_csv_rows(text))
-        if not all_rows:
+
+        # Pass 1: find header and max_cols (no storage)
+        header_raw: list[str] | None = None
+        max_cols = 0
+        for row in _iter_csv_rows(text):
+            if header_raw is None:
+                header_raw = row
+            max_cols = max(max_cols, len(row))
+        if header_raw is None or max_cols <= 0:
             return
 
-        header_raw = all_rows[0]
-        max_cols = max(len(r) for r in all_rows)
-        if max_cols <= 0:
-            max_cols = len(header_raw) if header_raw else 1
-
+        # Pass 2: stream raw table
         raw_cols = [f"RAW_{i + 1}" for i in range(max_cols)]
         raw_name = safe_table_name("raw", table_key)
         store_table_streaming(
             conn, raw_name, raw_cols,
-            (_pad_row(r, max_cols) for r in all_rows),
+            (_pad_row(r, max_cols) for r in _iter_csv_rows(text)),
             commit=commit,
         )
 
+        # Pass 3: stream data table (skip header row)
         base_header = _clean_header(header_raw)
         file_name = _file_name_from_key(table_key)
         header = _META_COLUMNS + base_header
         num_base = len(base_header)
 
-        def _clean_gen():
+        def _clean_gen() -> Iterator[list]:
             record_id = 0
-            for r in all_rows[1:]:
+            first = True
+            for r in _iter_csv_rows(text):
+                if first:
+                    first = False
+                    continue
                 if _is_empty_row(r):
                     continue
                 record_id += 1
@@ -191,17 +214,15 @@ def load_zip_to_session(conn: sqlite3.Connection, file_data: bytes) -> tuple[dic
 
             if lower.endswith((".xlsx", ".xlsm")):
                 data = zf.read(name)
-                wb = openpyxl.load_workbook(
-                    io.BytesIO(data), read_only=True, data_only=True,
-                )
+                excel_file = pd.ExcelFile(io.BytesIO(data), engine="calamine")
                 try:
-                    for sheet in wb.sheetnames:
+                    for sheet in excel_file.sheet_names:
                         key = f"{name}::{sheet}"
                         _load_excel_sheet(
-                            conn, key, wb, sheet, warnings, commit=False,
+                            conn, key, excel_file, sheet, warnings, commit=False,
                         )
                 finally:
-                    wb.close()
+                    excel_file.close()
 
             elif lower.endswith(".csv"):
                 key = f"{name}::"

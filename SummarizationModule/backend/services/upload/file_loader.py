@@ -6,7 +6,7 @@ import sqlite3
 import zipfile
 from typing import Any
 
-from openpyxl import load_workbook
+import pandas as pd
 
 
 # ──────────────────────────────────────────────
@@ -81,22 +81,21 @@ def _parse_csv_bytes(data: bytes, filename: str) -> tuple[list[list[Any]], list[
 
 
 def _parse_excel_bytes(data: bytes, filename: str) -> dict[str, tuple[list[list[Any]], list[str]]]:
-    """Returns {sheet_name: (raw_grid, header_names)}."""
-    wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    """Returns {sheet_name: (raw_grid, header_names)}. Uses calamine (Rust) for speed."""
+    excel_file = pd.ExcelFile(io.BytesIO(data), engine="calamine")
     result: dict[str, tuple[list[list[Any]], list[str]]] = {}
-    for sheet_name in wb.sheetnames:
-        ws = wb[sheet_name]
-        rows = list(ws.iter_rows(values_only=True))
-        if not rows:
+    for sheet_name in excel_file.sheet_names:
+        df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
+        if df.empty:
             continue
         raw_grid = []
-        for row in rows:
-            raw_grid.append([str(c) if c is not None else "" for c in row])
+        for row in df.itertuples(index=False, name=None):
+            raw_grid.append([str(c) if not pd.isna(c) else "" for c in row])
         raw_headers = raw_grid[0]
         headers = _dedupe_headers([_clean_header(h) for h in raw_headers])
         if headers:
             result[sheet_name] = (raw_grid, headers)
-    wb.close()
+    excel_file.close()
     return result
 
 
@@ -379,6 +378,28 @@ def build_preview(conn: sqlite3.Connection, limit: int = 50) -> dict[str, dict[s
         except Exception:
             pass
     return previews
+
+
+def build_single_preview(conn: sqlite3.Connection, table_key: str, limit: int = 50) -> dict[str, Any] | None:
+    """Build a preview for a single table_key. Returns None if not found."""
+    registry = _get_registry(conn)
+    entry = next((r for r in registry if r["table_key"] == table_key), None)
+    if not entry:
+        return None
+    tname = entry["data_table"]
+    try:
+        cursor = conn.execute(f'SELECT * FROM "{tname}" LIMIT {limit}')
+        col_names = [desc[0] for desc in cursor.description]
+        rows = cursor.fetchall()
+        return {
+            "columns": col_names,
+            "rows": [
+                {c: _safe_value(v) for c, v in zip(col_names, row)}
+                for row in rows
+            ],
+        }
+    except Exception:
+        return None
 
 
 # ──────────────────────────────────────────────

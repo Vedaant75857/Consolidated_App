@@ -3,6 +3,7 @@ import { Upload, Loader2, FileText, Database, ArrowRight, FolderOpen, X, KeyRoun
 import { motion } from "motion/react";
 import JSZip from "jszip";
 import { SurfaceCard, EmptyState, PrimaryButton, SecondaryButton, itemVariants } from "../common/ui";
+import VirtualPreviewTable from "./VirtualPreviewTable";
 
 const ACCEPTED_EXTENSIONS = [".csv", ".xlsx", ".xlsm", ".xltx", ".xltm", ".zip"];
 
@@ -92,6 +93,7 @@ interface DataLoadingProps {
   onDeleteTable: (tableKey: string) => void;
   onSetHeaderRow: (tableKey: string, rowIndex: number, customNames?: Record<number, string>) => void;
   onDeleteRows?: (tableKey: string, rowIds: (string | number)[]) => void;
+  onFetchPreview?: (tableKey: string) => void;
 }
 
 function HeaderRowEditor({
@@ -281,6 +283,7 @@ export default function DataLoading({
   onDeleteTable,
   onSetHeaderRow,
   onDeleteRows,
+  onFetchPreview,
 }: DataLoadingProps) {
   const [isDragOver, setIsDragOver] = useState(false);
   const [fileLabel, setFileLabel] = useState<string | null>(null);
@@ -658,7 +661,12 @@ export default function DataLoading({
                   <div className="flex items-center px-6 py-4 hover:bg-neutral-50/50 dark:hover:bg-neutral-800 transition-colors">
                     <button
                       type="button"
-                      onClick={() => { setExpandedTable(isExpanded ? null : inv.table_key); setHeaderEditTable(null); }}
+                      onClick={() => {
+                        const nextKey = isExpanded ? null : inv.table_key;
+                        setExpandedTable(nextKey);
+                        setHeaderEditTable(null);
+                        if (nextKey && !previews[nextKey] && onFetchPreview) onFetchPreview(nextKey);
+                      }}
                       className="flex items-center gap-3 flex-1 min-w-0 text-left"
                     >
                       <div className="w-8 h-8 rounded-lg bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-400 flex items-center justify-center text-xs font-bold shrink-0">
@@ -713,7 +721,12 @@ export default function DataLoading({
 
                       <button
                         type="button"
-                        onClick={() => { setExpandedTable(isExpanded ? null : inv.table_key); setHeaderEditTable(null); }}
+                        onClick={() => {
+                        const nextKey = isExpanded ? null : inv.table_key;
+                        setExpandedTable(nextKey);
+                        setHeaderEditTable(null);
+                        if (nextKey && !previews[nextKey] && onFetchPreview) onFetchPreview(nextKey);
+                      }}
                       >
                         {isExpanded
                           ? <ChevronDown className="w-4 h-4 text-neutral-400 dark:text-neutral-500" />
@@ -755,53 +768,14 @@ export default function DataLoading({
                           </button>
                         </div>
                       )}
-                      <div className="overflow-x-auto border border-neutral-200 dark:border-neutral-700 rounded-lg max-h-80">
-                        <table className="min-w-full text-xs">
-                          <thead className="bg-neutral-50 dark:bg-neutral-800 sticky top-0 z-10">
-                            <tr>
-                              {onDeleteRows && (
-                                <th className="px-2 py-2 text-center font-bold text-neutral-400 dark:text-neutral-500 whitespace-nowrap border-b border-r border-neutral-200 dark:border-neutral-700 w-8" />
-                              )}
-                              <th className="px-2 py-2 text-center font-bold text-neutral-400 dark:text-neutral-500 whitespace-nowrap border-b border-r border-neutral-200 dark:border-neutral-700 w-10">
-                                #
-                              </th>
-                              {preview.columns.map((col) => (
-                                <th key={col} className="px-3 py-2 text-left font-bold text-neutral-500 dark:text-neutral-400 whitespace-nowrap border-b border-neutral-200 dark:border-neutral-700">
-                                  {col}
-                                </th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                            {preview.rows.map((row, ri) => {
-                              const rowId = hasRecordId ? row["RECORD_ID"] : ri;
-                              const isRowSelected = tableSelectedRows.has(rowId);
-                              return (
-                              <tr key={ri} className={`transition-colors ${isRowSelected ? "bg-red-50 dark:bg-red-950/30" : "hover:bg-red-50/30"}`}>
-                                {onDeleteRows && (
-                                  <td className="px-2 py-1.5 text-center border-r border-neutral-100 dark:border-neutral-800">
-                                    <input
-                                      type="checkbox"
-                                      checked={isRowSelected}
-                                      onChange={() => toggleRowSelection(inv.table_key, rowId)}
-                                      className="w-3 h-3 text-red-600 rounded border-neutral-300 focus:ring-red-500"
-                                    />
-                                  </td>
-                                )}
-                                <td className="px-2 py-1.5 text-center text-[10px] text-neutral-400 dark:text-neutral-500 font-mono border-r border-neutral-100 dark:border-neutral-800">
-                                  {hasRecordId ? row["RECORD_ID"] : ri}
-                                </td>
-                                {preview.columns.map((col) => (
-                                  <td key={col} className="px-3 py-1.5 whitespace-nowrap text-neutral-700 dark:text-neutral-300 max-w-[200px] truncate">
-                                    {row[col] != null ? String(row[col]) : <span className="text-neutral-300 dark:text-neutral-600 italic">null</span>}
-                                  </td>
-                                ))}
-                              </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
+                      <VirtualPreviewTable
+                        columns={preview.columns}
+                        rows={preview.rows}
+                        hasRecordId={hasRecordId}
+                        showCheckbox={!!onDeleteRows}
+                        selectedRowIds={tableSelectedRows}
+                        onToggleRow={(rowId) => toggleRowSelection(inv.table_key, rowId)}
+                      />
                       <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1.5">
                         Showing first {preview.rows.length} of {inv.rows.toLocaleString()} rows
                       </p>
@@ -809,7 +783,14 @@ export default function DataLoading({
                     );
                   })()}
 
-                  {isExpanded && !isHeaderEdit && (!preview || preview.columns.length === 0) && (
+                  {isExpanded && !isHeaderEdit && !preview && (
+                    <div className="px-6 pb-4 flex items-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin text-neutral-400" />
+                      <p className="text-xs text-neutral-400 dark:text-neutral-500 italic">Loading preview…</p>
+                    </div>
+                  )}
+
+                  {isExpanded && !isHeaderEdit && preview && preview.columns.length === 0 && (
                     <div className="px-6 pb-4">
                       <p className="text-xs text-neutral-400 dark:text-neutral-500 italic">Empty table — no rows to preview.</p>
                     </div>

@@ -24,7 +24,6 @@ import type {
   EmailContext,
 } from "./types";
 import {
-  uploadFile,
   getSessionState,
   mapColumns,
   confirmMapping,
@@ -101,6 +100,7 @@ export default function App() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("");
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [error, setError] = useState("");
 
   const [file, setFile] = useState<File | null>(null);
@@ -257,15 +257,46 @@ export default function App() {
       setError("Please select a file or folder to upload.");
       return;
     }
-    // Re-upload: wipe existing session cache first
     if (sessionId) {
       await invalidateDownstream(0);
     }
     setLoading(true);
-    setLoadingMessage("Uploading and extracting your data…");
+    setUploadProgress(0);
+    setLoadingMessage("Uploading your data…");
     setError("");
     try {
-      const result = await uploadFile(file);
+      const fd = new FormData();
+      fd.append("file", file);
+
+      const result = await new Promise<{
+        sessionId: string;
+        columns: ColumnInfo[];
+        fileInventory: FileInventoryItem[];
+        previews: Record<string, PreviewData>;
+        warnings: UploadWarning[];
+      }>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", "/api/upload");
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            setUploadProgress(Math.round((e.loaded / e.total) * 100));
+          }
+        };
+        xhr.upload.onload = () => {
+          setUploadProgress(null);
+          setLoadingMessage("Processing and extracting your data…");
+        };
+        xhr.onload = () => {
+          try {
+            const json = JSON.parse(xhr.responseText);
+            if (xhr.status >= 400) reject(new Error(json.error || "Upload failed"));
+            else resolve(json);
+          } catch { reject(new Error("Invalid server response")); }
+        };
+        xhr.onerror = () => reject(new Error("Network error during upload"));
+        xhr.send(fd);
+      });
+
       setSessionId(result.sessionId);
       sessionStorage.setItem(LS_SESSION_KEY, result.sessionId);
       setColumns(result.columns);
@@ -278,6 +309,7 @@ export default function App() {
     } finally {
       setLoading(false);
       setLoadingMessage("");
+      setUploadProgress(null);
     }
   }, [file, sessionId, invalidateDownstream]);
 
@@ -288,6 +320,25 @@ export default function App() {
       doUpload();
     }
   }, [sessionId, maxStepReached, guardedAction, doUpload]);
+
+  /* ──── Lazy preview fetch ──── */
+
+  const fetchPreview = useCallback(
+    async (tableKey: string) => {
+      if (!sessionId) return;
+      try {
+        const res = await fetch(`/api/get-preview?sessionId=${encodeURIComponent(sessionId)}&tableKey=${encodeURIComponent(tableKey)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.preview) {
+          setPreviews((prev) => ({ ...prev, [tableKey]: data.preview }));
+        }
+      } catch {
+        // Silently ignore — user can retry by collapsing/expanding
+      }
+    },
+    [sessionId]
+  );
 
   /* ──── Inventory table operations ──── */
 
@@ -803,6 +854,7 @@ export default function App() {
                         onDeleteTable={handleDeleteTable}
                         onSetHeaderRow={handleSetHeaderRow}
                         onDeleteRows={handleDeleteRows}
+                        onFetchPreview={fetchPreview}
                         importSource={importSource}
                       />
                     )}
@@ -867,7 +919,7 @@ export default function App() {
               </AnimatePresence>
             </div>
           </div>
-          <LoadingOverlay isLoading={!!loadingMessage} message={loadingMessage} />
+          <LoadingOverlay isLoading={!!loadingMessage} message={loadingMessage} progress={uploadProgress} />
         </main>
       </div>
 

@@ -38,7 +38,7 @@ The DataStitcher helps users combine multiple data files into one clean, merged 
 | 9 | Select rows | Use checkboxes in the preview table to select individual rows. |
 | 10 | Delete selected rows | Click "Delete Selected Rows" to remove the checked rows (asks for confirmation first). |
 | 11 | Clear row selection | Click "Clear" to uncheck all selected rows. |
-| 12 | Data preview grid | Scroll through a preview of the table's data (shows the first 50 rows). |
+| 12 | Data preview grid | Scroll through a preview of the table's data (shows the first 50 rows). Previews load on-demand when you expand a table, so the upload step finishes faster. For tables with many columns (30+), columns are virtualized so the browser stays responsive. |
 | 13 | Single table flow | If only one table was uploaded, a "Single Table Flow" option appears that skips the Append Strategy and Merge steps. |
 | 14 | Proceed to Append | Click "Proceed to Append Strategy" to move to the next step. |
 
@@ -210,7 +210,7 @@ The DataStitcher helps users combine multiple data files into one clean, merged 
 | 3 | Theme toggle | Click the sun/moon icon to switch between light and dark mode. |
 | 4 | API key status | The sidebar footer shows whether your API key is set (green) or missing (red). Click it to jump to the Upload step. |
 | 5 | Status log | A collapsible "Live pipeline activity" bar at the bottom shows what the app is doing. Click to expand. Click "Clear" (with confirmation) to empty it. |
-| 6 | Loading overlay | During AI operations, a full-screen overlay shows the current action. Some operations offer a "Cancel" button. |
+| 6 | Loading overlay | During AI operations, a full-screen overlay shows the current action. Some operations offer a "Cancel" button. During file upload, a progress bar shows the upload percentage; once the file reaches the server, the message switches to "Processing". |
 | 7 | Step-change warning | If going back would wipe results from later steps, a warning dialog appears with "Cancel" and "Continue" options. |
 | 8 | Error banner | When something goes wrong, a red error banner appears with the message. Click "Retry" if available. |
 | 9 | Raw Data Preview overlay | Click the table icon to open a full-screen overlay showing raw data from any table (with tab switching). |
@@ -249,7 +249,7 @@ The Normalizer takes a single data table (uploaded directly or received from the
 | 7 | Confirm/cancel header | Click "Confirm" to apply or "Cancel" to discard. |
 | 8 | Delete table | Click trash, then confirm, to remove a table from the session. |
 | 9 | Select and delete rows | Use checkboxes to select rows, then click "Delete Selected Rows" (with confirmation). Click "Clear" to uncheck all. |
-| 10 | Data preview grid | Scroll through a preview of the data (up to 50 rows). |
+| 10 | Data preview grid | Scroll through a preview of the data (up to 50 rows). For tables with many columns (30+), columns are virtualized so the browser stays responsive. |
 | 11 | Proceed with table | Click "Proceed with this Table" to lock in one table and advance to Normalization. |
 
 ### Normalization — Supplier Names
@@ -365,7 +365,7 @@ The Normalizer takes a single data table (uploaded directly or received from the
 | 3 | Theme toggle | Click the sun/moon button to switch between light and dark mode. |
 | 4 | API key status | The sidebar footer shows green ("API Key Set") or red ("API Key Missing"). Click it to jump to Upload. |
 | 5 | Status log | A "Live pipeline activity" bar at the bottom shows what the app is doing. Click to expand. Click trash (with confirmation) to clear. |
-| 6 | Loading overlay | During long operations, a full-screen overlay shows the current action with a spinner. Some operations offer "Cancel". |
+| 6 | Loading overlay | During long operations, a full-screen overlay shows the current action with a spinner. During file upload, a progress bar shows the upload percentage. Some operations offer "Cancel". |
 | 7 | Step-change warning | If going back would reset later work, a "Reset Downstream Progress?" dialog appears with "Cancel" and "Continue" options. |
 | 8 | Error banner | A red banner appears when something goes wrong. Click "Dismiss" to close it. |
 | 9 | Transfer overlay | When sending data to the Summarizer, an animated overlay shows the transfer progress. |
@@ -406,7 +406,7 @@ The Spend Summarizer takes a procurement dataset and produces charts, quality as
 | 8 | Confirm/cancel header | Apply the new header or cancel without changes. |
 | 9 | Delete table | Click trash then confirm to remove a table. |
 | 10 | Select and delete rows | Use checkboxes, then "Delete Selected Rows" (with confirmation). "Clear" unchecks all. |
-| 11 | Data preview grid | Scroll through up to 50 rows of preview data. |
+| 11 | Data preview grid | Scroll through up to 50 rows of preview data. Previews load on-demand when you expand a table, so the upload step finishes faster. For tables with many columns (30+), columns are virtualized so the browser stays responsive. |
 | 12 | Proceed to Map Columns | Click "Proceed to Map Columns" to continue. |
 
 ### Map Columns
@@ -517,7 +517,7 @@ The Spend Summarizer takes a procurement dataset and produces charts, quality as
 | 3 | Back to Home | Click "Back to Home" to return to the landing page. |
 | 4 | Theme toggle | Click sun/moon to switch light/dark mode. |
 | 5 | Hero banner | The top banner shows the current step name, description, and step counter. |
-| 6 | Loading overlay | Full-screen overlay with spinner during long operations. |
+| 6 | Loading overlay | Full-screen overlay with spinner during long operations. During file upload, a progress bar shows the upload percentage; once the file reaches the server, the message switches to "Processing". |
 | 7 | Step-change warning | Warning dialog when going back would reset later work. |
 | 8 | Error banner | Red error banner for steps 1–4 (steps 5–7 handle errors inline). |
 | 9 | Error boundary | If a step crashes, a "Something went wrong" screen appears with "Try Again". |

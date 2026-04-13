@@ -3,6 +3,7 @@ flask-cors>=5.0,<6
 portkey-ai>=2.2,<3
 pydantic>=2.10,<3
 openpyxl>=3.1,<4
+python-calamine>=0.2.0
 reportlab>=4.2,<5
 Pillow>=11,<12
 python-dotenv>=1.0,<2

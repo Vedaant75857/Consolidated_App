@@ -63,7 +63,9 @@
   ],
   "Vendor Code": [
     "FORNITORE",
-    "VENDOR"
+    "VENDOR",
+    "VENDOR MAPPING ID",
+    "VENDOR_ACCT_NO"
   ],
   "Business Unit": [
     "PROFIT CENTER",
@@ -272,5 +274,11 @@
   ],
   "Plant Code": [
     "COUNTRY CODE"
+  ],
+  "Invoice Line Number Quantity": [
+    "UNITS_PURCHASED"
+  ],
+  "PO Line Item Unit Price": [
+    "ITEM_UNIT_PRICE"
   ]
 }

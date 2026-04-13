@@ -30,11 +30,14 @@ A complete list of every Python function in the app, organised by module and ste
 | `build_inventory_from_db` | `data_loading/service.py` | Builds the list of all uploaded tables with their row counts and column info for the sidebar. |
 | `build_files_payload_from_db` | `data_loading/service.py` | Builds the data package the browser needs to show file paths, sheet names, and table keys. |
 | `build_previews_from_db` | `data_loading/service.py` | Builds quick column-and-header previews for every table to show in the UI. |
+| `build_single_preview` | `data_loading/service.py` | Builds a preview (first 50 rows) for one specific table. Used for lazy-loading previews when the user expands a table. |
+| `_df_row_to_list` | `data_loading/file_loader.py` | Converts a single DataFrame row into a plain Python list, replacing NaN with None for downstream compatibility. |
 
 ### Data Preview
 
 | Function | File | What it does |
 |----------|------|--------------|
+| `get_preview` | `routes/data_loading_routes.py` | Returns the first 50 rows of a single table as a preview. Called on-demand when the user expands a table card. |
 | `get_raw_preview` | `routes/data_loading_routes.py` | Sends back the raw grid of a table (before any header is chosen) so the user can pick the right header row. |
 | `get_raw_array_from_table` | `data_loading/file_loader.py` | Reads a chunk of raw rows from the database for the preview screen. |
 
@@ -478,7 +481,8 @@ A complete list of every Python function in the app, organised by module and ste
 
 | Function | File | What it does |
 |----------|------|--------------|
-| `upload` | `routes/upload_routes.py` | Receives uploaded files, creates a new session, loads all tables into the database, and returns previews. |
+| `upload` | `routes/upload_routes.py` | Receives uploaded files, creates a new session, and loads all tables into the database. Returns inventory and column info (previews are loaded lazily). |
+| `get_preview` | `routes/upload_routes.py` | Returns the first 50 rows of a single table as a preview. Called on-demand when the user expands a table card. |
 | `import_from_module` | `routes/upload_routes.py` | Receives data sent from the DataStitcher or Normalizer, creates a session, and loads it. |
 | `delete_table` | `routes/upload_routes.py` | Removes a table from the session and refreshes the inventory and column metadata. |
 | `_safe_sql_name` | `services/upload/file_loader.py` | Cleans up a name so it's safe to use as a database table or column identifier. |
@@ -508,6 +512,7 @@ A complete list of every Python function in the app, organised by module and ste
 | `delete_rows` | `routes/upload_routes.py` | Deletes selected rows from a table and returns an updated preview. |
 | `_safe_value` | `services/upload/file_loader.py` | Cleans up a cell value so it's safe for JSON (e.g. replaces NaN with null). |
 | `build_preview` | `services/upload/file_loader.py` | Builds a limited-row preview of every table in the session for the UI. |
+| `build_single_preview` | `services/upload/file_loader.py` | Builds a preview (first 50 rows) for one specific table. Used for lazy-loading previews when the user expands a table. |
 | `get_raw_preview` | `services/upload/file_loader.py` | Reads a window of raw rows from the backup table for the header-selection screen. |
 | `set_header_row_for_table` | `services/upload/file_loader.py` | Rebuilds a table from the raw grid using the newly chosen header row and any custom name overrides. |
 | `delete_rows_from_table` | `services/upload/file_loader.py` | Deletes rows from a table by their row IDs and returns how many were removed. |

@@ -30,6 +30,7 @@ from data_loading.service import (
     build_inventory_from_db,
     build_files_payload_from_db,
     build_previews_from_db,
+    build_single_preview,
     PREVIEW_ROWS,
 )
 
@@ -57,16 +58,41 @@ def upload():
 
         _raw_arrays, warnings = load_zip_to_session(conn, file_data)
 
-        inv, files_payload, previews = _rebuild_meta(conn, skip_distinct=True)
+        inv = build_inventory_from_db(conn)
+        files_payload = build_files_payload_from_db(conn, skip_distinct=True)
         set_meta(conn, "inv", inv)
         set_meta(conn, "filesPayload", files_payload)
 
         return jsonify({
             "sessionId": session_id,
             "inventory": inv,
-            "previews": previews,
+            "previews": {},
             "warnings": warnings,
         })
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@data_loading_bp.route("/get-preview", methods=["GET", "POST"])
+def get_preview():
+    """Return a single table's preview (first 50 rows). Lazy-loaded by the frontend."""
+    try:
+        if request.method == "POST":
+            body = request.get_json(force=True)
+            session_id = body.get("sessionId")
+            table_key = body.get("tableKey")
+        else:
+            session_id = request.args.get("sessionId")
+            table_key = request.args.get("tableKey")
+
+        if not session_id or not table_key:
+            return jsonify({"error": "sessionId and tableKey are required."}), 400
+
+        conn = get_session_db(session_id)
+        preview = build_single_preview(conn, table_key)
+        if preview is None:
+            return jsonify({"error": "Table not found."}), 404
+        return jsonify({"preview": preview})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 

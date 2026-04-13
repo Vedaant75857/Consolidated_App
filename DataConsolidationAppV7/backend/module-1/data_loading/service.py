@@ -144,3 +144,19 @@ def build_previews_from_db(conn: sqlite3.Connection) -> dict[str, dict]:
                 "rows": read_table(conn, sql_name, PREVIEW_ROWS),
             }
     return previews
+
+
+def build_single_preview(conn: sqlite3.Connection, table_key: str) -> dict | None:
+    """Build a preview for a single table_key. Returns None if not found."""
+    from shared.db import lookup_sql_name
+
+    sql_name = lookup_sql_name(conn, table_key)
+    if not sql_name or not table_exists(conn, sql_name):
+        return None
+    cols = read_table_columns(conn, sql_name)
+    if not cols:
+        return {"columns": [], "rows": []}
+    return {
+        "columns": cols,
+        "rows": read_table(conn, sql_name, PREVIEW_ROWS),
+    }

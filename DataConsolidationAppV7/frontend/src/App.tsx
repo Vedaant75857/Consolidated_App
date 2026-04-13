@@ -41,6 +41,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("");
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [step, setStep] = useState(1);
   const [maxStepReached, setMaxStepReached] = useState(1);
@@ -505,21 +506,43 @@ export default function App() {
       setError("Please select a file or folder to upload.");
       return;
     }
-    // Re-upload: wipe existing session cache first
     if (sessionId) {
       await invalidateDownstream(0);
     }
     setSingleTableMode(false);
     setLoading(true);
-    setLoadingMessage("Uploading and extracting your data...");
+    setUploadProgress(0);
+    setLoadingMessage("Uploading your data…");
     setError(null);
     addLog("Upload", "info", "Uploading and extracting data...");
+
     const formData = new FormData();
     formData.append("file", file);
+
     try {
-      const res = await fetch("/api/upload", { method: "POST", body: formData });
-      if (!res.ok) throw new Error((await res.json()).error || "Failed to upload file");
-      const data = await res.json();
+      const data: any = await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", "/api/upload");
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            setUploadProgress(Math.round((e.loaded / e.total) * 100));
+          }
+        };
+        xhr.upload.onload = () => {
+          setUploadProgress(null);
+          setLoadingMessage("Processing and extracting your data…");
+        };
+        xhr.onload = () => {
+          try {
+            const json = JSON.parse(xhr.responseText);
+            if (xhr.status >= 400) reject(new Error(json.error || "Failed to upload file"));
+            else resolve(json);
+          } catch { reject(new Error("Invalid server response")); }
+        };
+        xhr.onerror = () => reject(new Error("Network error during upload"));
+        xhr.send(formData);
+      });
+
       setSessionId(data.sessionId);
       setInventory(data.inventory);
       setPreviews(data.previews || {});
@@ -538,6 +561,7 @@ export default function App() {
     } finally {
       setLoading(false);
       setLoadingMessage("");
+      setUploadProgress(null);
     }
   };
 
@@ -546,6 +570,19 @@ export default function App() {
       guardedAction(1, doUpload);
     } else {
       doUpload();
+    }
+  };
+
+  const fetchPreview = async (tableKey: string) => {
+    try {
+      const res = await fetch(`/api/get-preview?sessionId=${encodeURIComponent(sessionId)}&tableKey=${encodeURIComponent(tableKey)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.preview) {
+        setPreviews((prev) => ({ ...prev, [tableKey]: data.preview }));
+      }
+    } catch {
+      // Silently ignore — user can retry by collapsing/expanding
     }
   };
 
@@ -1661,6 +1698,7 @@ export default function App() {
                   onDeleteTable={handleDeleteTable}
                   onSetHeaderRow={handleSetHeaderRow}
                   onDeleteRows={handleDeleteRows}
+                  onFetchPreview={fetchPreview}
                 />
 
                 {step === 3 && (
@@ -1801,7 +1839,7 @@ export default function App() {
           </div>
         </div>
         <StatusLog entries={statusLog} onClear={() => setStatusLog([])} />
-        <LoadingOverlay isLoading={aiLoading || !!loadingMessage} message={loadingMessage} onCancel={aiLoading ? cancelAiRequest : undefined} />
+        <LoadingOverlay isLoading={aiLoading || !!loadingMessage} message={loadingMessage} onCancel={aiLoading ? cancelAiRequest : undefined} progress={uploadProgress} />
 
         {mergeOutputs.length > 0 && !outputsPanelOpen && step >= 6 && (
           <motion.button
