@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import ReactDOM from "react-dom";
-import { ArrowRight, Columns3, Loader2, SkipForward, Maximize2, Minimize2, Download, Upload, CheckSquare, Square, ChevronDown, ChevronRight } from "lucide-react";
+import { ArrowRight, Columns3, Loader2, SkipForward, Maximize2, Minimize2, Download, Upload, CheckSquare, Square, ChevronDown, ChevronRight, PenLine } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { PrimaryButton, SecondaryButton, SurfaceCard } from "../common/ui";
 
@@ -79,6 +79,8 @@ function NormTable({
   stdFieldNames,
   onUpdateDecision,
   totalRows,
+  customNameCols,
+  onToggleCustomName,
 }: {
   columns: string[];
   rows: any[];
@@ -86,12 +88,16 @@ function NormTable({
   stdFieldNames: string[];
   onUpdateDecision: (sourceCol: string, patch: Partial<ColDecision>) => void;
   totalRows: number;
+  customNameCols: Set<string>;
+  onToggleCustomName: (sourceCol: string, isCustom: boolean) => void;
 }) {
   const decisionMap = useMemo(() => {
     const m: Record<string, ColDecision> = {};
     for (const d of decisions) m[d.source_col] = d;
     return m;
   }, [decisions]);
+
+  const stdFieldNameSet = useMemo(() => new Set(stdFieldNames), [stdFieldNames]);
 
   return (
     <div className="border border-neutral-300 dark:border-neutral-700 rounded-lg overflow-hidden">
@@ -115,6 +121,9 @@ function NormTable({
                           action,
                           mapped_to: action === "KEEP" ? null : (d?.mapped_to || d?.suggested_std_field || null),
                         });
+                        if (action === "KEEP" || action === "DROP") {
+                          onToggleCustomName(col, false);
+                        }
                       }}
                       className={`w-full px-1.5 py-1 rounded text-[10px] font-bold border cursor-pointer ${ACTION_COLORS[d?.action || "KEEP"]}`}
                     >
@@ -126,7 +135,7 @@ function NormTable({
                 );
               })}
             </tr>
-            {/* Row 2: Standard header mapping dropdowns */}
+            {/* Row 2: Standard header mapping dropdowns (or custom name input) */}
             <tr className="bg-orange-50 dark:bg-orange-950/20">
               <th className="sticky left-0 z-30 bg-orange-50 dark:bg-orange-950/20 px-2 py-1.5 text-[9px] font-bold text-orange-600 dark:text-orange-400 uppercase tracking-wider border-b border-r border-neutral-300 dark:border-neutral-700 whitespace-nowrap">
                 Mapped To
@@ -134,30 +143,78 @@ function NormTable({
               {columns.map((col) => {
                 const d = decisionMap[col];
                 const isKeep = (d?.action || "KEEP") === "KEEP";
+                const isDrop = (d?.action || "KEEP") === "DROP";
+                const isCustom = customNameCols.has(col);
+                const customValue = d?.mapped_to || "";
+                const customWarning = isCustom && customValue.trim() !== "" && stdFieldNameSet.has(customValue.trim())
+                  ? "This matches a standard field — consider using the dropdown instead"
+                  : null;
                 return (
                   <th key={`target-${col}`} className="px-1 py-1 border-b border-r border-neutral-300 dark:border-neutral-700">
-                    <select
-                      value={isKeep ? "" : (d?.mapped_to || "")}
-                      onChange={(e) => onUpdateDecision(col, { mapped_to: e.target.value || null })}
-                      disabled={isKeep}
-                      className={`w-full px-1.5 py-1 rounded text-[10px] font-semibold border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 ${isKeep ? "opacity-50 cursor-not-allowed" : ""}`}
-                    >
-                      <option value="">{isKeep ? col : "-- Unmapped --"}</option>
-                      {!isKeep && d?.top_alternatives && d.top_alternatives.length > 0 && (
-                        <optgroup label="Suggested">
-                          {d.top_alternatives.map((f) => (
-                            <option key={f} value={f}>{f}</option>
-                          ))}
-                        </optgroup>
-                      )}
-                      {!isKeep && (
-                        <optgroup label="All Standard Fields">
-                          {stdFieldNames.filter((f) => !(d?.top_alternatives || []).includes(f)).map((f) => (
-                            <option key={f} value={f}>{f}</option>
-                          ))}
-                        </optgroup>
-                      )}
-                    </select>
+                    {isKeep || isDrop ? (
+                      <select
+                        value=""
+                        disabled
+                        className="w-full px-1.5 py-1 rounded text-[10px] font-semibold border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 opacity-50 cursor-not-allowed"
+                      >
+                        <option value="">{isKeep ? col : "—"}</option>
+                      </select>
+                    ) : (
+                      <div className="flex items-center gap-0.5">
+                        {isCustom ? (
+                          <input
+                            type="text"
+                            value={customValue}
+                            onChange={(e) => onUpdateDecision(col, { mapped_to: e.target.value || null })}
+                            placeholder="Custom name…"
+                            title={customWarning || undefined}
+                            className={`flex-1 min-w-0 px-1.5 py-1 rounded text-[10px] font-semibold border bg-white dark:bg-neutral-900 focus:outline-none focus:ring-1 focus:ring-violet-400 ${
+                              customWarning
+                                ? "border-amber-400 dark:border-amber-600"
+                                : "border-violet-300 dark:border-violet-700"
+                            }`}
+                          />
+                        ) : (
+                          <select
+                            value={d?.mapped_to || ""}
+                            onChange={(e) => onUpdateDecision(col, { mapped_to: e.target.value || null })}
+                            className="flex-1 min-w-0 px-1.5 py-1 rounded text-[10px] font-semibold border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900"
+                          >
+                            <option value="">-- Unmapped --</option>
+                            {d?.top_alternatives && d.top_alternatives.length > 0 && (
+                              <optgroup label="Suggested">
+                                {d.top_alternatives.map((f) => (
+                                  <option key={f} value={f}>{f}</option>
+                                ))}
+                              </optgroup>
+                            )}
+                            <optgroup label="All Standard Fields">
+                              {stdFieldNames.filter((f) => !(d?.top_alternatives || []).includes(f)).map((f) => (
+                                <option key={f} value={f}>{f}</option>
+                              ))}
+                            </optgroup>
+                          </select>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const toggling = !isCustom;
+                            onToggleCustomName(col, toggling);
+                            if (toggling) {
+                              onUpdateDecision(col, { mapped_to: null });
+                            }
+                          }}
+                          title={isCustom ? "Switch to standard field dropdown" : "Enter a custom name"}
+                          className={`shrink-0 p-0.5 rounded transition-colors ${
+                            isCustom
+                              ? "text-violet-600 dark:text-violet-400 bg-violet-100 dark:bg-violet-900/40"
+                              : "text-neutral-400 dark:text-neutral-500 hover:text-violet-600 dark:hover:text-violet-400"
+                          }`}
+                        >
+                          <PenLine className="w-3 h-3" />
+                        </button>
+                      </div>
+                    )}
                   </th>
                 );
               })}
@@ -224,6 +281,8 @@ function GroupPanel({
   onUpdateDecision,
   sessionId,
   loading,
+  customNameCols,
+  onToggleCustomName,
 }: {
   groupId: string;
   groupName: string;
@@ -235,6 +294,8 @@ function GroupPanel({
   onUpdateDecision: (groupKey: string, sourceCol: string, patch: Partial<ColDecision>) => void;
   sessionId: string;
   loading: boolean;
+  customNameCols: Set<string>;
+  onToggleCustomName: (groupKey: string, sourceCol: string, isCustom: boolean) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
@@ -243,6 +304,11 @@ function GroupPanel({
   const handleUpdate = useCallback(
     (sourceCol: string, patch: Partial<ColDecision>) => onUpdateDecision(groupId, sourceCol, patch),
     [groupId, onUpdateDecision],
+  );
+
+  const handleToggleCustom = useCallback(
+    (sourceCol: string, isCustom: boolean) => onToggleCustomName(groupId, sourceCol, isCustom),
+    [groupId, onToggleCustomName],
   );
 
   const handleDownloadExcel = async () => {
@@ -289,6 +355,8 @@ function GroupPanel({
       stdFieldNames={stdFieldNames}
       onUpdateDecision={handleUpdate}
       totalRows={totalRows}
+      customNameCols={customNameCols}
+      onToggleCustomName={handleToggleCustom}
     />
   );
 
@@ -388,6 +456,7 @@ export default function HeaderNormalisation({
 }: HeaderNormalisationProps) {
   const [edited, setEdited] = useState<Record<string, ColDecision[]>>({});
   const [userEditedCols, setUserEditedCols] = useState<Set<string>>(new Set());
+  const [customNameCols, setCustomNameCols] = useState<Set<string>>(new Set());
   const [manualExcelMode, setManualExcelMode] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -409,12 +478,14 @@ export default function HeaderNormalisation({
   }, [decisions]);
 
   useEffect(() => {
-    if (decisions && decisions.length > 0 && groupSchema.length > 0) {
-      const groupIds = groupSchema.map((g: any) => g.group_id);
-      const missing = groupIds.filter((gid: string) => !groupPreviewData[gid]);
-      if (missing.length > 0) {
-        onFetchGroupPreview(missing);
-      }
+    if (!decisions || decisions.length === 0) return;
+    // Use groupSchema IDs when available (multi-table), otherwise use decision tableKeys (single-table)
+    const groupIds = groupSchema.length > 0
+      ? groupSchema.map((g: any) => g.group_id)
+      : decisions.map((t: any) => t.tableKey).filter(Boolean);
+    const missing = groupIds.filter((gid: string) => !groupPreviewData[gid]);
+    if (missing.length > 0) {
+      onFetchGroupPreview(missing);
     }
   }, [decisions, groupSchema, groupPreviewData, onFetchGroupPreview]);
 
@@ -438,6 +509,26 @@ export default function HeaderNormalisation({
     });
   }, []);
 
+  const toggleCustomName = useCallback((groupKey: string, sourceCol: string, isCustom: boolean) => {
+    const key = `${groupKey}::${sourceCol}`;
+    setCustomNameCols((prev) => {
+      const next = new Set(prev);
+      if (isCustom) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }, []);
+
+  /** Returns the subset of customNameCols keys relevant to a specific group. */
+  const getGroupCustomCols = useCallback((groupKey: string): Set<string> => {
+    const prefix = `${groupKey}::`;
+    const result = new Set<string>();
+    for (const key of customNameCols) {
+      if (key.startsWith(prefix)) result.add(key.slice(prefix.length));
+    }
+    return result;
+  }, [customNameCols]);
+
   const applyChanges = () => {
     const payload: Record<string, any[]> = {};
     for (const [tableKey, arr] of Object.entries(edited)) {
@@ -446,6 +537,7 @@ export default function HeaderNormalisation({
         action: normalizeAction(d.action),
         suggested_std_field: d.mapped_to || d.suggested_std_field || null,
         user_edited: userEditedCols.has(`${tableKey}::${d.source_col}`),
+        custom_name: customNameCols.has(`${tableKey}::${d.source_col}`),
       }));
     }
     onApply(payload);
@@ -598,6 +690,8 @@ export default function HeaderNormalisation({
                     onUpdateDecision={updateRow}
                     sessionId={sessionId}
                     loading={loading}
+                    customNameCols={getGroupCustomCols(groupKey)}
+                    onToggleCustomName={toggleCustomName}
                   />
                 );
               })}

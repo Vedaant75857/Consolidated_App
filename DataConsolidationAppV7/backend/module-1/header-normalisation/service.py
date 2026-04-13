@@ -295,6 +295,7 @@ def apply_header_norm(
                 action = "AUTO"
             mapped_to = cd.get("mapped_to")
             user_edited = cd.get("user_edited", False)
+            is_custom_name = cd.get("custom_name", False)
 
             if action == "DROP":
                 dropped_count += 1
@@ -306,7 +307,8 @@ def apply_header_norm(
             elif mapped_to and mapped_to.strip():
                 select_parts.append(f'{quote_id(src)} AS {quote_id(mapped_to)}')
                 mapped_count += 1
-                if user_edited:
+                # Only learn alias for standard field mappings, not custom names
+                if user_edited and not is_custom_name:
                     alias_add(mapped_to, src)
             else:
                 select_parts.append(quote_id(src))

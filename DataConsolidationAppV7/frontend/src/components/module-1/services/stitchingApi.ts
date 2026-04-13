@@ -217,14 +217,73 @@ export async function mergeHistory(sessionId: string): Promise<any> {
   return jsonGet(`/merge/history?sessionId=${encodeURIComponent(sessionId)}`);
 }
 
-// --- Data Quality Assessment ---
+// --- Data Quality Assessment (per-panel endpoints) ---
 
-export async function postDataQualityAssessment(
+export async function postDqaDate(
   sessionId: string,
   apiKey: string,
   tableName: string,
+  dateColumn?: string,
+  tableKey?: string,
 ): Promise<any> {
-  return jsonPost("/data-quality-assessment", { sessionId, apiKey, tableName });
+  return jsonPost("/dqa/date", {
+    sessionId, apiKey,
+    tableName: tableName || undefined,
+    tableKey,
+    dateColumn: dateColumn || undefined,
+  });
+}
+
+export async function postDqaCurrency(
+  sessionId: string,
+  apiKey: string,
+  tableName: string,
+  tableKey?: string,
+): Promise<any> {
+  return jsonPost("/dqa/currency", {
+    sessionId, apiKey,
+    tableName: tableName || undefined,
+    tableKey,
+  });
+}
+
+export async function postDqaPaymentTerms(
+  sessionId: string,
+  apiKey: string,
+  tableName: string,
+  tableKey?: string,
+): Promise<any> {
+  return jsonPost("/dqa/payment-terms", {
+    sessionId, apiKey,
+    tableName: tableName || undefined,
+    tableKey,
+  });
+}
+
+export async function postDqaCountryRegion(
+  sessionId: string,
+  apiKey: string,
+  tableName: string,
+  tableKey?: string,
+): Promise<any> {
+  return jsonPost("/dqa/country-region", {
+    sessionId, apiKey,
+    tableName: tableName || undefined,
+    tableKey,
+  });
+}
+
+export async function postDqaSupplier(
+  sessionId: string,
+  apiKey: string,
+  tableName: string,
+  tableKey?: string,
+): Promise<any> {
+  return jsonPost("/dqa/supplier", {
+    sessionId, apiKey,
+    tableName: tableName || undefined,
+    tableKey,
+  });
 }
 
 // --- Chat ---

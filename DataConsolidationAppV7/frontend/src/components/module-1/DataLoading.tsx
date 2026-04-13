@@ -1,8 +1,8 @@
 import React, { useState, useRef, useCallback } from "react";
-import { Upload, Loader2, FileText, Database, ArrowRight, FolderOpen, X, KeyRound, ChevronDown, ChevronRight, Trash2, RowsIcon, Check, CheckCircle2 } from "lucide-react";
+import { Upload, Loader2, FileText, Database, ArrowRight, FolderOpen, X, KeyRound, ChevronDown, ChevronRight, Trash2, RowsIcon, Check, CheckCircle2, Zap } from "lucide-react";
 import { motion } from "motion/react";
 import JSZip from "jszip";
-import { SurfaceCard, EmptyState, PrimaryButton, itemVariants } from "../common/ui";
+import { SurfaceCard, EmptyState, PrimaryButton, SecondaryButton, itemVariants } from "../common/ui";
 
 const ACCEPTED_EXTENSIONS = [".csv", ".xlsx", ".xlsm", ".xltx", ".xltm", ".zip"];
 
@@ -88,6 +88,7 @@ interface DataLoadingProps {
   uploadWarnings: { file: string; message: string }[];
   handleGenerateAppendPlan: () => void;
   onProceedToAppend: () => void;
+  onProceedSingleTable?: () => void;
   onDeleteTable: (tableKey: string) => void;
   onSetHeaderRow: (tableKey: string, rowIndex: number, customNames?: Record<number, string>) => void;
   onDeleteRows?: (tableKey: string, rowIds: (string | number)[]) => void;
@@ -276,6 +277,7 @@ export default function DataLoading({
   uploadWarnings,
   handleGenerateAppendPlan,
   onProceedToAppend,
+  onProceedSingleTable,
   onDeleteTable,
   onSetHeaderRow,
   onDeleteRows,
@@ -818,13 +820,23 @@ export default function DataLoading({
           </div>
 
           <div className="p-6 border-t border-neutral-100 dark:border-neutral-800 flex justify-end gap-3">
-            <PrimaryButton
+            {inventory.length === 1 && onProceedSingleTable && (
+              <PrimaryButton
+                onClick={onProceedSingleTable}
+                disabled={loading}
+              >
+                <Zap className="w-4 h-4" />
+                {loading ? <Loader2 className="animate-spin w-4 h-4" /> : "Single Table Flow"}
+                <ArrowRight className="w-4 h-4" />
+              </PrimaryButton>
+            )}
+            <SecondaryButton
               onClick={onProceedToAppend}
               disabled={loading}
             >
               {loading ? <Loader2 className="animate-spin w-4 h-4" /> : "Proceed to Append Strategy"}
               <ArrowRight className="w-4 h-4" />
-            </PrimaryButton>
+            </SecondaryButton>
           </div>
         </SurfaceCard>
       )}

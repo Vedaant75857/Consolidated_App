@@ -44,6 +44,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [step, setStep] = useState(1);
   const [maxStepReached, setMaxStepReached] = useState(1);
+  const [singleTableMode, setSingleTableMode] = useState(false);
   const [lastFailedAction, setLastFailedAction] = useState<(() => void) | null>(null);
   const [sessionId, setSessionId] = useState<string>("");
   const [statusLog, setStatusLog] = useState<LogEntry[]>([]);
@@ -297,6 +298,7 @@ export default function App() {
       if (!raw) return;
       const s = JSON.parse(raw);
       if (s.step) { setStep(s.step); setMaxStepReached(s.maxStepReached || s.step); }
+      if (s.singleTableMode) setSingleTableMode(true);
       if (s.excludedTables) setExcludedTables(s.excludedTables);
       if (s.cleaningConfigs) setCleaningConfigs(s.cleaningConfigs);
       if (s.standardizeConfigs) setStandardizeConfigs(s.standardizeConfigs);
@@ -346,7 +348,7 @@ export default function App() {
     if (!sessionId) return;
     try {
       const persistable = {
-        sessionId, step, maxStepReached,
+        sessionId, step, maxStepReached, singleTableMode,
         inventory, previews, uploadWarnings,
         cleaningConfigs, standardizeConfigs, concatConfigs, removedColumns,
         headerNormDecisions, headerNormStandardFields,
@@ -359,7 +361,7 @@ export default function App() {
       sessionStorage.setItem(STORAGE_KEY, jsonSafeStringify(persistable));
     } catch { /* storage full or serialization error */ }
   }, [
-    sessionId, step, maxStepReached,
+    sessionId, step, maxStepReached, singleTableMode,
     inventory, previews, uploadWarnings,
     cleaningConfigs, standardizeConfigs, concatConfigs, removedColumns,
     headerNormDecisions, headerNormStandardFields,
@@ -513,6 +515,7 @@ export default function App() {
     if (sessionId) {
       await invalidateDownstream(0);
     }
+    setSingleTableMode(false);
     setLoading(true);
     setLoadingMessage("Uploading and extracting your data...");
     setError(null);
@@ -1413,6 +1416,11 @@ export default function App() {
     setStep(4);
   }, []);
 
+  const handleProceedSingleTable = useCallback(() => {
+    setSingleTableMode(true);
+    setStep(4);
+  }, []);
+
   const handleRegisterMergedGroup = useCallback((groupId: string, groupName: string, groupRow: any) => {
     setGroupSchema((prev) => [...prev, groupRow]);
     setAppendGroups((prev) => [...prev, { group_id: groupId, group_name: groupName }]);
@@ -1443,7 +1451,7 @@ export default function App() {
 
   const AI_STEPS = new Set([3, 4, 6, 8]);
 
-  const sidebarItems = [
+  const allSidebarItems = [
     { name: "Upload + Settings",     steps: [1],      sub: "Manual" },
     { name: "Data Preview",           steps: [2],      sub: "Manual" },
     { name: "Append Strategy",       steps: [3],      sub: "AI-assisted" },
@@ -1453,7 +1461,21 @@ export default function App() {
     { name: "Data Quality",          steps: [8],      sub: "AI-assisted" },
   ];
 
-  const getDisplayStep = (s: number) => s <= 5 ? s : s <= 7 ? 6 : 7;
+  const sidebarItems = singleTableMode
+    ? allSidebarItems.filter(s => !s.steps.includes(3) && !s.steps.includes(6))
+    : allSidebarItems;
+
+  const getDisplayStep = (s: number) => {
+    if (singleTableMode) {
+      // Steps: 1 (Upload), 2 (Preview), 4 (Header Norm), 5 (Cleaning), 8 (DQA) → display 1-5
+      if (s <= 2) return s;
+      if (s === 4) return 3;
+      if (s === 5) return 4;
+      return 5;
+    }
+    return s <= 5 ? s : s <= 7 ? 6 : 7;
+  };
+  const totalDisplaySteps = singleTableMode ? 5 : 7;
   const animationKey = step;
 
   return (
@@ -1595,7 +1617,7 @@ export default function App() {
               </motion.button>
             </div>
 
-            <StepHero step={step} displayStep={getDisplayStep(step)} isAi={AI_STEPS.has(step)} totalSteps={7} />
+            <StepHero step={step} displayStep={getDisplayStep(step)} isAi={AI_STEPS.has(step)} totalSteps={totalDisplaySteps} />
 
             {error && (
               <motion.div
@@ -1641,6 +1663,7 @@ export default function App() {
                   uploadWarnings={uploadWarnings}
                   handleGenerateAppendPlan={handleGenerateAppendPlan}
                   onProceedToAppend={() => setStep(3)}
+                  onProceedSingleTable={handleProceedSingleTable}
                   onDeleteTable={handleDeleteTable}
                   onSetHeaderRow={handleSetHeaderRow}
                   onDeleteRows={handleDeleteRows}
@@ -1706,8 +1729,8 @@ export default function App() {
                   removedColumns={removedColumns}
                   onRemoveColumns={handleRemoveColumns}
                   onRestoreColumns={handleRestoreColumns}
-                  onProceed={() => setStep(6)}
-                  onSkip={() => setStep(6)}
+                  onProceed={() => setStep(singleTableMode ? 8 : 6)}
+                  onSkip={() => setStep(singleTableMode ? 8 : 6)}
                 />
 
                 {step >= 6 && step <= 7 && (
@@ -1770,6 +1793,7 @@ export default function App() {
                     sessionId={sessionId}
                     apiKey={apiKey}
                     mergeOutputs={mergeOutputs}
+                    singleTableName={singleTableMode && inventory.length > 0 ? inventory[0].table_key : undefined}
                     addLog={addLog}
                     setAiLoading={setAiLoading}
                     setLoadingMessage={setLoadingMessage}
