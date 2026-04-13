@@ -50,8 +50,6 @@ def create_app() -> Flask:
     app = Flask(__name__)
     app.json = AppJSONProvider(app)
     CORS(app)
-    app.config["MAX_CONTENT_LENGTH"] = 300 * 1024 * 1024  # 300 MB
-
     @app.before_request
     def _start_request_timer():
         g.request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex[:12]

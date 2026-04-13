@@ -11,6 +11,7 @@ interface DataInventoryProps {
   setError: (e: string | null) => void;
   importSource?: string | null;
   onBeforeMutate?: () => Promise<void>;
+  sessionId: string;
 }
 
 function HeaderRowEditor({
@@ -18,11 +19,13 @@ function HeaderRowEditor({
   onSetHeaderRow,
   onCancel,
   setError,
+  sessionId,
 }: {
   tableKey: string;
   onSetHeaderRow: (tableKey: string, rowIndex: number, customNames?: Record<number, string>) => Promise<void>;
   onCancel: () => void;
   setError: (e: string | null) => void;
+  sessionId: string;
 }) {
   const [rawPreview, setRawPreview] = useState<any[][] | null>(null);
   const [loadingRaw, setLoadingRaw] = useState(false);
@@ -33,7 +36,7 @@ function HeaderRowEditor({
   const fetchRaw = async () => {
     setLoadingRaw(true);
     try {
-      const res = await fetch(`/api/get-raw-preview?tableKey=${encodeURIComponent(tableKey)}`);
+      const res = await fetch(`/api/get-raw-preview?tableKey=${encodeURIComponent(tableKey)}&sessionId=${encodeURIComponent(sessionId)}`);
       if (!res.ok) throw new Error("Failed to fetch raw data");
       const data = await res.json();
       setRawPreview(data.rawPreview || []);
@@ -186,7 +189,7 @@ function HeaderRowEditor({
   );
 }
 
-const FormattedTable: React.FC<{ tableKey: string, setError: any, setLoading: any, onUpdated: () => void, onBeforeMutate?: () => Promise<void> }> = ({ tableKey, setError, setLoading, onUpdated, onBeforeMutate }) => {
+const FormattedTable: React.FC<{ tableKey: string, setError: any, setLoading: any, onUpdated: () => void, onBeforeMutate?: () => Promise<void>, sessionId: string }> = ({ tableKey, setError, setLoading, onUpdated, onBeforeMutate, sessionId }) => {
   const [preview, setPreview] = useState<{columns: string[], rows: any[]}>({ columns: [], rows: [] });
   const [fetching, setFetching] = useState(true);
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string | number>>(new Set());
@@ -194,7 +197,7 @@ const FormattedTable: React.FC<{ tableKey: string, setError: any, setLoading: an
   const fetchPreview = async () => {
     setFetching(true);
     try {
-      const res = await fetch(`/api/get-preview?tableKey=${encodeURIComponent(tableKey)}`);
+      const res = await fetch(`/api/get-preview?tableKey=${encodeURIComponent(tableKey)}&sessionId=${encodeURIComponent(sessionId)}`);
       if (!res.ok) throw new Error("Failed to fetch formatted preview");
       const data = await res.json();
       setPreview(data);
@@ -223,7 +226,7 @@ const FormattedTable: React.FC<{ tableKey: string, setError: any, setLoading: an
     try {
       const res = await fetch("/api/delete-rows", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tableKey, rowIds: Array.from(selectedRowIds) }),
+        body: JSON.stringify({ tableKey, rowIds: Array.from(selectedRowIds), sessionId }),
       });
       if (!res.ok) throw new Error("Failed to delete rows");
       
@@ -302,7 +305,7 @@ const FormattedTable: React.FC<{ tableKey: string, setError: any, setLoading: an
   );
 }
 
-export default function DataInventory({ inventory, onProceed, loading, setLoading, setError, importSource, onBeforeMutate }: DataInventoryProps) {
+export default function DataInventory({ inventory, onProceed, loading, setLoading, setError, importSource, onBeforeMutate, sessionId }: DataInventoryProps) {
   const [expandedTable, setExpandedTable] = useState<string | null>(null);
   const [headerEditTable, setHeaderEditTable] = useState<string | null>(null);
   const [localInventory, setLocalInventory] = useState(inventory);
@@ -315,7 +318,7 @@ export default function DataInventory({ inventory, onProceed, loading, setLoadin
     if (onBeforeMutate) await onBeforeMutate();
     setLoading(true);
     try {
-      await fetch("/api/delete-table", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tableKey }) });
+      await fetch("/api/delete-table", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tableKey, sessionId }) });
       setLocalInventory(prev => prev.filter(i => i.table_key !== tableKey));
       if (expandedTable === tableKey) setExpandedTable(null);
     } catch (err: any) { setError(err.message); } finally { setLoading(false); }
@@ -324,7 +327,7 @@ export default function DataInventory({ inventory, onProceed, loading, setLoadin
   const handleSetHeaderRow = async (tableKey: string, rowIndex: number, customNames?: Record<number, string>) => {
     if (onBeforeMutate) await onBeforeMutate();
     setError(null);
-    const payload = { tableKey, rowIndex, customNames };
+    const payload = { tableKey, rowIndex, customNames, sessionId };
     const res = await fetch("/api/set-header-row", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
     });
@@ -389,13 +392,14 @@ export default function DataInventory({ inventory, onProceed, loading, setLoadin
                         tableKey={inv.table_key} 
                         onSetHeaderRow={handleSetHeaderRow} 
                         onCancel={() => setHeaderEditTable(null)} 
-                        setError={setError} 
+                        setError={setError}
+                        sessionId={sessionId}
                     />
                 )}
 
                 {isExpanded && !isHeaderEdit && (
                   <div className="bg-neutral-50/30">
-                    <FormattedTable key={`${inv.table_key}-${updates}`} tableKey={inv.table_key} setError={setError} setLoading={setLoading} onUpdated={forceUpdate} onBeforeMutate={onBeforeMutate} />
+                    <FormattedTable key={`${inv.table_key}-${updates}`} tableKey={inv.table_key} setError={setError} setLoading={setLoading} onUpdated={forceUpdate} onBeforeMutate={onBeforeMutate} sessionId={sessionId} />
                     <div className="p-4 bg-white border-t border-neutral-100 flex justify-end items-center shadow-[0_-4px_6px_-6px_rgba(0,0,0,0.02)]">
                        <span className="text-xs text-neutral-500 font-medium mr-4">Ready to lock in this specific table?</span>
                        <PrimaryButton onClick={() => onProceed(inv.table_key)} disabled={loading}>

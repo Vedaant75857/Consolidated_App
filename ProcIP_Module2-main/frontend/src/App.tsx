@@ -36,6 +36,9 @@ const SIDEBAR_STEPS = [
 export default function App() {
   const { theme, toggleTheme } = useTheme();
 
+  /* ── Session ID (persisted for the lifetime of this browser tab) ── */
+  const [sessionId, setSessionId] = useState<string>(() => crypto.randomUUID());
+
   /* ── Core wizard state ── */
   const [step, setStep]                       = useState<number>(1);
   const [maxStepReached, setMaxStepReached]   = useState<number>(1);
@@ -92,10 +95,14 @@ export default function App() {
         setApiKey(effectiveApiKey);
         localStorage.setItem("datastitcher_apikey", effectiveApiKey);
       }
-      if (urlSessionId) setImportSessionId(urlSessionId);
+      if (urlSessionId) {
+        setImportSessionId(urlSessionId);
+        setSessionId(urlSessionId);
+      }
       if (source) setImportSource(source);
 
-      fetch("/api/current-inventory")
+      const sid = urlSessionId || sessionId;
+      fetch(`/api/current-inventory?sessionId=${encodeURIComponent(sid)}`)
         .then((res) => res.json())
         .then((data) => {
           if (data.inventory?.length) {
@@ -128,7 +135,7 @@ export default function App() {
         setInventory([]);
         setFilename(null);
         try {
-          await fetch("/api/reset-state", { method: "POST", headers: { "Content-Type": "application/json" } });
+          await fetch("/api/reset-state", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId }) });
         } catch (err) {
           console.error("Backend reset-state failed:", err);
         }
@@ -139,7 +146,7 @@ export default function App() {
           await fetch("/api/reset-normalization", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({}),
+            body: JSON.stringify({ sessionId }),
           });
         } catch (err) {
           console.error("Backend reset-normalization failed:", err);
@@ -147,7 +154,7 @@ export default function App() {
       }
       setMaxStepReached(fromStep as number);
     },
-    [],
+    [sessionId],
   );
 
   const guardedAction = useCallback(
@@ -171,6 +178,7 @@ export default function App() {
     try {
       const formData = new FormData();
       formData.append("file", file);
+      formData.append("sessionId", sessionId);
       const res = await fetch("/api/upload", { method: "POST", body: formData });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -206,7 +214,7 @@ export default function App() {
       const res = await fetch("/api/select-table", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tableKey }),
+        body: JSON.stringify({ tableKey, sessionId }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -247,6 +255,7 @@ export default function App() {
             loading={loading} setLoading={setLoading} setError={setError}
             importSource={importSource}
             onBeforeMutate={maxStepReached > 2 ? () => invalidateDownstream(2) : undefined}
+            sessionId={sessionId}
           />
         );
       case 3:
@@ -259,6 +268,7 @@ export default function App() {
               addLog={addLog}
               setLoadingMessage={setLoadingMessage}
               setLoadingOnCancel={setLoadingOnCancel}
+              sessionId={sessionId}
             />
           </div>
         );

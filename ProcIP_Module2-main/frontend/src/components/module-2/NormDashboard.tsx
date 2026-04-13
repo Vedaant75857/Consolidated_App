@@ -81,9 +81,10 @@ interface NormDashboardProps {
   addLog?: (stepName: string, type: LogEntry["type"], message: string) => void;
   setLoadingMessage?: (msg: string) => void;
   setLoadingOnCancel?: (cb: (() => void) | null) => void;
+  sessionId: string;
 }
 
-export default function NormDashboard({ apiKey, activeTab = "supplier_name", setActiveTab, addLog, setLoadingMessage, setLoadingOnCancel }: NormDashboardProps) {
+export default function NormDashboard({ apiKey, activeTab = "supplier_name", setActiveTab, addLog, setLoadingMessage, setLoadingOnCancel, sessionId }: NormDashboardProps) {
   const [completedOps, setCompletedOps] = useState<Set<string>>(new Set());
   const [activeOp, setActiveOp] = useState<string | null>(null);
   const [opResults, setOpResults] = useState<Record<string, string>>({});
@@ -130,7 +131,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
 
     const apply = async () => {
       try {
-        const res = await fetch("/api/suggest-columns");
+        const res = await fetch(`/api/suggest-columns?sessionId=${encodeURIComponent(sessionId)}`);
         if (!res.ok) throw new Error("suggest-columns failed");
         const s = await res.json();
 
@@ -212,7 +213,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
     setOperationPreviewLoading(true);
     setOperationPreviewError(null);
     try {
-      const res = await fetch("/api/current-preview");
+      const res = await fetch(`/api/current-preview?sessionId=${encodeURIComponent(sessionId)}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to load preview");
       setOperationPreview({
@@ -308,7 +309,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       const res = await fetch("/api/run-normalization", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agent_id: agentId, kwargs: agentKwargs, apiKey }),
+        body: JSON.stringify({ agent_id: agentId, kwargs: agentKwargs, apiKey, sessionId }),
         signal: controller.signal,
       });
       const data = await res.json();
@@ -359,6 +360,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          sessionId,
           kwargs: {
             currency_col: currencyCodeColumn,
             spend_col: currencySpendColumn || undefined,
@@ -412,7 +414,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       const res = await fetch("/api/assess-supplier-country", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kwargs: { country_col: supplierCountryColumn } }),
+        body: JSON.stringify({ sessionId, kwargs: { country_col: supplierCountryColumn } }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Assessment failed");
@@ -439,7 +441,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       const res = await fetch("/api/assess-region", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kwargs: { region_col: regionColumn } }),
+        body: JSON.stringify({ sessionId, kwargs: { region_col: regionColumn } }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Assessment failed");
@@ -480,7 +482,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
     });
 
     try {
-      const res = await fetch("/api/download", { signal: controller.signal });
+      const res = await fetch(`/api/download?sessionId=${encodeURIComponent(sessionId)}`, { signal: controller.signal });
       if (!res.ok) throw new Error("Download failed");
       const blob = await res.blob();
       const disposition = res.headers.get("content-disposition");
@@ -521,7 +523,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       const res = await fetch("/api/transfer-to-analyzer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey }),
+        body: JSON.stringify({ apiKey, sessionId }),
       });
       const data = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error || "Transfer failed");

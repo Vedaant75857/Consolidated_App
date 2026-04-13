@@ -574,7 +574,7 @@ export default function DataLoading({
                       <p className="text-sm font-bold text-neutral-900 dark:text-white">
                         {isDragOver ? "Drop files here" : "Drag & drop files or a folder here"}
                       </p>
-                      <p className="text-xs text-neutral-500 dark:text-neutral-400">ZIP, CSV, or Excel files (Max 300MB)</p>
+                      <p className="text-xs text-neutral-500 dark:text-neutral-400">ZIP, CSV, or Excel files</p>
                     </div>
                     <div className="flex items-center justify-center gap-3 pt-2">
                       <button

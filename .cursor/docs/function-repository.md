@@ -329,8 +329,8 @@ A complete list of every Python function in the app, organised by module and ste
 
 | Function | File | What it does |
 |----------|------|--------------|
-| `upload_file` | `app.py` | Receives the uploaded file (ZIP, Excel, or CSV), reads all sheets, and stores them in the session. |
-| `import_from_stitcher` | `app.py` | Receives data sent from the DataStitcher module, loads it as a single table, and prepares the session. |
+| `upload_file` | `app.py` | Receives the uploaded file (ZIP, Excel, or CSV), reads all sheets, and stores them in the session's SQLite database. |
+| `import_from_stitcher` | `app.py` | Receives data sent from the DataStitcher module, loads it as a single table, and stores it in a new session database. |
 
 ### Data Preview
 
@@ -426,17 +426,42 @@ A complete list of every Python function in the app, organised by module and ste
 | Function | File | What it does |
 |----------|------|--------------|
 | `_nan_to_none` | `app.py` | Cleans up data for JSON responses by replacing "not a number" values with proper empty values. |
+| `_get_session_id` | `app.py` | Reads the session ID from the request (JSON body, form data, query param, or header). |
 | `_build_xlsx_buf` | `app.py` | Creates an Excel file in memory from the current data (for downloading). |
-| `_pregenerate_xlsx` | `app.py` | Starts building the Excel download in the background so it's ready when the user clicks Download. |
-| `_trigger_xlsx_pregeneration` | `app.py` | Takes a snapshot of the current data and kicks off background Excel generation. |
-| `_get_xlsx_bytes` | `app.py` | Returns the finished Excel file bytes — waits for the background job if it's still running. |
+| `_pregenerate_xlsx_to_disk` | `app.py` | Builds an Excel file in a background thread and writes it to disk next to the session database. |
+| `_trigger_xlsx_cache` | `app.py` | Loads the active table from SQLite and starts background Excel generation to disk. |
+| `_get_xlsx_bytes` | `app.py` | Returns the finished Excel file bytes — reads from the disk cache or builds on the fly. |
+| `_clean_preview_rows` | `app.py` | Replaces NaN-like string values with empty strings for display in the browser. |
 | `get_api_key` | `app.py` | Reads the API key from the request body or from an environment variable. |
 | `health_check` | `app.py` | A simple endpoint that returns "ok" to confirm the server is running. |
 | `run_normalization` | `app.py` | Dispatches the correct normalisation agent based on which operation the user selected, runs it, and returns results. |
 | `transfer_to_analyzer` | `app.py` | Sends the normalised data to the Summarizer module (Module 3). |
-| `reset_normalization` | `app.py` | Reloads the original data, discarding all normalisation changes (a "start over" for normalisation). |
-| `reset_state` | `app.py` | Clears the entire session for a completely fresh start. |
+| `reset_normalization` | `app.py` | Reloads the original data from the session database, discarding all normalisation changes. |
+| `reset_state` | `app.py` | Deletes the entire session database for a completely fresh start. |
 | `download` | `app.py` | Sends the normalised dataset to the browser as an Excel download. |
+| `get_session_db` | `db/session_db.py` | Opens (or retrieves from cache) the SQLite database connection for a session. |
+| `close_session_db` | `db/session_db.py` | Closes the database connection for a session and removes it from cache. |
+| `delete_session_db` | `db/session_db.py` | Deletes the session's database file from disk entirely. |
+| `safe_table_name` | `db/session_db.py` | Creates a safe database table name from user-provided text. |
+| `register_table` | `db/session_db.py` | Records that a logical table name maps to a specific database table. |
+| `unregister_table` | `db/session_db.py` | Removes the mapping for a logical table name. |
+| `lookup_sql_name` | `db/session_db.py` | Looks up which database table a logical name points to. |
+| `all_registered_tables` | `db/session_db.py` | Lists every table registered in the current session. |
+| `cleanup_stale_sessions` | `db/session_db.py` | Deletes session files that are older than a certain time limit. |
+| `cleanup_all_sessions` | `db/session_db.py` | Closes all connections and deletes all session database files. |
+| `store_table` | `db/table_ops.py` | Saves a batch of rows into a database table in one go. |
+| `store_table_streaming` | `db/table_ops.py` | Saves rows into a database table in smaller chunks, for large datasets. |
+| `read_table` | `db/table_ops.py` | Reads rows from a database table and returns them as a list of row-objects. |
+| `read_table_columns` | `db/table_ops.py` | Returns the ordered list of column names for a table. |
+| `table_exists` | `db/table_ops.py` | Checks whether a specific table exists in the database. |
+| `drop_table` | `db/table_ops.py` | Deletes a table from the database if it exists. |
+| `table_row_count` | `db/table_ops.py` | Returns how many rows a table has. |
+| `iterate_table` | `db/table_ops.py` | Reads rows from a table one at a time for memory efficiency. |
+| `get_meta` | `db/meta_ops.py` | Reads a stored setting or piece of metadata from the session. |
+| `set_meta` | `db/meta_ops.py` | Saves a setting or piece of metadata to the session. |
+| `delete_meta` | `db/meta_ops.py` | Removes a stored setting from the session. |
+| `sqlite_to_df` | `db/bridge.py` | Loads a SQLite table into a pandas DataFrame for agent processing. |
+| `df_to_sqlite` | `db/bridge.py` | Saves a pandas DataFrame back to a SQLite table after agent processing. |
 | `_resolve_provider_and_key` | `agents/helpers.py` | Determines which AI provider to use (Portkey or OpenAI) and finds the correct API key. |
 | `get_client` | `agents/helpers.py` | Creates the AI client connection using the resolved provider and key. |
 | `get_model` | `agents/helpers.py` | Returns the AI model name for the active provider. |

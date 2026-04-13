@@ -232,8 +232,9 @@ The Normalizer takes a single data table (uploaded directly or received from the
 | 4 | File list | Staged files appear in a list. See a success indicator and file count when ready. |
 | 5 | Remove file | Click the X on the upload area to clear the staged file and reset. |
 | 6 | API key entry | Type or paste your API key into a password field. |
-| 7 | Upload | Click "Upload & Analyze" to upload and process the files. Disabled while uploading or if no file is selected. |
+| 7 | Upload | Click "Upload & Analyze" to upload and process the files. Disabled while uploading or if no file is selected. Data is stored in a per-session SQLite database so multiple users can work at the same time. |
 | 8 | Import from DataStitcher | The app can receive data automatically from Module 1's "Send to Normalizer" button — data loads and you jump straight to Data Preview. |
+| 9 | Multi-session support | Each browser tab gets its own isolated session. Multiple users can use the Normalizer at the same time without interfering with each other. |
 
 ### Data Preview
 

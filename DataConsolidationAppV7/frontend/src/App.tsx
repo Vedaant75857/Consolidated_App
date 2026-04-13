@@ -387,8 +387,6 @@ export default function App() {
     return () => window.removeEventListener("beforeunload", handler);
   }, [sessionId]);
 
-  const MAX_FILE_SIZE = 300 * 1024 * 1024; // 300 MB
-
   const applyStatePatch = useCallback((patch: any) => {
     if (!patch || typeof patch !== "object") return;
     if (patch.inventory) setInventory(patch.inventory);
@@ -505,10 +503,6 @@ export default function App() {
   const doUpload = async () => {
     if (!file) {
       setError("Please select a file or folder to upload.");
-      return;
-    }
-    if (file.size > MAX_FILE_SIZE) {
-      setError(`File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum allowed size is 300 MB.`);
       return;
     }
     // Re-upload: wipe existing session cache first

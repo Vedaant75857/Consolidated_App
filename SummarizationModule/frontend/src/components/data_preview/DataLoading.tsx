@@ -679,7 +679,7 @@ export default function DataLoading({
                           : "Drag & drop files or a folder here"}
                       </p>
                       <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                        ZIP, CSV, or Excel files (Max 300MB)
+                        ZIP, CSV, or Excel files
                       </p>
                     </div>
                     <div className="flex items-center justify-center gap-3 pt-2">

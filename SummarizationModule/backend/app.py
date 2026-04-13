@@ -42,8 +42,6 @@ app = Flask(__name__)
 app.json = SafeJSONProvider(app)
 CORS(app)
 
-app.config["MAX_CONTENT_LENGTH"] = 300 * 1024 * 1024  # 300 MB
-
 app.register_blueprint(upload_bp, url_prefix="/api")
 app.register_blueprint(mapping_bp, url_prefix="/api")
 app.register_blueprint(views_bp, url_prefix="/api")

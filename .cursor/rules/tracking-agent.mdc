@@ -1,28 +1,36 @@
 ---
-description: Keeps feature tracking and function repository docs up to date when code changes
+description: Keeps feature tracking, function repository, and Excel documentation up to date when code changes
 alwaysApply: true
 ---
 
 # Tracking Docs Update Rule
 
-Two documentation files live in `.cursor/docs/` and must stay in sync with the codebase:
+Three documentation files live in `.cursor/docs/` and must stay in sync with the codebase:
 
 1. **`.cursor/docs/feature-tracking.md`** — lists what the user can do at each step in each module
 2. **`.cursor/docs/function-repository.md`** — lists every Python backend function, which step it belongs to, and what it does
+3. **`.cursor/docs/FullAppDocumentation.xlsx`** — detailed process documentation with one sheet per module covering every step and substep (inputs, backend logic, outputs, AI prompts, and parameters)
 
 ## When to update
 
 - **function-repository.md**: When you add, remove, rename, or significantly change the purpose of any Python function in `DataConsolidationAppV7/backend/`, `ProcIP_Module2-main/backend/`, or `SummarizationModule/backend/`.
 - **feature-tracking.md**: When you add, remove, or change a user-facing feature — this includes changes to frontend components (`*.tsx`, `*.ts` in any module's `frontend/src/`) or backend routes that affect what the user can do.
-- **Both files**: When you add or remove a step from any module, or reorganise which step a feature/function belongs to.
+- **FullAppDocumentation.xlsx**: When either of the above triggers fires — any feature change or function change that also affects the step-level process documentation.
+- **All three files**: When you add or remove a step from any module, or reorganise which step a feature/function belongs to.
 
 ## How to write updates
+
+### Markdown files (feature-tracking.md, function-repository.md)
 
 All descriptions must be in **simple, everyday language** — no developer jargon.
 
 - Feature descriptions should read like instructions to a first-time user (e.g. "Drag files into the upload area or click Browse to pick them from your computer").
 - Function descriptions should explain what the code does as if talking to a non-programmer (e.g. "Takes a messy date and converts it into a clean standard format").
 - Avoid terms like "HTTP handler", "orchestrates", "serializes", "parameterized", "heuristic". Use plain equivalents instead.
+
+### Excel file (FullAppDocumentation.xlsx)
+
+Write at the **same level of technical detail** as the existing rows in the Excel file. The Excel is aimed at developers and technical reviewers, not end users. Each row should describe a substep's full data flow — what the user does, what goes in, what the backend does, what comes out, any AI prompts used, and relevant parameters or config values.
 
 ## What to include for new functions
 
@@ -35,6 +43,59 @@ Add a row to the correct module and step section in `function-repository.md`:
 ## What to include for new features
 
 Add or update the relevant step's row in the correct module section of `feature-tracking.md`. Describe the feature from the user's perspective — what they see, click, or interact with.
+
+## How to update the Excel file
+
+Use the helper script at `.cursor/scripts/update_excel_docs.py`. Pipe a JSON payload into it via Shell.
+
+### Module-to-sheet mapping
+
+| Source folder | Excel sheet |
+|---|---|
+| `DataConsolidationAppV7/` | `Module 1` |
+| `ProcIP_Module2-main/` | `Module 2` |
+| `SummarizationModule/` | `Module 3` |
+
+### Column reference
+
+Modules 1 & 2 have 9 columns: `Step`, `Substep`, `User Intervention`, `Input`, `Backend`, `Output (Backend)`, `Output (Frontend)`, `AI Prompt (if any)`, `Parameters`.
+
+Module 3 has 8 columns (same but without `Parameters`).
+
+Fill **all** columns by examining the code. Infer Backend, Input, Output, AI Prompt, and Parameters from the implementation.
+
+### Available actions
+
+**List rows** (check what already exists before modifying):
+
+```
+echo '{"action":"list-rows","sheet":"Module 1"}' | python .cursor/scripts/update_excel_docs.py
+```
+
+**Add a row** (new substep):
+
+```
+echo '{"action":"add-row","sheet":"Module 1","data":{"Step":"2. Data Preview","Substep":"New substep name","User Intervention":"What the user does","Input":"What data goes in","Backend":"What the backend does","Output (Backend)":"What the backend returns","Output (Frontend)":"What the user sees","AI Prompt (if any)":"The prompt text or NA","Parameters":"Relevant config values or NA"}}' | python .cursor/scripts/update_excel_docs.py
+```
+
+**Update an existing row** (changed substep):
+
+```
+echo '{"action":"update-row","sheet":"Module 1","match":{"Step":"2. Data Preview","Substep":"View uploaded tables"},"data":{"Backend":"Updated backend description"}}' | python .cursor/scripts/update_excel_docs.py
+```
+
+**Delete a row** (removed substep):
+
+```
+echo '{"action":"delete-row","sheet":"Module 1","match":{"Step":"2. Data Preview","Substep":"Removed substep"}}' | python .cursor/scripts/update_excel_docs.py
+```
+
+### Important
+
+- Always run `list-rows` first to check the current state before adding or updating.
+- The `match` field uses Step + Substep to locate rows. Both must match (case-insensitive).
+- New rows are automatically inserted next to other rows with the same Step value.
+- For Module 3, omit the `Parameters` field from `data`.
 
 ## When NOT to update
 

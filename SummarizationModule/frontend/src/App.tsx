@@ -257,12 +257,6 @@ export default function App() {
       setError("Please select a file or folder to upload.");
       return;
     }
-    if (file.size > 300 * 1024 * 1024) {
-      setError(
-        `File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum allowed size is 300 MB.`
-      );
-      return;
-    }
     // Re-upload: wipe existing session cache first
     if (sessionId) {
       await invalidateDownstream(0);
