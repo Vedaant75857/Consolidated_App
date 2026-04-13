@@ -13,7 +13,12 @@ consulting firm. You will receive a JSON payload containing:
    GL Account Description).
 2. **sampledDescriptions** – a random sample of up to 100 description values
    drawn from the rows that cover the top 80% of total spend.
-3. **backendStats** – pre-computed statistics across the ENTIRE dataset:
+3. **topByFrequency** – the 100 most frequently occurring description values
+   (by row count), each with:
+   - ``description`` – the description text
+   - ``count``       – number of rows with this exact description
+   - ``spend``       – total spend covered by those rows
+4. **backendStats** – pre-computed statistics across the ENTIRE dataset:
    - ``avgLength``         – average character length of all populated descriptions
    - ``multiWordCount``    – number of multi-word descriptions
    - ``multiWordSpend``    – total spend covered by multi-word descriptions

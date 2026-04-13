@@ -221,16 +221,70 @@ def _sample_descriptions_for_ai(
     return random.sample(top80_descs, sample_size)
 
 
+def _top_descriptions_by_frequency(
+    conn: sqlite3.Connection,
+    field_key: str,
+    spend_col: str,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Return the *limit* most frequently occurring descriptions with spend.
+
+    Args:
+        conn: SQLite connection with ``analysis_data`` table.
+        field_key: Description column name (e.g. ``invoice_description``).
+        spend_col: Spend column to aggregate (``total_spend``).
+        limit: Max descriptions to return (default 100).
+
+    Returns:
+        List of dicts ``{"description": str, "count": int, "spend": float}``
+        ordered by row count descending.
+    """
+    qd = _quote_id(field_key)
+    qs = _quote_id(spend_col)
+    nn_d = _nn(qd)
+
+    numeric_check = (
+        f"(typeof({qs}) IN ('real','integer') OR "
+        f" (typeof({qs}) = 'text' AND TRIM({qs}) GLOB '*[0-9]*' "
+        f"  AND TRIM({qs}) NOT GLOB '*[^0-9.eE+-]*'))"
+    )
+    spend_expr = (
+        f"SUM(CASE WHEN {numeric_check} THEN CAST({qs} AS REAL) ELSE 0 END)"
+    )
+
+    rows = conn.execute(
+        f"SELECT TRIM(CAST({qd} AS TEXT)) AS desc_val, "
+        f"  COUNT(*) AS freq, "
+        f"  {spend_expr} AS spend "
+        f"FROM \"analysis_data\" "
+        f"WHERE {nn_d} "
+        f"GROUP BY desc_val "
+        f"ORDER BY freq DESC "
+        f"LIMIT {int(limit)}"
+    ).fetchall()
+
+    return [
+        {
+            "description": str(r[0]),
+            "count": int(r[1]),
+            "spend": round(float(r[2] or 0)),
+        }
+        for r in rows
+    ]
+
+
 def _generate_description_insight(
     field_key: str,
     backend_stats: dict[str, Any],
     sampled_descriptions: list[str],
+    top_by_frequency: list[dict[str, Any]],
     api_key: str,
 ) -> str:
     """Call the LLM to produce a quality insight for one description column."""
     payload = {
         "descriptionType": DESCRIPTION_DISPLAY_NAMES.get(field_key, field_key),
         "sampledDescriptions": sampled_descriptions,
+        "topByFrequency": top_by_frequency,
         "backendStats": backend_stats,
     }
     try:
@@ -288,10 +342,11 @@ def run_description_quality_analysis(
         )
 
         sampled = _sample_descriptions_for_ai(conn, fk, spend_col)
+        freq_descs = _top_descriptions_by_frequency(conn, fk, spend_col)
 
         if sampled:
             insight = _generate_description_insight(
-                fk, stats["backendStats"], sampled, api_key
+                fk, stats["backendStats"], sampled, freq_descs, api_key
             )
         else:
             insight = "No populated descriptions found for AI analysis."
