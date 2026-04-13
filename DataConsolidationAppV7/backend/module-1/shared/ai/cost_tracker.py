@@ -11,8 +11,8 @@ MODEL_RATES: dict[str, tuple[float, float]] = {
     "gpt-4o": (2.50, 10.00),
     "gpt-4o-mini": (0.15, 0.60),
     "@personal-openai/gpt-4o": (2.50, 10.00),
-    "@personal-openai/gpt-5.2": (2.50, 10.00),
-    "@personal-openai/gpt-5.4": (2.50, 10.00),
+    "@personal-openai/gpt-5.2": (2.50, 15.00),
+    "@personal-openai/gpt-5.4": (2.50, 15.00),
 }
 
 

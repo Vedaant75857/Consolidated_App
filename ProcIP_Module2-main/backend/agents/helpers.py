@@ -78,8 +78,8 @@ def get_model(api_key=None):
     """Get the correct model name for the resolved provider."""
     provider, _ = _resolve_provider_and_key(api_key)
     if provider == 'portkey':
-        return os.getenv('PORTKEY_MODEL', '@personal-openai/gpt-5.2')
-    return 'gpt-4o'
+        return os.getenv('PORTKEY_MODEL', '@personal-openai/gpt-5.4')
+    return 'gpt-5.4'
 
 
 # ─── Cost Tracker ─────────────────────────────────────────────────────────────
@@ -87,8 +87,10 @@ def get_model(api_key=None):
 MODEL_RATES = {
     'gpt-4o':                       (2.50, 10.00),
     'gpt-4o-mini':                  (0.15, 0.60),
+    'gpt-5.4':                      (2.50, 15.00),
     '@personal-openai/gpt-4o':      (2.50, 10.00),
-    '@personal-openai/gpt-5.2':     (2.50, 10.00),
+    '@personal-openai/gpt-5.2':     (2.50, 15.00),
+    '@personal-openai/gpt-5.4':     (2.50, 15.00),
 }
 
 

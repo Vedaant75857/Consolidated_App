@@ -85,7 +85,7 @@ def test_key():
     try:
         from portkey_ai import Portkey
         base_url = os.getenv("PORTKEY_BASE_URL", "https://portkey.bain.dev/v1")
-        model = os.getenv("PORTKEY_MODEL", "@personal-openai/gpt-5.2")
+        model = os.getenv("PORTKEY_MODEL", "@personal-openai/gpt-5.4")
         client = Portkey(api_key=api_key, base_url=base_url)
         resp = client.chat.completions.create(
             messages=[{"role": "user", "content": "Say OK"}],
