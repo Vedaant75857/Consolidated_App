@@ -1,0 +1,44 @@
+---
+description: Keeps feature tracking and function repository docs up to date when code changes
+alwaysApply: true
+---
+
+# Tracking Docs Update Rule
+
+Two documentation files live in `.cursor/docs/` and must stay in sync with the codebase:
+
+1. **`.cursor/docs/feature-tracking.md`** — lists what the user can do at each step in each module
+2. **`.cursor/docs/function-repository.md`** — lists every Python backend function, which step it belongs to, and what it does
+
+## When to update
+
+- **function-repository.md**: When you add, remove, rename, or significantly change the purpose of any Python function in `DataConsolidationAppV7/backend/`, `ProcIP_Module2-main/backend/`, or `SummarizationModule/backend/`.
+- **feature-tracking.md**: When you add, remove, or change a user-facing feature — this includes changes to frontend components (`*.tsx`, `*.ts` in any module's `frontend/src/`) or backend routes that affect what the user can do.
+- **Both files**: When you add or remove a step from any module, or reorganise which step a feature/function belongs to.
+
+## How to write updates
+
+All descriptions must be in **simple, everyday language** — no developer jargon.
+
+- Feature descriptions should read like instructions to a first-time user (e.g. "Drag files into the upload area or click Browse to pick them from your computer").
+- Function descriptions should explain what the code does as if talking to a non-programmer (e.g. "Takes a messy date and converts it into a clean standard format").
+- Avoid terms like "HTTP handler", "orchestrates", "serializes", "parameterized", "heuristic". Use plain equivalents instead.
+
+## What to include for new functions
+
+Add a row to the correct module and step section in `function-repository.md`:
+
+| Function | File | What it does |
+|----------|------|--------------|
+| `function_name` | `path/relative/to/module/backend/` | Plain English description of what the function does. |
+
+## What to include for new features
+
+Add or update the relevant step's row in the correct module section of `feature-tracking.md`. Describe the feature from the user's perspective — what they see, click, or interact with.
+
+## When NOT to update
+
+- Refactoring that doesn't change function names, signatures, or behaviour
+- Fixing a bug without changing the user-facing experience
+- Changing internal helper logic that doesn't affect the function's purpose
+- Editing comments, docstrings, or formatting only

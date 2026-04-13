@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "afterFileEdit": [
+      {
+        "type": "prompt",
+        "prompt": "A source file was just edited. Check if the change affects the tracking documentation:\n\n1. If a Python function was added, removed, or renamed in any backend folder (DataConsolidationAppV7/backend/, ProcIP_Module2-main/backend/, or SummarizationModule/backend/), update .cursor/docs/function-repository.md — add or remove the function row in the correct module and step section. Write the description in plain, simple language.\n\n2. If a frontend component or backend route was changed in a way that adds, removes, or changes a user-facing feature, update .cursor/docs/feature-tracking.md — edit the relevant step's row in the correct module section.\n\n3. If the edit was purely internal (bug fix, refactoring without renaming, comment changes), no update is needed.\n\nOnly update the docs if there is a real change to track. Do not update for trivial edits.",
+        "matcher": "\\.(py|tsx|ts)$"
+      }
+    ]
+  }
+}
