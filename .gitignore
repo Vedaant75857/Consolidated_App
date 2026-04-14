@@ -13,8 +13,5 @@ __pycache__/
 .env*
 !.env.example
 
-# PyInstaller exe build files
-launcher.py
-path_utils.py
-*.spec
-build.bat
+# PyInstaller build output (dist/ and build/ already covered above)
+*.exe
