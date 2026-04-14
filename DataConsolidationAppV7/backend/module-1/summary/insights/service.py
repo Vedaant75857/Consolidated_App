@@ -7,9 +7,6 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
-import sqlite3
-
-
 def _load_mod(name: str, path: str):
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
@@ -35,6 +32,7 @@ estimate_duplicate_rows = _stats.estimate_duplicate_rows
 
 from shared.ai import call_ai_json, get_client, get_model
 from shared.db import (
+    DuckDBConnection,
     all_registered_tables,
     get_meta,
     lookup_sql_name,
@@ -45,7 +43,7 @@ from shared.db import (
 )
 
 
-def _resolve_appended_map(conn: sqlite3.Connection) -> dict[str, str]:
+def _resolve_appended_map(conn: DuckDBConnection) -> dict[str, str]:
     out: dict[str, str] = {}
     for r in all_registered_tables(conn):
         if str(r.get("sql_name", "")).startswith("appended__"):
@@ -54,7 +52,7 @@ def _resolve_appended_map(conn: sqlite3.Connection) -> dict[str, str]:
 
 
 def resolve_group_table(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     group_id: str,
     group_tables: list[str] | None = None,
 ) -> str | None:
@@ -97,7 +95,7 @@ def _stats_for_prompt(column_stats: list[dict[str, Any]]) -> list[dict[str, Any]
 
 
 def _execute_slices(
-    conn: sqlite3.Connection, sql_name: str, slices: list[dict[str, Any]]
+    conn: DuckDBConnection, sql_name: str, slices: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     tbl = quote_id(sql_name)
     col_set = set(read_table_columns(conn, sql_name))
@@ -116,7 +114,7 @@ def _execute_slices(
             if measure and agg == "sum":
                 mq = quote_id(measure)
                 sql = (
-                    f"SELECT {dim_q} AS k, SUM(CAST({mq} AS REAL)) AS v FROM {tbl} "
+                    f"SELECT {dim_q} AS k, SUM(TRY_CAST({mq} AS REAL)) AS v FROM {tbl} "
                     f"WHERE {dim_q} IS NOT NULL AND TRIM({dim_q}) != '' "
                     f"GROUP BY {dim_q} ORDER BY v DESC LIMIT 15"
                 )
@@ -124,7 +122,7 @@ def _execute_slices(
             elif measure and agg == "avg":
                 mq = quote_id(measure)
                 sql = (
-                    f"SELECT {dim_q} AS k, AVG(CAST({mq} AS REAL)) AS v FROM {tbl} "
+                    f"SELECT {dim_q} AS k, AVG(TRY_CAST({mq} AS REAL)) AS v FROM {tbl} "
                     f"WHERE {dim_q} IS NOT NULL AND TRIM({dim_q}) != '' "
                     f"GROUP BY {dim_q} ORDER BY v DESC LIMIT 15"
                 )
@@ -284,7 +282,7 @@ def _run_ai_pipeline_for_group(
 
 
 def run_insights(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     session_id: str,
     groups: list[dict[str, Any]] | None,
     api_key: str,
@@ -395,7 +393,7 @@ def _priority_label(score: float) -> str:
 
 
 def run_pre_merge_analysis(
-    conn: sqlite3.Connection, session_id: str, api_key: str
+    conn: DuckDBConnection, session_id: str, api_key: str
 ) -> dict[str, Any]:
     """Cross-group narrative using SQL overlap stats + CROSS_GROUP_SYNTHESIZER_PROMPT."""
     _ = session_id
@@ -529,7 +527,7 @@ def run_pre_merge_analysis(
 
 
 def run_chat(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     session_id: str,
     message: str,
     context: str,

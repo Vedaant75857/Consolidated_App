@@ -24,8 +24,13 @@ def gen_email():
             return jsonify({"error": "apiKey required"}), 400
 
         conn = get_session_db(session_id)
-        view_results = get_meta(conn, "view_results") or []
-        conn.close()
+        try:
+            view_results = get_meta(conn, "view_results") or []
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
         if not view_results:
             return jsonify({"error": "No view results found. Run analysis first."}), 400

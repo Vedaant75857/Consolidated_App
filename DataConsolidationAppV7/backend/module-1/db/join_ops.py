@@ -8,10 +8,10 @@ format pattern detection, and adaptive normalization.
 from __future__ import annotations
 
 import re
-import sqlite3
 import time
 from typing import Any, TypedDict
 
+from shared.db import DuckDBConnection
 from shared.db.table_ops import (
     quote_id,
     read_table_columns,
@@ -45,7 +45,7 @@ def _id_like(col_name: str) -> bool:
 
 
 def match_keys_distinct_sql(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     fact_table: str,
     dim_table: str,
     fact_profiles: list[ColumnProfile] | None = None,
@@ -161,7 +161,7 @@ def match_keys_distinct_sql(
 
 
 def compute_composite_match_rate_sql(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     fact_table: str,
     dim_table: str,
     fact_keys: list[str],
@@ -231,7 +231,7 @@ def compute_composite_match_rate_sql(
 
 
 def left_join_sql(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     fact_table: str,
     dim_table: str,
     fact_keys: list[str],
@@ -295,12 +295,13 @@ def left_join_sql(
     conn.execute(f"DROP TABLE IF EXISTS {quote_id(dedup_dim)}")
     conn.execute(f"""
         CREATE TEMP TABLE {quote_id(dedup_dim)} AS
-        SELECT {dim_select_cols} FROM {quote_id(dim_table)}
-        WHERE rowid IN (
-            SELECT MIN(rowid) FROM {quote_id(dim_table)}
+        SELECT {dim_select_cols} FROM (
+            SELECT {dim_select_cols},
+                   ROW_NUMBER() OVER (PARTITION BY {dim_key_expr} ORDER BY (SELECT NULL)) AS _rn
+            FROM {quote_id(dim_table)}
             WHERE {dim_null_filter}
-            GROUP BY {dim_key_expr}
-        )
+        ) AS _sub
+        WHERE _sub._rn = 1
     """)
 
     row = conn.execute(f"SELECT COUNT(*) AS cnt FROM {quote_id(dedup_dim)}").fetchone()
@@ -389,7 +390,7 @@ def left_join_sql(
 
 
 def check_dim_uniqueness(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     dim_table: str,
     keys: list[str],
 ) -> dict[str, Any]:
@@ -417,7 +418,7 @@ def check_dim_uniqueness(
 
 
 def profile_all_columns(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
 ) -> list[ColumnProfile]:
     if not table_exists(conn, table_name):
@@ -433,7 +434,7 @@ def profile_all_columns(
                 COUNT(*) AS total,
                 COUNT(CASE WHEN {qc} IS NOT NULL AND TRIM({qc}) != '' THEN 1 END) AS non_null,
                 COUNT(DISTINCT CASE WHEN {qc} IS NOT NULL AND TRIM({qc}) != '' THEN {qc} END) AS distinct_count,
-                COUNT(CASE WHEN TRIM({qc}) GLOB '*[0-9]*' AND TRIM({qc}) NOT GLOB '*[^0-9.eE+-]*' THEN 1 END) AS numeric_count
+                COUNT(CASE WHEN regexp_matches(TRIM({qc}), '[0-9]') AND regexp_matches(TRIM({qc}), '^[0-9eE.+-]+$') THEN 1 END) AS numeric_count
             FROM {tbl}
         """).fetchone()
 
@@ -462,7 +463,7 @@ def profile_all_columns(
 
 
 def classify_dim_columns(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     exclude_keys: list[str],
 ) -> list[dict[str, Any]]:
@@ -482,7 +483,7 @@ def classify_dim_columns(
                 COUNT(*) AS total,
                 COUNT(CASE WHEN {qc} IS NOT NULL AND TRIM({qc}) != '' THEN 1 END) AS non_null,
                 COUNT(DISTINCT CASE WHEN {qc} IS NOT NULL AND TRIM({qc}) != '' THEN {qc} END) AS distinct_count,
-                COUNT(CASE WHEN TRIM({qc}) GLOB '*[0-9]*' AND TRIM({qc}) NOT GLOB '*[^0-9.eE+-]*' THEN 1 END) AS numeric_count
+                COUNT(CASE WHEN regexp_matches(TRIM({qc}), '[0-9]') AND regexp_matches(TRIM({qc}), '^[0-9eE.+-]+$') THEN 1 END) AS numeric_count
             FROM {tbl}
         """).fetchone()
 
@@ -511,7 +512,7 @@ def classify_dim_columns(
 # ── Format pattern detection ───────────────────────────────────────
 
 
-def _sample_column_values(conn: sqlite3.Connection, table: str, col: str, limit: int = 50) -> list[str]:
+def _sample_column_values(conn: DuckDBConnection, table: str, col: str, limit: int = 50) -> list[str]:
     try:
         rows = conn.execute(
             f"SELECT DISTINCT {quote_id(col)} AS v FROM {quote_id(table)} "
@@ -549,7 +550,7 @@ def _detect_consistent_prefix(values: list[str]) -> str | None:
 
 
 def detect_format_pattern(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_a: str,
     col_a: str,
     table_b: str,
@@ -628,7 +629,7 @@ def detect_format_pattern(
 
 
 def build_adaptive_normalization(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_a: str,
     col_a: str,
     table_b: str,

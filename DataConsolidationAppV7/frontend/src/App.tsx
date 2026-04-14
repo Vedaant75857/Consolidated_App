@@ -37,7 +37,7 @@ export type { MergeOutput } from "./types";
 export default function App() {
   const { theme, toggleTheme } = useTheme();
   const [file, setFile] = useState<File | null>(null);
-  const [apiKey, setApiKey] = useState("");
+  const [apiKey, setApiKey] = useState(() => sessionStorage.getItem("datastitcher_apiKey") || "");
   const [loading, setLoading] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("");
@@ -62,6 +62,11 @@ export default function App() {
   const addLog = useCallback((stepName: string, type: LogEntry["type"], message: string) => {
     setStatusLog((prev) => [...prev, { id: ++logIdRef.current, timestamp: new Date(), step: stepName, type, message }]);
   }, []);
+
+  // Persist apiKey to sessionStorage so it survives page refreshes
+  useEffect(() => {
+    if (apiKey) sessionStorage.setItem("datastitcher_apiKey", apiKey);
+  }, [apiKey]);
 
   const slideDirection = step >= prevStepRef.current ? 1 : -1;
   useEffect(() => {
@@ -213,6 +218,10 @@ export default function App() {
         setAppendGroupMappings([]);
         setGroupSchema([]);
         setAppendReport(null);
+      }
+      if (fromStep === 3) {
+        // Remove malformed entries (e.g. from merge registration) that lack a tables array
+        setAppendGroups(prev => prev.filter(g => Array.isArray(g.tables)));
       }
       if (fromStep < 4) {
         setHeaderNormDecisions(null);
@@ -424,8 +433,7 @@ export default function App() {
       setMergeResult(patch.mergeResult);
       if (patch.mergeResult.merge_history) {
         setMergeHistory(patch.mergeResult.merge_history);
-        setMergeOutputs((prev) => {
-          if (prev.length > 0) return prev;
+        setMergeOutputs(() => {
           return (patch.mergeResult.merge_history as any[]).map((entry: any) => ({
             version: entry.version,
             label: entry.file_label || `Merge v${entry.version}`,
@@ -506,6 +514,7 @@ export default function App() {
       const data: any = await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open("POST", "/api/upload");
+        xhr.timeout = 600000; // 10 minute timeout for large files
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) {
             setUploadProgress(Math.round((e.loaded / e.total) * 100));
@@ -523,6 +532,8 @@ export default function App() {
           } catch { reject(new Error("Invalid server response")); }
         };
         xhr.onerror = () => reject(new Error("Network error during upload"));
+        xhr.ontimeout = () => reject(new Error("Upload timed out — the file may be too large. Try uploading fewer files at once."));
+        xhr.onabort = () => reject(new Error("Upload was cancelled."));
         xhr.send(formData);
       });
 
@@ -1210,12 +1221,13 @@ export default function App() {
 
     // Find the table and remove it from its current location
     const newAppendGroups = appendGroups.map(group => {
-      if (group.tables.includes(tableKey)) {
+      const tables = group.tables ?? [];
+      if (tables.includes(tableKey)) {
         tableData = { table_key: tableKey, reason: "Manually moved" };
-        return { ...group, tables: group.tables.filter((t: string) => t !== tableKey) };
+        return { ...group, tables: tables.filter((t: string) => t !== tableKey) };
       }
       return group;
-    }).filter(group => group.tables.length > 0);
+    }).filter(group => (group.tables ?? []).length > 0 || group.group_id === targetGroupId);
 
     const newUnassigned = unassigned.filter(u => {
       if (u.table_key === tableKey) {
@@ -1235,7 +1247,7 @@ export default function App() {
     } else {
       const updatedGroups = newAppendGroups.map(group => {
         if (group.group_id === targetGroupId) {
-          return { ...group, tables: [...group.tables, tableKey] };
+          return { ...group, tables: [...(group.tables ?? []), tableKey] };
         }
         return group;
       });
@@ -1267,8 +1279,8 @@ export default function App() {
     // Remove tables from current locations
     const newAppendGroups = appendGroups.map(group => ({
       ...group,
-      tables: group.tables.filter((t: string) => !tableKeys.includes(t))
-    })).filter(group => group.tables.length > 0);
+      tables: (group.tables ?? []).filter((t: string) => !tableKeys.includes(t))
+    })).filter(group => (group.tables ?? []).length > 0);
 
     const newUnassigned = unassigned.filter(u => !tableKeys.includes(u.table_key));
 
@@ -1307,8 +1319,8 @@ export default function App() {
   const doExcludeTable = async (tableKey: string) => {
     if (maxStepReached > 3) await invalidateDownstream(3);
     const newGroups = appendGroups.map(g => ({
-      ...g, tables: g.tables.filter((t: string) => t !== tableKey)
-    })).filter(g => g.tables.length > 0);
+      ...g, tables: (g.tables ?? []).filter((t: string) => t !== tableKey)
+    })).filter(g => (g.tables ?? []).length > 0);
     const newUnassigned = unassigned.filter(u => u.table_key !== tableKey);
     setAppendGroups(newGroups);
     setUnassigned(newUnassigned);
@@ -1437,7 +1449,7 @@ export default function App() {
 
   const handleRegisterMergedGroup = useCallback((groupId: string, groupName: string, groupRow: any) => {
     setGroupSchema((prev) => [...prev, groupRow]);
-    setAppendGroups((prev) => [...prev, { group_id: groupId, group_name: groupName }]);
+    setAppendGroups((prev) => [...prev, { group_id: groupId, group_name: groupName, tables: [] }]);
   }, []);
 
   const handleDeleteMergeOutput = useCallback(async (version: number) => {

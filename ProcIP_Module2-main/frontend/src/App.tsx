@@ -43,7 +43,7 @@ export default function App() {
   const [step, setStep]                       = useState<number>(1);
   const [maxStepReached, setMaxStepReached]   = useState<number>(1);
   const [normActiveTab, setNormActiveTab]     = useState<string>("supplier_country");
-  const [apiKey, setApiKey]                   = useState("");
+  const [apiKey, setApiKey]                   = useState(() => sessionStorage.getItem("normalizer_apiKey") || "");
   const [file, setFile]                       = useState<File | null>(null);
   const [filename, setFilename]               = useState<string | null>(null);
   const [loading, setLoading]                 = useState(false);
@@ -68,6 +68,11 @@ export default function App() {
   }, []);
 
   
+
+  // Persist apiKey to sessionStorage so it survives page refreshes
+  useEffect(() => {
+    if (apiKey) sessionStorage.setItem("normalizer_apiKey", apiKey);
+  }, [apiKey]);
 
   /* ── Handle cross-module import via URL params ── */
   useEffect(() => {
@@ -216,7 +221,10 @@ export default function App() {
 
   /* ── Step 2 → Select table from inventory ── */
   const doProceedFromInventory = async (tableKey: string) => {
-    if (maxStepReached > 2) await invalidateDownstream(2);
+    if (maxStepReached > 2) {
+      setNormResetKey((k: number) => k + 1);
+      setMaxStepReached(2);
+    }
     setLoading(true);
     setLoadingMessage("Locking table into pipeline…");
     setError(null);

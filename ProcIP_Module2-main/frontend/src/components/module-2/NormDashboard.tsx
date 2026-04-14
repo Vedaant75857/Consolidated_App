@@ -469,8 +469,8 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
   const downloadControllerRef = useRef<AbortController | null>(null);
 
   const handleDownload = useCallback(async () => {
-    log("info", "Downloading Excel…");
-    setLoadingMessage?.("Preparing Excel download…");
+    log("info", "Downloading CSV…");
+    setLoadingMessage?.("Preparing CSV download…");
 
     const controller = new AbortController();
     downloadControllerRef.current = controller;
@@ -479,7 +479,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       downloadControllerRef.current = null;
       setLoadingMessage?.("");
       setLoadingOnCancel?.(null);
-      log("info", "Download cancelled.");
+      log("info", "CSV download cancelled.");
     });
 
     try {
@@ -488,7 +488,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       const blob = await res.blob();
       const disposition = res.headers.get("content-disposition");
       const match = disposition?.match(/filename="?([^"]+)"?/);
-      const filename = match?.[1] || "normalised_data.xlsx";
+      const filename = match?.[1] || "normalised_data.csv";
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -567,12 +567,12 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
         <SurfaceCard title="Download Normalized Data" subtitle="Export your cleaned and standardized dataset" icon={Download}>
           <div className="space-y-4">
             <p className="text-sm text-neutral-600 dark:text-neutral-400">
-              Download your fully normalized dataset as an Excel file. All completed normalizations will be included.
+              Download your fully normalized dataset as a CSV file. All completed normalizations will be included.
             </p>
             <div className="flex items-center gap-3">
               <PrimaryButton onClick={handleDownload} disabled={loading || activeOp !== null}>
                 <Download className="w-4 h-4 mr-2" />
-                Download Excel
+                Download CSV
               </PrimaryButton>
               {completedOps.size > 0 && (
                 <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">
@@ -847,13 +847,16 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                         {countryNormMetrics.ai_errors.map((err, i) => (
                           <p key={i} className="text-xs text-amber-600 dark:text-amber-400">{err}</p>
                         ))}
+                        <p className="text-xs text-amber-500 dark:text-amber-500 italic mt-1">
+                          Tip: If you see "Incorrect API key", go back to Step 1 and verify your API key is entered correctly.
+                        </p>
                       </div>
                     </div>
                   )}
                   <div className="pt-3 mt-2 border-t border-emerald-200 dark:border-emerald-800 flex items-center gap-2">
                     <PrimaryButton onClick={handleDownload}>
                       <Download className="w-4 h-4 mr-2" />
-                      Download Excel
+                      Download CSV
                     </PrimaryButton>
                     <button
                       onClick={handleSendToAnalyzer}
@@ -1007,7 +1010,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                   <div className="pt-3 mt-2 border-t border-emerald-200 dark:border-emerald-800 flex items-center gap-2">
                     <PrimaryButton onClick={handleDownload}>
                       <Download className="w-4 h-4 mr-2" />
-                      Download Excel
+                      Download CSV
                     </PrimaryButton>
                     <button
                       onClick={handleSendToAnalyzer}
@@ -1231,7 +1234,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                   <div className="pt-3 mt-2 border-t border-emerald-200 dark:border-emerald-800 flex items-center gap-2">
                     <PrimaryButton onClick={handleDownload}>
                       <Download className="w-4 h-4 mr-2" />
-                      Download Excel
+                      Download CSV
                     </PrimaryButton>
                     <button
                       onClick={handleSendToAnalyzer}
@@ -1260,7 +1263,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                 <div className="flex items-center gap-2">
                   <PrimaryButton onClick={handleDownload}>
                     <Download className="w-4 h-4 mr-2" />
-                    Download Excel
+                    Download CSV
                   </PrimaryButton>
                   <button
                     onClick={handleSendToAnalyzer}
@@ -1355,7 +1358,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
           <div className="flex items-center gap-3">
             <PrimaryButton onClick={handleDownload} disabled={loading || activeOp !== null}>
               <Download className="w-4 h-4 mr-2" />
-              Download Excel
+              Download CSV
             </PrimaryButton>
           </div>
         </div>

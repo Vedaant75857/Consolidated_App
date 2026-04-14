@@ -97,6 +97,8 @@ export default function ExecutiveSummary({
   useEffect(() => {
     if (!result && !loading && !error && sessionId && apiKey) {
       runAssessment(false);
+    } else if (!apiKey && !error) {
+      setError("API key is required to run the Spend Quality Assessment. Please enter your API key above.");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

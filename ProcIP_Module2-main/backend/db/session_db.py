@@ -1,17 +1,18 @@
 """
-Session-based SQLite database management.
+Session-based DuckDB database management.
 
-Each user session gets its own on-disk .sqlite file in the .sessions/ directory.
+Each user session gets its own on-disk .duckdb file in the .sessions/ directory.
 Connections are cached for reuse within the same process.
 """
 
 import os
 import re
-import sqlite3
 import sys
 import time
 import threading
 from collections import OrderedDict
+
+from .duckdb_compat import DuckDBConnection, duckdb_connect
 
 
 def _resolve_sessions_dir() -> str:
@@ -25,9 +26,18 @@ def _resolve_sessions_dir() -> str:
 
 
 _DB_DIR = _resolve_sessions_dir()
-os.makedirs(_DB_DIR, exist_ok=True)
+try:
+    os.makedirs(_DB_DIR, exist_ok=True)
+except OSError as exc:
+    import logging as _logging
+    _logging.getLogger(__name__).error(
+        "Cannot create session folder at %s (%s). "
+        "Try moving the EXE to a writable location like your Desktop.",
+        _DB_DIR, exc,
+    )
+    raise
 
-_db_cache: "OrderedDict[str, sqlite3.Connection]" = OrderedDict()
+_db_cache: "OrderedDict[str, DuckDBConnection]" = OrderedDict()
 _db_lock = threading.Lock()
 _MAX_CACHE = max(1, int(os.getenv("SESSION_DB_MAX_CACHE", "50")))
 
@@ -40,7 +50,7 @@ def get_session_lock(session_id: str) -> threading.RLock:
     """Return a per-session reentrant lock, creating one if needed.
 
     All route handlers should acquire this lock before using the session's
-    SQLite connection so that concurrent requests for the same session are
+    database connection so that concurrent requests for the same session are
     serialised and cannot cause "database table is locked" errors.
     """
     with _db_lock:
@@ -51,8 +61,8 @@ def get_session_lock(session_id: str) -> threading.RLock:
         return lock
 
 
-def get_session_db(session_id: str) -> sqlite3.Connection:
-    """Return a cached SQLite connection for the given session, creating one if needed."""
+def get_session_db(session_id: str) -> DuckDBConnection:
+    """Return a cached DuckDB connection for the given session, creating one if needed."""
     if not _SESSION_ID_RE.match(session_id):
         raise ValueError("Invalid session ID format.")
     with _db_lock:
@@ -70,19 +80,15 @@ def get_session_db(session_id: str) -> sqlite3.Connection:
                 _db_cache.move_to_end(session_id, last=True)
                 return conn
 
-        db_path = os.path.join(_DB_DIR, f"{session_id}.sqlite")
-        conn = sqlite3.connect(db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
-        conn.execute("PRAGMA temp_store = MEMORY")
-        conn.execute("PRAGMA busy_timeout = 5000")
-        conn.execute("PRAGMA cache_size = -64000")
+        db_path = os.path.join(_DB_DIR, f"{session_id}.duckdb")
+        conn = duckdb_connect(db_path, check_same_thread=False)
 
-        conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS meta (key VARCHAR PRIMARY KEY, value VARCHAR)"
+        )
         conn.execute("""CREATE TABLE IF NOT EXISTS table_registry (
-            table_key TEXT PRIMARY KEY,
-            sql_name  TEXT NOT NULL
+            table_key VARCHAR PRIMARY KEY,
+            sql_name  VARCHAR NOT NULL
         )""")
         conn.commit()
 
@@ -109,12 +115,12 @@ def close_session_db(session_id: str) -> None:
 
 
 def delete_session_db(session_id: str) -> None:
-    """Close the connection and delete all SQLite files for a session."""
+    """Close the connection and delete all DuckDB files for a session."""
     close_session_db(session_id)
     with _db_lock:
         _session_locks.pop(session_id, None)
-    db_path = os.path.join(_DB_DIR, f"{session_id}.sqlite")
-    for suffix in ("", "-wal", "-shm"):
+    db_path = os.path.join(_DB_DIR, f"{session_id}.duckdb")
+    for suffix in ("", ".wal"):
         try:
             os.unlink(db_path + suffix)
         except OSError:
@@ -127,7 +133,7 @@ def safe_table_name(prefix: str, key: str) -> str:
     return f"{prefix}__{sanitised}"[:120]
 
 
-def register_table(conn: sqlite3.Connection, table_key: str, sql_name: str, commit: bool = True) -> None:
+def register_table(conn: DuckDBConnection, table_key: str, sql_name: str, commit: bool = True) -> None:
     """Record a logical table_key → physical sql_name mapping."""
     conn.execute(
         "INSERT OR REPLACE INTO table_registry (table_key, sql_name) VALUES (?, ?)",
@@ -137,14 +143,14 @@ def register_table(conn: sqlite3.Connection, table_key: str, sql_name: str, comm
         conn.commit()
 
 
-def unregister_table(conn: sqlite3.Connection, table_key: str, commit: bool = True) -> None:
+def unregister_table(conn: DuckDBConnection, table_key: str, commit: bool = True) -> None:
     """Remove a table_key from the registry."""
     conn.execute("DELETE FROM table_registry WHERE table_key = ?", (table_key,))
     if commit:
         conn.commit()
 
 
-def lookup_sql_name(conn: sqlite3.Connection, table_key: str) -> str | None:
+def lookup_sql_name(conn: DuckDBConnection, table_key: str) -> str | None:
     """Look up the physical SQL table name for a logical table_key."""
     row = conn.execute(
         "SELECT sql_name FROM table_registry WHERE table_key = ?", (table_key,)
@@ -152,7 +158,7 @@ def lookup_sql_name(conn: sqlite3.Connection, table_key: str) -> str | None:
     return row["sql_name"] if row else None
 
 
-def all_registered_tables(conn: sqlite3.Connection) -> list[dict]:
+def all_registered_tables(conn: DuckDBConnection) -> list[dict]:
     """Return all registered table mappings as a list of dicts."""
     rows = conn.execute("SELECT table_key, sql_name FROM table_registry").fetchall()
     return [{"table_key": r["table_key"], "sql_name": r["sql_name"]} for r in rows]
@@ -164,13 +170,13 @@ def cleanup_stale_sessions(max_age_ms: int = 24 * 60 * 60 * 1000) -> int:
     cleaned = 0
     try:
         for f in os.listdir(_DB_DIR):
-            if not f.endswith(".sqlite"):
+            if not f.endswith(".duckdb"):
                 continue
             fpath = os.path.join(_DB_DIR, f)
             try:
                 mtime_ms = os.path.getmtime(fpath) * 1000
                 if now - mtime_ms > max_age_ms:
-                    session_id = f.replace(".sqlite", "")
+                    session_id = f.replace(".duckdb", "")
                     delete_session_db(session_id)
                     cleaned += 1
             except OSError:
@@ -181,7 +187,7 @@ def cleanup_stale_sessions(max_age_ms: int = 24 * 60 * 60 * 1000) -> int:
 
 
 def cleanup_all_sessions() -> int:
-    """Close every cached connection and delete all session SQLite files."""
+    """Close every cached connection and delete all session DuckDB files."""
     cleaned = 0
     with _db_lock:
         for sid, conn in list(_db_cache.items()):
@@ -194,11 +200,11 @@ def cleanup_all_sessions() -> int:
 
     try:
         for f in os.listdir(_DB_DIR):
-            if not f.endswith((".sqlite", ".sqlite-wal", ".sqlite-shm")):
+            if not f.endswith((".duckdb", ".duckdb.wal")):
                 continue
             try:
                 os.unlink(os.path.join(_DB_DIR, f))
-                if f.endswith(".sqlite"):
+                if f.endswith(".duckdb"):
                     cleaned += 1
             except OSError:
                 pass

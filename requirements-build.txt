@@ -11,6 +11,9 @@ pydantic>=2.10,<3
 rapidfuzz
 werkzeug==3.0.1
 
+# DuckDB (analytics engine for all modules)
+duckdb>=1.0,<2
+
 # Module 2 (Data Normalizer)
 xlsxwriter==3.1.9
 openai>=1.12.0

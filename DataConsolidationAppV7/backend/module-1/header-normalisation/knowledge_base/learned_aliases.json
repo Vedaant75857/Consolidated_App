@@ -251,7 +251,8 @@
     "COUNTRY"
   ],
   "PO Line Item Description 1": [
-    "SHORTTEXT"
+    "SHORTTEXT",
+    "PURCHASE ORDER TEXT"
   ],
   "Spend Classification Level 1": [
     "CATEGORY1"
@@ -267,7 +268,8 @@
   ],
   "Cost Center Description": [
     "COSTCENTERDESCRIPTION",
-    "COSTCENTERNAME"
+    "COSTCENTERNAME",
+    "CO OBJECT NAME"
   ],
   "PO Material Description": [
     "MATERIAL"
@@ -280,5 +282,8 @@
   ],
   "PO Line Item Unit Price": [
     "ITEM_UNIT_PRICE"
+  ],
+  "Procurement Contract Owner": [
+    "NAME"
   ]
 }

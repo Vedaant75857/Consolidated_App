@@ -1,6 +1,5 @@
 import logging
 import re
-import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any
@@ -9,6 +8,7 @@ import pandas as pd
 
 from shared.ai_client import call_ai_json
 from shared.db import set_meta
+from shared.duckdb_compat import DuckDBConnection
 from services.upload.file_loader import _get_registry
 
 logger = logging.getLogger(__name__)
@@ -419,47 +419,94 @@ PER_FIELD_HINTS: dict[str, str] = {
 # Per-field AI prompt template
 # ---------------------------------------------------------------------------
 
-_SINGLE_FIELD_SYSTEM_PROMPT = """You are a senior procurement data analyst. You are mapping ONE specific field
-from a procurement dataset.
+_SINGLE_FIELD_SYSTEM_PROMPT = """You are a senior procurement data analyst mapping columns from an uploaded dataset to standard procurement fields.
 
-TARGET FIELD:
+TARGET FIELD TO MAP:
 - Name: {display_name}
-- Type: {expected_type}
+- Expected data type: {expected_type}
 - Description: {description}
 
-DISAMBIGUATION HINTS:
+ALL STANDARD FIELDS BEING MAPPED (so you know what else exists — do NOT pick a column that clearly belongs to a different field):
+{all_fields_list}
+
+DISAMBIGUATION HINTS FOR THIS FIELD:
 {hints}
 
-TYPE INFERENCE RULES (infer from sample values):
-- numeric: sample values are numbers, possibly with currency symbols/commas
-- datetime: sample values look like dates
-- string: sample values are free-text, codes, or names
+EACH COLUMN IN THE INPUT HAS:
+- "name": the column header from the uploaded file
+- "samples": up to 30 distinct non-empty sample values
+- "inferredType": pre-computed type based on the actual data ("numeric", "datetime", or "string")
+- "distinctCount": number of unique non-empty values across the dataset
+- "nullRate": fraction of rows that are null/empty (0.0 = fully populated, 1.0 = all empty)
+- "totalRows": total row count
 
-TYPE COMPATIBILITY:
-- numeric fields: only map columns whose samples are parseable as numbers
-- datetime fields: only map columns whose samples are parseable as dates
-- string fields: can map any column
+MATCHING RULES (follow strictly):
+1. TYPE COMPATIBILITY IS MANDATORY:
+   - If this field expects "numeric", the column's inferredType MUST be "numeric". Do NOT map a string or datetime column.
+   - If this field expects "datetime", the column's inferredType MUST be "datetime". Do NOT map a numeric or string column.
+   - If this field expects "string", any inferredType is acceptable.
+2. Use distinctCount to disambiguate hierarchy levels: L1 typically has 5-20 distinct values, L2 has 20-80, L3 has 100+.
+3. Use column NAME as the primary signal. If the name clearly matches another standard field better, return null for this one.
+4. Use sample VALUES to confirm the match — do they look like what this field should contain?
+5. If no column is a confident match, return null. A wrong match is worse than no match.
 
-Given the list of available columns with sample values, find the best match for this field.
-Return a JSON object with keys: "bestMatch" (column name or null), "alternatives" (array of
-up to 2 alternative column names), "reasoning" (brief explanation)."""
+RESPONSE FORMAT (strict JSON):
+{{"bestMatch": "<exact column name from the list or null>", "alternatives": ["<up to 2 column names>"], "confidence": "high|medium|low", "reasoning": "<brief explanation>"}}
+
+CRITICAL: bestMatch MUST be the EXACT column name string from the input, or null. Do not invent or modify column names."""
 
 # ---------------------------------------------------------------------------
 # Deterministic exact-match pass
 # ---------------------------------------------------------------------------
 
 
+def _tokenize(name: str) -> set[str]:
+    """Split a name into lowercase tokens for fuzzy comparison."""
+    return set(re.split(r"[\s_\-./]+", name.strip().lower())) - {"", "the", "of", "in", "a"}
+
+
+def _fuzzy_score(col_name: str, field: dict[str, Any]) -> float:
+    """Score how well a column name matches a field (0.0 to 1.0).
+
+    Checks displayName, aliases, and fieldKey using token overlap.
+    """
+    col_tokens = _tokenize(col_name)
+    if not col_tokens:
+        return 0.0
+
+    best = 0.0
+    candidates = [field["displayName"], field["fieldKey"].replace("_", " ")]
+    candidates.extend(field.get("aliases", []))
+
+    for candidate in candidates:
+        cand_tokens = _tokenize(candidate)
+        if not cand_tokens:
+            continue
+        overlap = len(col_tokens & cand_tokens)
+        score = overlap / max(len(col_tokens), len(cand_tokens))
+        # Bonus for substring containment
+        col_lower = col_name.strip().lower()
+        cand_lower = candidate.strip().lower()
+        if cand_lower in col_lower or col_lower in cand_lower:
+            score = max(score, 0.7)
+        best = max(best, score)
+
+    return best
+
+
 def deterministic_match(
     columns: list[dict[str, Any]],
 ) -> tuple[dict[str, str], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Match uploaded columns to standard fields by exact name (case-insensitive).
+    """Match uploaded columns to standard fields by exact name, then fuzzy tokens.
+
+    Pass 1: Exact case-insensitive match on displayName and aliases.
+    Pass 2: Fuzzy token-overlap match (score >= 0.6) for remaining columns/fields.
 
     Returns:
         (matched, unmatched_fields, unmatched_columns) where matched is
-        {fieldKey: columnName}, unmatched_fields is a list of STANDARD_FIELDS
-        entries that had no match, and unmatched_columns is columns not consumed.
+        {fieldKey: columnName}.
     """
-    lookup: dict[str, str] = {}  # lowercase name -> fieldKey
+    lookup: dict[str, str] = {}
     for field in STANDARD_FIELDS:
         lookup[field["displayName"].lower()] = field["fieldKey"]
         for alias in field.get("aliases", []):
@@ -467,9 +514,10 @@ def deterministic_match(
             if lower_alias not in lookup:
                 lookup[lower_alias] = field["fieldKey"]
 
-    matched: dict[str, str] = {}  # fieldKey -> column name
+    matched: dict[str, str] = {}
     consumed_columns: set[str] = set()
 
+    # Pass 1: exact match
     for col in columns:
         col_lower = col["name"].strip().lower()
         if col_lower in lookup:
@@ -477,6 +525,33 @@ def deterministic_match(
             if fk not in matched:
                 matched[fk] = col["name"]
                 consumed_columns.add(col["name"])
+
+    # Pass 2: fuzzy match for remaining
+    matched_keys = set(matched.keys())
+    remaining_fields = [f for f in STANDARD_FIELDS if f["fieldKey"] not in matched_keys]
+    remaining_cols = [c for c in columns if c["name"] not in consumed_columns]
+
+    FUZZY_THRESHOLD = 0.6
+    for field in remaining_fields:
+        best_col = None
+        best_score = 0.0
+        for col in remaining_cols:
+            if col["name"] in consumed_columns:
+                continue
+            # Check type compatibility for fuzzy matches
+            col_type = col.get("inferredType", "string")
+            field_type = field["expectedType"]
+            if field_type == "numeric" and col_type != "numeric":
+                continue
+            if field_type == "datetime" and col_type != "datetime":
+                continue
+            score = _fuzzy_score(col["name"], field)
+            if score > best_score:
+                best_score = score
+                best_col = col
+        if best_col and best_score >= FUZZY_THRESHOLD:
+            matched[field["fieldKey"]] = best_col["name"]
+            consumed_columns.add(best_col["name"])
 
     matched_keys = set(matched.keys())
     unmatched_fields = [f for f in STANDARD_FIELDS if f["fieldKey"] not in matched_keys]
@@ -490,22 +565,41 @@ def deterministic_match(
 # ---------------------------------------------------------------------------
 
 
+def _build_all_fields_list() -> str:
+    """One-line-per-field summary for the AI prompt so it knows what else is being mapped."""
+    lines = []
+    for f in STANDARD_FIELDS:
+        lines.append(f"- {f['displayName']} ({f['expectedType']}): {f['description']}")
+    return "\n".join(lines)
+
+
+_ALL_FIELDS_LIST = _build_all_fields_list()
+
+
 def _ai_map_single_field(
     field: dict[str, Any],
     columns: list[dict[str, Any]],
     api_key: str,
 ) -> dict[str, Any]:
-    """Send a focused AI call for a single standard field."""
+    """Send a focused AI call for a single standard field with enriched context."""
     hints = PER_FIELD_HINTS.get(field["fieldKey"], "No specific hints for this field.")
     system_prompt = _SINGLE_FIELD_SYSTEM_PROMPT.format(
         display_name=field["displayName"],
         expected_type=field["expectedType"],
         description=field["description"],
         hints=hints,
+        all_fields_list=_ALL_FIELDS_LIST,
     )
     user_payload = {
         "columns": [
-            {"name": c["name"], "samples": c["sampleValues"][:30]}
+            {
+                "name": c["name"],
+                "samples": c.get("sampleValues", [])[:30],
+                "inferredType": c.get("inferredType", "string"),
+                "distinctCount": c.get("distinctCount", 0),
+                "nullRate": c.get("nullRate", 0.0),
+                "totalRows": c.get("totalRows", 0),
+            }
             for c in columns
         ],
     }
@@ -517,6 +611,7 @@ def _ai_map_single_field(
             "fieldKey": field["fieldKey"],
             "bestMatch": None,
             "alternatives": [],
+            "confidence": "low",
             "reasoning": f"AI call failed: {exc}",
             "expectedType": field["expectedType"],
         }
@@ -537,9 +632,101 @@ def _ai_map_single_field(
         "fieldKey": field["fieldKey"],
         "bestMatch": bm,
         "alternatives": alts,
+        "confidence": result.get("confidence", "medium"),
         "reasoning": result.get("reasoning", ""),
         "expectedType": field["expectedType"],
     }
+
+
+def _validate_ai_results(
+    results: list[dict[str, Any]],
+    available_columns: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Post-AI validation: check column existence, type compatibility, and resolve conflicts.
+
+    - Rejects bestMatch if the column name doesn't exist in the uploaded data
+    - Rejects bestMatch if the column's inferred type doesn't match the field's expected type
+    - If two fields claim the same column, the one with higher confidence keeps it
+    """
+    col_lookup = {c["name"]: c for c in available_columns}
+    valid_names = set(col_lookup.keys())
+
+    # Confidence ranking for conflict resolution
+    conf_rank = {"high": 3, "medium": 2, "low": 1}
+
+    for r in results:
+        bm = r.get("bestMatch")
+        if not bm:
+            continue
+
+        # Check column exists
+        if bm not in valid_names:
+            logger.warning(
+                "AI returned non-existent column '%s' for field %s — clearing",
+                bm, r["fieldKey"],
+            )
+            r["bestMatch"] = None
+            r["reasoning"] = f"(rejected: column '{bm}' not found) " + r.get("reasoning", "")
+            continue
+
+        # Check type compatibility
+        col_info = col_lookup.get(bm, {})
+        col_type = col_info.get("inferredType", "string")
+        field_type = r.get("expectedType", "string")
+        if field_type == "numeric" and col_type != "numeric":
+            logger.warning(
+                "Type mismatch for field %s: expected numeric, column '%s' is %s — clearing",
+                r["fieldKey"], bm, col_type,
+            )
+            r["bestMatch"] = None
+            r["reasoning"] = f"(rejected: type mismatch, need {field_type} got {col_type}) " + r.get("reasoning", "")
+        elif field_type == "datetime" and col_type != "datetime":
+            logger.warning(
+                "Type mismatch for field %s: expected datetime, column '%s' is %s — clearing",
+                r["fieldKey"], bm, col_type,
+            )
+            r["bestMatch"] = None
+            r["reasoning"] = f"(rejected: type mismatch, need {field_type} got {col_type}) " + r.get("reasoning", "")
+
+    # Resolve duplicates: if multiple fields claim the same column, highest confidence wins
+    claim_map: dict[str, list[dict[str, Any]]] = {}
+    for r in results:
+        bm = r.get("bestMatch")
+        if bm:
+            claim_map.setdefault(bm, []).append(r)
+
+    for col_name, claimants in claim_map.items():
+        if len(claimants) <= 1:
+            continue
+        claimants.sort(key=lambda x: conf_rank.get(x.get("confidence", "medium"), 2), reverse=True)
+        winner = claimants[0]
+        for loser in claimants[1:]:
+            # Try to reassign loser to its first valid alternative
+            reassigned = False
+            for alt in loser.get("alternatives", []):
+                if alt in valid_names and not any(
+                    r.get("bestMatch") == alt for r in results if r is not loser
+                ):
+                    loser["bestMatch"] = alt
+                    loser["reasoning"] = (
+                        f"(reassigned from '{col_name}' to alt '{alt}' — "
+                        f"'{col_name}' claimed by {winner['fieldKey']}) "
+                        + loser.get("reasoning", "")
+                    )
+                    reassigned = True
+                    break
+            if not reassigned:
+                loser["bestMatch"] = None
+                loser["reasoning"] = (
+                    f"(conflict: '{col_name}' claimed by {winner['fieldKey']} with higher confidence) "
+                    + loser.get("reasoning", "")
+                )
+            logger.info(
+                "Conflict on column '%s': %s wins over %s",
+                col_name, winner["fieldKey"], loser["fieldKey"],
+            )
+
+    return results
 
 
 def ai_map_columns(
@@ -547,13 +734,14 @@ def ai_map_columns(
     unmatched_columns: list[dict[str, Any]],
     api_key: str,
 ) -> list[dict[str, Any]]:
-    """Map unmatched fields to columns using parallel per-field AI calls."""
+    """Map unmatched fields to columns using parallel per-field AI calls with validation."""
     if not unmatched_fields or not unmatched_columns:
         return [
             {
                 "fieldKey": f["fieldKey"],
                 "bestMatch": None,
                 "alternatives": [],
+                "confidence": "low",
                 "reasoning": "No columns available for AI mapping",
                 "expectedType": f["expectedType"],
             }
@@ -578,10 +766,15 @@ def ai_map_columns(
                     "fieldKey": fk,
                     "bestMatch": None,
                     "alternatives": [],
+                    "confidence": "low",
                     "reasoning": f"Thread error: {exc}",
-                    "expectedType": "string",
+                    "expectedType": next(
+                        (f["expectedType"] for f in unmatched_fields if f["fieldKey"] == fk),
+                        "string",
+                    ),
                 })
 
+    results = _validate_ai_results(results, unmatched_columns)
     return results
 
 
@@ -738,12 +931,12 @@ def _parse_one_date(raw, masks):
 
 
 def build_typed_table(
-    conn: sqlite3.Connection, mapping: dict[str, str | None]
+    conn: DuckDBConnection, mapping: dict[str, str | None]
 ) -> dict[str, Any]:
     """Build the ``analysis_data`` table with enforced types.
 
     Args:
-        conn: SQLite connection for the session
+        conn: Session database connection
         mapping: dict of fieldKey -> sourceColumnName (or None if unmapped)
 
     Returns:
@@ -755,11 +948,12 @@ def build_typed_table(
     frames = []
     for tname in data_tables:
         try:
-            df = pd.read_sql(f'SELECT * FROM "{tname}"', conn)
+            df = conn._conn.execute(f'SELECT * FROM "{tname}"').df()
             if "RECORD_ID" in df.columns:
                 df = df.drop(columns=["RECORD_ID"])
             frames.append(df)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to load table '%s' for typed table build: %s", tname, exc)
             continue
 
     if not frames:
@@ -828,7 +1022,7 @@ def build_typed_table(
             "sampleFailures": [str(s) for s in sample_fails],
         }
 
-    # Store ALL datetime columns as ISO strings for SQLite compatibility
+    # Store ALL datetime columns as ISO strings for database portability
     for dt_fk in _DATETIME_FIELD_KEYS:
         if dt_fk in typed_df.columns:
             dt_col = typed_df[dt_fk]
@@ -837,7 +1031,15 @@ def build_typed_table(
                 typed_df[dt_fk] = dt_col.dt.strftime("%Y-%m-%dT%H:%M:%S")
                 typed_df.loc[nat_mask, dt_fk] = None
 
-    typed_df.to_sql("analysis_data", conn, if_exists="replace", index=False)
+    conn._conn.register("_temp_df", typed_df)
+    try:
+        conn.execute('DROP TABLE IF EXISTS "analysis_data"')
+        conn._conn.execute('CREATE TABLE "analysis_data" AS SELECT * FROM _temp_df')
+    finally:
+        try:
+            conn._conn.unregister("_temp_df")
+        except Exception:
+            pass
 
     # Critical null audit (only total_spend + invoice_date)
     mask = pd.Series(False, index=typed_df.index)
@@ -847,7 +1049,15 @@ def build_typed_table(
         mask = mask | typed_df["invoice_date"].isna()
     critical_nulls = typed_df[mask] if mask.any() else pd.DataFrame()
     if len(critical_nulls) > 0:
-        critical_nulls.to_sql("_null_rows", conn, if_exists="replace", index=False)
+        conn._conn.register("_temp_df", critical_nulls)
+        try:
+            conn.execute('DROP TABLE IF EXISTS "_null_rows"')
+            conn._conn.execute('CREATE TABLE "_null_rows" AS SELECT * FROM _temp_df')
+        finally:
+            try:
+                conn._conn.unregister("_temp_df")
+            except Exception:
+                pass
 
     conn.commit()
     set_meta(conn, "cast_report", cast_report)

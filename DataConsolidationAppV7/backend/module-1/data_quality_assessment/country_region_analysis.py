@@ -7,10 +7,9 @@ is needed.
 from __future__ import annotations
 
 import logging
-import sqlite3
 from typing import Any
 
-from shared.db import quote_id, read_table_columns
+from shared.db import DuckDBConnection, quote_id, read_table_columns
 
 from .ai_prompts import generate_country_region_insight
 from .metrics import _non_null_condition
@@ -22,7 +21,7 @@ REGION_COLUMN = "Region"
 
 
 def _unique_values(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     column: str,
     limit: int = 1000,
@@ -40,7 +39,7 @@ def _unique_values(
 
 
 def run_country_region_analysis(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     api_key: str,
 ) -> dict[str, Any]:

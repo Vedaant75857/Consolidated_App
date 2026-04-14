@@ -7,10 +7,9 @@ call for currency standardisation recommendations.
 from __future__ import annotations
 
 import logging
-import sqlite3
 from typing import Any
 
-from shared.db import quote_id, read_table_columns, table_row_count
+from shared.db import DuckDBConnection, quote_id, read_table_columns, table_row_count
 
 from .ai_prompts import generate_currency_insight
 from .metrics import (
@@ -40,7 +39,7 @@ _CURRENCY_SPEND_PAIRS: dict[str, tuple[str, str]] = {
 
 
 def run_currency_analysis(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     api_key: str,
 ) -> dict[str, Any]:

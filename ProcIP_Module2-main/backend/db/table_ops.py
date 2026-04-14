@@ -1,13 +1,17 @@
 """
-Core table CRUD operations against SQLite.
+Core table CRUD operations against DuckDB.
 
-All data is stored as TEXT columns. Rows are inserted in batches for performance.
+All data is stored as VARCHAR columns. Bulk operations use DuckDB's native
+DataFrame ingestion when possible; row-streaming is the fallback for generators.
 """
 
 from __future__ import annotations
 
-import sqlite3
 from typing import Any, Iterator
+
+import pandas as pd
+
+from .duckdb_compat import DuckDBConnection
 
 
 def quote_id(name: str) -> str:
@@ -15,8 +19,8 @@ def quote_id(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
-def store_table(conn: sqlite3.Connection, table_name: str, rows: list[dict[str, Any]]) -> None:
-    """Store a list of row-dicts as a SQLite table. Drops any existing table first."""
+def store_table(conn: DuckDBConnection, table_name: str, rows: list[dict[str, Any]]) -> None:
+    """Store a list of row-dicts as a DuckDB table. Drops any existing table first."""
     if not rows:
         conn.execute(f"DROP TABLE IF EXISTS {quote_id(table_name)}")
         conn.commit()
@@ -27,7 +31,7 @@ def store_table(conn: sqlite3.Connection, table_name: str, rows: list[dict[str, 
         return
 
     columns = list(first.keys())
-    col_defs = ", ".join(f"{quote_id(c)} TEXT" for c in columns)
+    col_defs = ", ".join(f"{quote_id(c)} VARCHAR" for c in columns)
     conn.execute(f"DROP TABLE IF EXISTS {quote_id(table_name)}")
     conn.execute(f"CREATE TABLE {quote_id(table_name)} ({col_defs})")
 
@@ -52,20 +56,20 @@ def store_table(conn: sqlite3.Connection, table_name: str, rows: list[dict[str, 
 
 
 def store_table_streaming(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     columns: list[str],
     row_iterator: Iterator,
     commit: bool = True,
 ) -> int:
-    """Stream rows from an iterator into a SQLite table without materialising the full dataset.
+    """Stream rows from an iterator into a DuckDB table without materialising the full dataset.
 
     Returns the number of rows inserted.
     """
     if not columns:
         return 0
 
-    col_defs = ", ".join(f"{quote_id(c)} TEXT" for c in columns)
+    col_defs = ", ".join(f"{quote_id(c)} VARCHAR" for c in columns)
     conn.execute(f"DROP TABLE IF EXISTS {quote_id(table_name)}")
     conn.execute(f"CREATE TABLE {quote_id(table_name)} ({col_defs})")
 
@@ -104,7 +108,62 @@ def store_table_streaming(
     return total
 
 
-def read_table(conn: sqlite3.Connection, table_name: str, limit: int | None = None) -> list[dict]:
+def store_df_native(
+    conn: DuckDBConnection,
+    table_name: str,
+    df: pd.DataFrame,
+    *,
+    commit: bool = True,
+    as_varchar: bool = True,
+) -> int:
+    """Persist a DataFrame using DuckDB's zero-copy register path.
+
+    Avoids Python row iteration entirely — orders of magnitude faster than
+    store_table_streaming for large DataFrames.
+
+    Args:
+        conn: DuckDB session connection.
+        table_name: Target table name (will be dropped first if it exists).
+        df: The pandas DataFrame to store.
+        commit: Whether to commit after the write.
+        as_varchar: If True, cast all columns to VARCHAR for consistency.
+
+    Returns:
+        Number of rows written.
+    """
+    if df is None or df.empty:
+        conn.execute(f"DROP TABLE IF EXISTS {quote_id(table_name)}")
+        if commit:
+            conn.commit()
+        return 0
+
+    view_name = f"_tmp_df_{id(df)}"
+    raw_conn = conn._conn
+    raw_conn.register(view_name, df)
+    try:
+        conn.execute(f"DROP TABLE IF EXISTS {quote_id(table_name)}")
+        if as_varchar:
+            cols = ", ".join(
+                f"CAST({quote_id(str(c))} AS VARCHAR) AS {quote_id(str(c))}"
+                for c in df.columns
+            )
+            conn.execute(
+                f"CREATE TABLE {quote_id(table_name)} AS "
+                f"SELECT {cols} FROM {quote_id(view_name)}"
+            )
+        else:
+            conn.execute(
+                f"CREATE TABLE {quote_id(table_name)} AS "
+                f"SELECT * FROM {quote_id(view_name)}"
+            )
+        if commit:
+            conn.commit()
+    finally:
+        raw_conn.unregister(view_name)
+    return len(df)
+
+
+def read_table(conn: DuckDBConnection, table_name: str, limit: int | None = None) -> list[dict]:
     """Read all (or up to limit) rows from a table as a list of dicts."""
     if not table_exists(conn, table_name):
         return []
@@ -113,40 +172,38 @@ def read_table(conn: sqlite3.Connection, table_name: str, limit: int | None = No
         rows = conn.execute(f"SELECT * FROM {tbl} LIMIT ?", (limit,)).fetchall()
     else:
         rows = conn.execute(f"SELECT * FROM {tbl}").fetchall()
-    return [dict(r) for r in rows]
+    return [dict(zip(r.keys(), r)) for r in rows]
 
 
-def read_table_columns(conn: sqlite3.Connection, table_name: str) -> list[str]:
+def read_table_columns(conn: DuckDBConnection, table_name: str) -> list[str]:
     """Return ordered column names for a table."""
     if not table_exists(conn, table_name):
         return []
-    rows = conn.execute(f"PRAGMA table_info({quote_id(table_name)})").fetchall()
-    return [r["name"] for r in sorted(rows, key=lambda r: r["cid"])]
+    rows = conn.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = ? ORDER BY ordinal_position",
+        (table_name,),
+    ).fetchall()
+    return [r["column_name"] for r in rows]
 
 
-def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+def table_exists(conn: DuckDBConnection, table_name: str) -> bool:
     """Check whether a table exists in the database."""
     row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
-        (table_name,),
-    ).fetchone()
-    if row:
-        return True
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_temp_master WHERE type='table' AND name = ?",
+        "SELECT 1 FROM information_schema.tables WHERE table_name = ?",
         (table_name,),
     ).fetchone()
     return row is not None
 
 
-def drop_table(conn: sqlite3.Connection, table_name: str, *, commit: bool = True) -> None:
+def drop_table(conn: DuckDBConnection, table_name: str, *, commit: bool = True) -> None:
     """Drop a table if it exists."""
     conn.execute(f"DROP TABLE IF EXISTS {quote_id(table_name)}")
     if commit:
         conn.commit()
 
 
-def table_row_count(conn: sqlite3.Connection, table_name: str) -> int:
+def table_row_count(conn: DuckDBConnection, table_name: str) -> int:
     """Return the number of rows in a table, or 0 if the table does not exist."""
     if not table_exists(conn, table_name):
         return 0
@@ -154,7 +211,7 @@ def table_row_count(conn: sqlite3.Connection, table_name: str) -> int:
     return row["cnt"] if row else 0
 
 
-def iterate_table(conn: sqlite3.Connection, table_name: str) -> Iterator[dict]:
+def iterate_table(conn: DuckDBConnection, table_name: str) -> Iterator[dict]:
     """Iterate rows without loading them all into memory."""
     cursor = conn.execute(f"SELECT * FROM {quote_id(table_name)}")
     cols = [desc[0] for desc in cursor.description]

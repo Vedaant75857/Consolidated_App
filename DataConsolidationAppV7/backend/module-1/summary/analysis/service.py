@@ -7,9 +7,15 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-import sqlite3
-
-from shared.db import column_stats, get_meta, quote_id, read_table_columns, table_exists, table_row_count
+from shared.db import (
+    DuckDBConnection,
+    column_stats,
+    get_meta,
+    quote_id,
+    read_table_columns,
+    table_exists,
+    table_row_count,
+)
 from shared.ai import call_ai_json
 
 
@@ -31,11 +37,11 @@ estimate_duplicate_rows = _stats.estimate_duplicate_rows
 
 def _numeric_predicate(qc: str) -> str:
     t = f"TRIM(CAST({qc} AS TEXT))"
-    return f"({t} GLOB '*[0-9]*' AND {t} NOT GLOB '*[^0-9.eE+-]*')"
+    return f"(regexp_matches({t}, '[0-9]') AND regexp_matches({t}, '^[0-9eE.+-]+$'))"
 
 
 def _enrich_column_stats(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     columns: list[str] | None = None,
 ) -> list[dict[str, Any]]:
@@ -70,7 +76,7 @@ def _enrich_column_stats(
 
 
 def run_analysis(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     session_id: str,
     api_key: str,
     columns: list[str] | None = None,
@@ -296,7 +302,7 @@ Your response must be a JSON object with:
 """
 
 
-def _detect_date_columns(conn: sqlite3.Connection, table_name: str, columns: list[str]) -> list[str]:
+def _detect_date_columns(conn: DuckDBConnection, table_name: str, columns: list[str]) -> list[str]:
     """Heuristic: columns whose names suggest dates or that have parseable date values."""
     date_keywords = {"date", "dt", "period", "month", "year", "time", "timestamp", "invoice_date",
                      "po_date", "order_date", "delivery_date", "payment_date", "created", "updated"}
@@ -321,7 +327,7 @@ def _detect_spend_columns(columns: list[str]) -> list[str]:
 
 
 def run_procurement_analysis(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     session_id: str,
     api_key: str,
 ) -> dict[str, Any]:
@@ -418,7 +424,7 @@ def run_procurement_analysis(
                 try:
                     rows = conn.execute(
                         f"SELECT TRIM(CAST({cq} AS TEXT)) AS currency, "
-                        f"SUM(CAST({sq} AS REAL)) AS total_spend, "
+                        f"SUM(TRY_CAST({sq} AS REAL)) AS total_spend, "
                         f"COUNT(*) AS row_count "
                         f"FROM {quote_id('final_merged')} "
                         f"WHERE {sq} IS NOT NULL AND TRIM(CAST({sq} AS TEXT)) != '' "
@@ -438,7 +444,7 @@ def run_procurement_analysis(
         else:
             try:
                 row = conn.execute(
-                    f"SELECT SUM(CAST({sq} AS REAL)) AS total_spend, COUNT(*) AS row_count "
+                    f"SELECT SUM(TRY_CAST({sq} AS REAL)) AS total_spend, COUNT(*) AS row_count "
                     f"FROM {quote_id('final_merged')} WHERE {sq} IS NOT NULL AND TRIM(CAST({sq} AS TEXT)) != ''"
                 ).fetchone()
                 if row:

@@ -7,10 +7,9 @@ runs aggregate SQL, and returns JSON-serialisable dicts.  No AI calls here.
 from __future__ import annotations
 
 import re
-import sqlite3
 from typing import Any
 
-from shared.db import quote_id, read_table_columns, table_exists, table_row_count
+from shared.db import DuckDBConnection, quote_id, read_table_columns, table_exists, table_row_count
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +64,7 @@ def _non_null_condition(qc: str) -> str:
 # ── fill rate (batch) ──────────────────────────────────────────────────────
 
 def compute_fill_rates(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     columns: list[str],
 ) -> dict[str, dict[str, Any]]:
@@ -163,7 +162,7 @@ def _extract_year(value: str) -> str | None:
 
 
 def compute_date_metrics(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     column: str,
     sample_per_file: int = 100,
@@ -256,7 +255,7 @@ def compute_date_metrics(
 # ── spend metrics ──────────────────────────────────────────────────────────
 
 def compute_spend_metrics(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     column: str,
 ) -> dict[str, Any]:
@@ -270,16 +269,16 @@ def compute_spend_metrics(
     row = conn.execute(
         f"SELECT "
         f"  COUNT(*) AS total, "
-        f"  SUM(CASE WHEN TRIM({qc}) GLOB '*[0-9]*' "
-        f"       AND TRIM({qc}) NOT GLOB '*[^0-9.eE+-]*' "
+        f"  SUM(CASE WHEN regexp_matches(TRIM({qc}), '[0-9]') "
+        f"       AND regexp_matches(TRIM({qc}), '^[0-9eE.+-]+$') "
         f"       THEN CAST({qc} AS REAL) ELSE 0 END) AS total_spend, "
         f"  COUNT(CASE WHEN {_non_null_condition(qc)} "
-        f"       AND (TRIM({qc}) NOT GLOB '*[0-9]*' "
-        f"            OR TRIM({qc}) GLOB '*[^0-9.eE+-]*') "
+        f"       AND (NOT regexp_matches(TRIM({qc}), '[0-9]') "
+        f"            OR NOT regexp_matches(TRIM({qc}), '^[0-9eE.+-]+$')) "
         f"       THEN 1 END) AS non_numeric, "
         f"  COUNT(CASE WHEN {_non_null_condition(qc)} "
-        f"       AND TRIM({qc}) GLOB '*[0-9]*' "
-        f"       AND TRIM({qc}) NOT GLOB '*[^0-9.eE+-]*' "
+        f"       AND regexp_matches(TRIM({qc}), '[0-9]') "
+        f"       AND regexp_matches(TRIM({qc}), '^[0-9eE.+-]+$') "
         f"       THEN 1 END) AS numeric_ct "
         f"FROM {tbl}"
     ).fetchone()
@@ -294,7 +293,7 @@ def compute_spend_metrics(
 # ── supplier metrics ───────────────────────────────────────────────────────
 
 def compute_supplier_metrics(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     vendor_col: str,
     spend_col: str | None,
@@ -332,8 +331,8 @@ def compute_supplier_metrics(
     qs = quote_id(spend_col)
     vendor_spend_rows = conn.execute(
         f"SELECT {qv} AS vendor, "
-        f"  SUM(CAST(CASE WHEN TRIM({qs}) GLOB '*[0-9]*' "
-        f"       AND TRIM({qs}) NOT GLOB '*[^0-9.eE+-]*' "
+        f"  SUM(CAST(CASE WHEN regexp_matches(TRIM({qs}), '[0-9]') "
+        f"       AND regexp_matches(TRIM({qs}), '^[0-9eE.+-]+$') "
         f"       THEN {qs} ELSE '0' END AS REAL)) AS spend "
         f"FROM {tbl} "
         f"WHERE {_non_null_condition(qv)} "
@@ -379,7 +378,7 @@ def _build_null_proxy_sql(qc: str) -> str:
 
 
 def compute_description_metrics(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     column: str,
 ) -> dict[str, Any]:
@@ -406,7 +405,7 @@ def compute_description_metrics(
         f"  AVG(CASE WHEN {nn} THEN LENGTH(TRIM({qc})) END) AS avg_len, "
         f"  {proxy_expr} AS proxy_ct, "
         f"  COUNT(CASE WHEN {nn} "
-        f"       AND (TRIM({qc}) GLOB '*[A-Za-z]*' OR TRIM({qc}) GLOB '*[0-9]*') "
+        f"       AND (regexp_matches(TRIM({qc}), '[A-Za-z]') OR regexp_matches(TRIM({qc}), '[0-9]')) "
         f"       THEN 1 END) AS alphanumeric_ct "
         f"FROM {tbl}"
     )
@@ -424,7 +423,7 @@ def compute_description_metrics(
 # ── non-procurable spend ──────────────────────────────────────────────────
 
 def compute_non_procurable_spend(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     desc_column: str,
     spend_column: str | None,
@@ -460,8 +459,8 @@ def compute_non_procurable_spend(
         for kw in NON_PROCURABLE_KEYWORDS
     )
     numeric_check = (
-        f"TRIM({qs}) GLOB '*[0-9]*' "
-        f"AND TRIM({qs}) NOT GLOB '*[^0-9.eE+-]*'"
+        f"regexp_matches(TRIM({qs}), '[0-9]') "
+        f"AND regexp_matches(TRIM({qs}), '^[0-9eE.+-]+$')"
     )
     np_filter = f"({keyword_conditions}) AND ({numeric_check})"
 
@@ -508,7 +507,7 @@ def compute_non_procurable_spend(
 # ── alphanumeric spend ────────────────────────────────────────────────────
 
 def compute_alphanumeric_spend(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     desc_column: str,
     spend_column: str | None,
@@ -540,11 +539,11 @@ def compute_alphanumeric_spend(
     nn_d = _non_null_condition(qd)
 
     alphanumeric_cond = (
-        f"(TRIM({qd}) GLOB '*[A-Za-z]*' OR TRIM({qd}) GLOB '*[0-9]*')"
+        f"(regexp_matches(TRIM({qd}), '[A-Za-z]') OR regexp_matches(TRIM({qd}), '[0-9]'))"
     )
     numeric_spend = (
-        f"TRIM({qs}) GLOB '*[0-9]*' "
-        f"AND TRIM({qs}) NOT GLOB '*[^0-9.eE+-]*'"
+        f"regexp_matches(TRIM({qs}), '[0-9]') "
+        f"AND regexp_matches(TRIM({qs}), '^[0-9eE.+-]+$')"
     )
 
     # Total alphanumeric spend
@@ -587,7 +586,7 @@ def compute_alphanumeric_spend(
 # ── currency metrics ───────────────────────────────────────────────────────
 
 def compute_currency_metrics(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     column: str,
     limit: int = 200,
@@ -612,7 +611,7 @@ def compute_currency_metrics(
 
 
 def compute_currency_quality_analysis(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     currency_column: str,
     local_spend_col: str | None,
@@ -644,8 +643,8 @@ def compute_currency_quality_analysis(
             return f"NULL AS {alias}"
         qs = quote_id(spend_col)
         return (
-            f"SUM(CASE WHEN TRIM({qs}) GLOB '*[0-9]*' "
-            f"AND TRIM({qs}) NOT GLOB '*[^0-9.eE+-]*' "
+            f"SUM(CASE WHEN regexp_matches(TRIM({qs}), '[0-9]') "
+            f"AND regexp_matches(TRIM({qs}), '^[0-9eE.+-]+$') "
             f"THEN CAST({qs} AS REAL) ELSE 0 END) AS {alias}"
         )
 
@@ -706,7 +705,7 @@ _SYSTEM_COLUMNS: set[str] = {"FILE_NAME", "RECORD_ID"}
 
 
 def compute_fill_rate_summary(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     exclude: set[str] | None = None,
 ) -> list[dict[str, Any]]:

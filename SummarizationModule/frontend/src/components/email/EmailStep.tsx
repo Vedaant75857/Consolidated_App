@@ -91,7 +91,7 @@ export default function EmailStep({
             className="flex items-center gap-1.5 text-xs font-medium text-neutral-500 dark:text-neutral-400 hover:text-primary transition-colors"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
-            Back to Dashboard
+            Back to Procurement Views
           </button>
         </div>
         <div className="flex items-center gap-2">

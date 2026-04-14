@@ -23,8 +23,13 @@ def available_views():
             return jsonify({"error": "Invalid session"}), 400
 
         conn = get_session_db(session_id)
-        mapping = get_meta(conn, "mapping")
-        conn.close()
+        try:
+            mapping = get_meta(conn, "mapping")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
         if not mapping:
             return jsonify({"error": "No mapping confirmed yet."}), 400
@@ -49,18 +54,23 @@ def compute():
             return jsonify({"error": "No views selected"}), 400
 
         conn = get_session_db(session_id)
-        mapping = get_meta(conn, "mapping")
-        if not mapping:
-            return jsonify({"error": "No mapping confirmed yet."}), 400
+        try:
+            mapping = get_meta(conn, "mapping")
+            if not mapping:
+                return jsonify({"error": "No mapping confirmed yet."}), 400
 
-        logger.info("Computing %d view(s) for session %s", len(selected_views), session_id)
-        results = compute_views(conn, selected_views, config, mapping)
+            logger.info("Computing %d view(s) for session %s", len(selected_views), session_id)
+            results = compute_views(conn, selected_views, config, mapping)
 
-        set_meta(conn, "view_results", results)
-        set_meta(conn, "step", 6)
-        conn.close()
+            set_meta(conn, "view_results", results)
+            set_meta(conn, "step", 6)
 
-        return jsonify({"views": results})
+            return jsonify({"views": results})
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
     except Exception as exc:
         logger.error("compute-views failed: %s", exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500
@@ -81,24 +91,28 @@ def recompute_view():
             return jsonify({"error": "viewId required"}), 400
 
         conn = get_session_db(session_id)
-        mapping = get_meta(conn, "mapping")
-        if not mapping:
-            return jsonify({"error": "No mapping confirmed yet."}), 400
+        try:
+            mapping = get_meta(conn, "mapping")
+            if not mapping:
+                return jsonify({"error": "No mapping confirmed yet."}), 400
 
-        results = compute_views(conn, [view_id], config, mapping)
-        if not results:
-            conn.close()
-            return jsonify({"error": f"View {view_id} not found or could not be computed"}), 404
+            results = compute_views(conn, [view_id], config, mapping)
+            if not results:
+                return jsonify({"error": f"View {view_id} not found or could not be computed"}), 404
 
-        view_results = get_meta(conn, "view_results") or []
-        new_view = results[0]
-        view_results = [new_view if v.get("viewId") == view_id else v for v in view_results]
-        if not any(v.get("viewId") == view_id for v in view_results):
-            view_results.append(new_view)
-        set_meta(conn, "view_results", view_results)
-        conn.close()
+            view_results = get_meta(conn, "view_results") or []
+            new_view = results[0]
+            view_results = [new_view if v.get("viewId") == view_id else v for v in view_results]
+            if not any(v.get("viewId") == view_id for v in view_results):
+                view_results.append(new_view)
+            set_meta(conn, "view_results", view_results)
 
-        return jsonify({"view": new_view})
+            return jsonify({"view": new_view})
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
     except Exception as exc:
         logger.error("recompute-view failed: %s", exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500
@@ -121,22 +135,26 @@ def generate_summary():
             return jsonify({"error": "apiKey required"}), 400
 
         conn = get_session_db(session_id)
-        view_results = get_meta(conn, "view_results") or []
-        view = next((v for v in view_results if v.get("viewId") == view_id), None)
-        if not view:
-            conn.close()
-            return jsonify({"error": f"View {view_id} not found"}), 404
+        try:
+            view_results = get_meta(conn, "view_results") or []
+            view = next((v for v in view_results if v.get("viewId") == view_id), None)
+            if not view:
+                return jsonify({"error": f"View {view_id} not found"}), 404
 
-        summary = generate_summary_for_view(view, api_key.strip())
+            summary = generate_summary_for_view(view, api_key.strip())
 
-        for v in view_results:
-            if v.get("viewId") == view_id:
-                v["aiSummary"] = summary
-                break
-        set_meta(conn, "view_results", view_results)
-        conn.close()
+            for v in view_results:
+                if v.get("viewId") == view_id:
+                    v["aiSummary"] = summary
+                    break
+            set_meta(conn, "view_results", view_results)
 
-        return jsonify({"viewId": view_id, "summary": summary})
+            return jsonify({"viewId": view_id, "summary": summary})
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
     except Exception as exc:
         logger.error("generate-summary failed: %s", exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500
@@ -178,21 +196,25 @@ def executive_summary():
             return jsonify({"error": "Missing API key"}), 400
 
         conn = get_session_db(str(session_id))
-        lock = _es_lock(str(session_id))
+        try:
+            lock = _es_lock(str(session_id))
 
-        with lock:
-            # Return cached result unless force-rerun requested
-            if not force:
-                cached = get_meta(conn, "executive_summary")
-                if cached:
-                    conn.close()
-                    return jsonify(cached)
+            with lock:
+                # Return cached result unless force-rerun requested
+                if not force:
+                    cached = get_meta(conn, "executive_summary")
+                    if cached:
+                        return jsonify(cached)
 
-            result = run_executive_summary(conn, str(api_key).strip())
-            set_meta(conn, "executive_summary", result)
-            conn.close()
+                result = run_executive_summary(conn, str(api_key).strip())
+                set_meta(conn, "executive_summary", result)
 
-        return jsonify(result)
+            return jsonify(result)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400

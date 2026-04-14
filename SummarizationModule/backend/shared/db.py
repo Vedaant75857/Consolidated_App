@@ -1,8 +1,11 @@
 import json
 import os
-import sqlite3
 import sys
+import threading
+from collections import OrderedDict
 from typing import Any
+
+from shared.duckdb_compat import DuckDBConnection, duckdb_connect
 
 
 def _resolve_sessions_dir() -> str:
@@ -13,36 +16,88 @@ def _resolve_sessions_dir() -> str:
 
 
 SESSIONS_DIR = _resolve_sessions_dir()
-os.makedirs(SESSIONS_DIR, exist_ok=True)
+try:
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+except OSError as exc:
+    import logging as _logging
+    _logging.getLogger(__name__).error(
+        "Cannot create session folder at %s (%s). "
+        "Try moving the EXE to a writable location like your Desktop.",
+        SESSIONS_DIR, exc,
+    )
+    raise
+
+_db_cache: "OrderedDict[str, DuckDBConnection]" = OrderedDict()
+_db_lock = threading.Lock()
+_MAX_CACHE = max(1, int(os.getenv("SESSION_DB_MAX_CACHE", "50")))
 
 
 def _db_path(session_id: str) -> str:
     safe = "".join(c for c in session_id if c.isalnum() or c in "-_")
-    return os.path.join(SESSIONS_DIR, f"{safe}.sqlite")
+    return os.path.join(SESSIONS_DIR, f"{safe}.duckdb")
 
 
-def get_session_db(session_id: str) -> sqlite3.Connection:
-    path = _db_path(session_id)
-    conn = sqlite3.connect(path, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    _ensure_meta(conn)
-    return conn
+def get_session_db(session_id: str) -> DuckDBConnection:
+    """Return a cached DuckDB connection for the given session.
+
+    Reuses an existing connection from the LRU cache when possible, creating
+    a new one only when necessary. Evicts the oldest connection when the
+    cache exceeds _MAX_CACHE entries.
+    """
+    with _db_lock:
+        if session_id in _db_cache:
+            conn = _db_cache[session_id]
+            try:
+                conn.execute("SELECT 1").fetchone()
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                _db_cache.pop(session_id, None)
+            else:
+                _db_cache.move_to_end(session_id, last=True)
+                return conn
+
+        path = _db_path(session_id)
+        conn = duckdb_connect(path)
+        _ensure_meta(conn)
+
+        _db_cache[session_id] = conn
+        _db_cache.move_to_end(session_id, last=True)
+        while len(_db_cache) > _MAX_CACHE:
+            _, evict_conn = _db_cache.popitem(last=False)
+            try:
+                evict_conn.close()
+            except Exception:
+                pass
+        return conn
+
+
+def close_session_db(session_id: str) -> None:
+    """Close and remove a cached connection for the given session."""
+    with _db_lock:
+        conn = _db_cache.pop(session_id, None)
+    if conn:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def session_exists(session_id: str) -> bool:
     return os.path.isfile(_db_path(session_id))
 
 
-def _ensure_meta(conn: sqlite3.Connection):
+def _ensure_meta(conn: DuckDBConnection):
     conn.execute(
         "CREATE TABLE IF NOT EXISTS _meta "
-        "(key TEXT PRIMARY KEY, value TEXT)"
+        "(key VARCHAR PRIMARY KEY, value VARCHAR)"
     )
     conn.commit()
 
 
-def get_meta(conn: sqlite3.Connection, key: str) -> Any | None:
+def get_meta(conn: DuckDBConnection, key: str) -> Any | None:
     row = conn.execute(
         "SELECT value FROM _meta WHERE key = ?", (key,)
     ).fetchone()
@@ -54,7 +109,7 @@ def get_meta(conn: sqlite3.Connection, key: str) -> Any | None:
         return row[0]
 
 
-def set_meta(conn: sqlite3.Connection, key: str, value: Any):
+def set_meta(conn: DuckDBConnection, key: str, value: Any):
     serialized = json.dumps(value) if not isinstance(value, str) else value
     conn.execute(
         "INSERT OR REPLACE INTO _meta (key, value) VALUES (?, ?)",
@@ -63,17 +118,18 @@ def set_meta(conn: sqlite3.Connection, key: str, value: Any):
     conn.commit()
 
 
-def delete_meta(conn: sqlite3.Connection, key: str):
+def delete_meta(conn: DuckDBConnection, key: str):
     conn.execute("DELETE FROM _meta WHERE key = ?", (key,))
     conn.commit()
 
 
-def get_all_meta_keys(conn: sqlite3.Connection) -> list[str]:
+def get_all_meta_keys(conn: DuckDBConnection) -> list[str]:
     rows = conn.execute("SELECT key FROM _meta").fetchall()
     return [r[0] for r in rows]
 
 
 def delete_session(session_id: str):
+    close_session_db(session_id)
     path = _db_path(session_id)
     if os.path.isfile(path):
         os.remove(path)

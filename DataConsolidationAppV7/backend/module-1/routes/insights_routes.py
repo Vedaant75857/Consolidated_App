@@ -293,6 +293,13 @@ def _apply_preferred_files_payload(conn, input_data: dict[str, Any]) -> None:
         filtered = [f for f in all_payload if str(f.get("table_key")) in wanted]
         if filtered:
             set_meta(conn, "filesPayload", filtered)
+            return
+    # Lazy-build filesPayload if not yet computed (skipped during upload for speed)
+    existing = get_meta(conn, "filesPayload")
+    if not existing:
+        all_payload = build_files_payload_from_db(conn, skip_distinct=True)
+        if all_payload:
+            set_meta(conn, "filesPayload", all_payload)
 
 
 def _execute_operation(conn, session_id: str, operation: str, input_data: dict[str, Any], api_key: str | None) -> dict[str, Any]:
@@ -341,9 +348,14 @@ def _execute_operation(conn, session_id: str, operation: str, input_data: dict[s
 
 
 def _build_state_patch(conn) -> dict[str, Any]:
+    files_payload = get_meta(conn, "filesPayload") or []
+    if not files_payload:
+        files_payload = build_files_payload_from_db(conn, skip_distinct=True)
+        if files_payload:
+            set_meta(conn, "filesPayload", files_payload)
     patch: dict[str, Any] = {
         "inventory": build_inventory_from_db(conn),
-        "filesPayload": get_meta(conn, "filesPayload") or [],
+        "filesPayload": files_payload,
         "headerNormDecisions": get_meta(conn, "headerNormDecisions") or [],
         "headerNormStandardFields": STANDARD_FIELDS,
         "appendGroups": get_meta(conn, "appendGroups") or [],
@@ -421,6 +433,11 @@ def execute_operation_kernel(
                     _run_one(prereq)
                     if prereq not in auto_prepared:
                         auto_prepared.append(prereq)
+
+            # Lazy-build filesPayload before the requirements check so
+            # append_plan doesn't fail when it can construct the artifact itself.
+            if op_name == "append_plan":
+                _apply_preferred_files_payload(conn, input_data if op_name == operation else {})
 
             missing = _missing_requirements(conn, op_name, input_data if op_name == operation else {}, api_key)
             if missing:

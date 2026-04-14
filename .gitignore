@@ -5,6 +5,8 @@ coverage/
 .sessions/
 sessions/
 **/sessions/*.sqlite*
+**/sessions/*.duckdb*
+**/.sessions/*.duckdb*
 .venv/
 __pycache__/
 *.pyc

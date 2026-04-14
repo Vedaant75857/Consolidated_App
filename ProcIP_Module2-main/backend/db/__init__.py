@@ -1,5 +1,6 @@
-"""SQLite-backed session storage for Module 2."""
+"""DuckDB-backed session storage for Module 2."""
 
+from .duckdb_compat import DuckDBConnection, duckdb_connect
 from .session_db import (
     get_session_db,
     get_session_lock,
@@ -18,6 +19,7 @@ from .meta_ops import get_meta, set_meta, delete_meta, get_all_meta_keys
 from .table_ops import (
     store_table,
     store_table_streaming,
+    store_df_native,
     read_table,
     read_table_columns,
     table_exists,
@@ -29,6 +31,8 @@ from .table_ops import (
 from .bridge import sqlite_to_df, df_to_sqlite, PREVIEW_POOL, pick_best_rows, pick_best_df_rows
 
 __all__ = [
+    "DuckDBConnection",
+    "duckdb_connect",
     "get_session_db",
     "get_session_lock",
     "close_session_db",
@@ -47,6 +51,7 @@ __all__ = [
     "get_all_meta_keys",
     "store_table",
     "store_table_streaming",
+    "store_df_native",
     "read_table",
     "read_table_columns",
     "table_exists",

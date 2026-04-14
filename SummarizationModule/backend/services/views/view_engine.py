@@ -1,10 +1,13 @@
+import logging
 import math
-import sqlite3
 from typing import Any
 
 import pandas as pd
 
+from shared.duckdb_compat import DuckDBConnection
 from shared.formatting import format_spend, format_pct
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_float(v: Any) -> float | None:
@@ -101,20 +104,33 @@ def get_available_views(mapping: dict[str, str | None]) -> list[dict[str, Any]]:
     return result
 
 
-def _load_analysis_df(conn: sqlite3.Connection) -> pd.DataFrame:
-    df = pd.read_sql("SELECT * FROM analysis_data", conn)
+def _load_analysis_df(conn: DuckDBConnection) -> pd.DataFrame:
+    """Load analysis_data with proper type coercion for all expected column types."""
+    df = conn._conn.execute("SELECT * FROM analysis_data").df()
     if "invoice_date" in df.columns:
         df["invoice_date"] = pd.to_datetime(df["invoice_date"], errors="coerce")
-    for col in ["total_spend", "local_spend"]:
+    for col in ["total_spend", "local_spend", "price_per_uom", "invoice_line_qty"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+    # Ensure string columns are actually strings (not numeric/object) for .str operations
+    string_cols = [
+        "supplier", "currency", "country", "vendor_country", "business_unit",
+        "l1", "l2", "l3", "plant_code", "plant_name", "contract_id",
+        "contract_indicator", "contract_status", "payment_terms",
+        "invoice_number", "invoice_po_number", "invoice_line_qty_uom",
+        "invoice_description", "po_description", "material_description",
+        "gl_account_description", "po_material_number",
+    ]
+    for col in string_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(str).replace({"nan": None, "None": None, "": None})
     return df
 
 
 def _to_records(df: pd.DataFrame) -> list[dict]:
     out = df.copy()
     for c in out.columns:
-        if out[c].dtype == "datetime64[ns]":
+        if pd.api.types.is_datetime64_any_dtype(out[c]):
             out[c] = out[c].dt.strftime("%Y-%m-%d").where(out[c].notna(), None)
     return out.where(out.notna(), None).to_dict(orient="records")
 
@@ -189,7 +205,7 @@ def compute_supplier_ranking(df: pd.DataFrame, top_n: int = 20) -> dict[str, Any
     supplier.index += 1
     supplier.index.name = "Rank"
     total = supplier["Total Spend (USD)"].sum()
-    supplier["% of Total"] = (supplier["Total Spend (USD)"] / total * 100).round(2)
+    supplier["% of Total"] = (supplier["Total Spend (USD)"] / max(total, 1e-9) * 100).round(2)
 
     top = supplier.head(top_n).reset_index()
 
@@ -218,7 +234,7 @@ def compute_pareto(df: pd.DataFrame, threshold: float = 80.0) -> dict[str, Any]:
         .reset_index(drop=True)
     )
     total = supplier["Total Spend (USD)"].sum()
-    supplier["% of Total"] = (supplier["Total Spend (USD)"] / total * 100).round(2)
+    supplier["% of Total"] = (supplier["Total Spend (USD)"] / max(total, 1e-9) * 100).round(2)
     supplier["Cumulative %"] = supplier["% of Total"].cumsum().round(2)
     supplier.insert(0, "Rank", range(1, len(supplier) + 1))
 
@@ -256,7 +272,7 @@ def compute_currency_spend(df: pd.DataFrame) -> dict[str, Any]:
         .reset_index(drop=True)
     )
     total = currency["Total Local Spend"].sum()
-    currency["% of Total"] = (currency["Total Local Spend"] / total * 100).round(2)
+    currency["% of Total"] = (currency["Total Local Spend"] / max(total, 1e-9) * 100).round(2)
 
     return {
         "tableData": _to_records(currency),
@@ -282,7 +298,7 @@ def compute_country_spend(df: pd.DataFrame) -> dict[str, Any]:
         .reset_index(drop=True)
     )
     total = country["Total Spend (USD)"].sum()
-    country["% of Total"] = (country["Total Spend (USD)"] / total * 100).round(2)
+    country["% of Total"] = (country["Total Spend (USD)"] / max(total, 1e-9) * 100).round(2)
 
     return {
         "tableData": _to_records(country),
@@ -308,7 +324,7 @@ def compute_l1_spend(df: pd.DataFrame) -> dict[str, Any]:
         .reset_index(drop=True)
     )
     total = l1["Total Spend (USD)"].sum()
-    l1["% of Total"] = (l1["Total Spend (USD)"] / total * 100).round(2)
+    l1["% of Total"] = (l1["Total Spend (USD)"] / max(total, 1e-9) * 100).round(2)
 
     return {
         "tableData": _to_records(l1),
@@ -631,7 +647,7 @@ COMPUTE_FUNCS = {
 
 
 def compute_views(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     selected_views: list[str],
     config: dict[str, Any],
     mapping: dict[str, str | None],
@@ -660,7 +676,8 @@ def compute_views(
             if extractor and view_id not in SKIP_METRICS_VIEWS:
                 try:
                     result_entry["metrics"] = extractor(data)
-                except Exception:
+                except Exception as metrics_exc:
+                    logger.warning("Metrics extraction failed for view %s: %s", view_id, metrics_exc)
                     result_entry["metrics"] = {}
             results.append(result_entry)
         except Exception as exc:

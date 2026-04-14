@@ -2,17 +2,27 @@
 
 from __future__ import annotations
 
-import sqlite3
 from typing import Any
 
+from .duckdb_compat import DuckDBConnection
 from .table_ops import quote_id, read_table_columns, table_exists, normalize_for_match
 
 
 def column_stats(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     columns: list[str] | None = None,
 ) -> list[dict[str, Any]]:
+    """Compute fill-rate and distinct-count stats for each column in one pass.
+
+    Args:
+        conn: DuckDB session connection.
+        table_name: The table to profile.
+        columns: Optional subset of columns; defaults to all.
+
+    Returns:
+        List of per-column stat dicts.
+    """
     if not table_exists(conn, table_name):
         return []
     cols = columns if columns is not None else read_table_columns(conn, table_name)
@@ -46,11 +56,12 @@ def column_stats(
 
 
 def column_distinct_values(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     column: str,
     limit: int = 200,
 ) -> list[str]:
+    """Return up to *limit* distinct non-empty values for a column."""
     if not table_exists(conn, table_name):
         return []
     tbl = quote_id(table_name)
@@ -63,8 +74,9 @@ def column_distinct_values(
 
 
 def column_distinct_count(
-    conn: sqlite3.Connection, table_name: str, column: str
+    conn: DuckDBConnection, table_name: str, column: str
 ) -> int:
+    """Count distinct normalised non-empty values for a column."""
     if not table_exists(conn, table_name):
         return 0
     tbl = quote_id(table_name)
@@ -77,8 +89,9 @@ def column_distinct_count(
 
 
 def column_null_count(
-    conn: sqlite3.Connection, table_name: str, column: str
+    conn: DuckDBConnection, table_name: str, column: str
 ) -> int:
+    """Count null or empty values for a column."""
     if not table_exists(conn, table_name):
         return 0
     tbl = quote_id(table_name)
@@ -90,12 +103,22 @@ def column_null_count(
 
 
 def compute_overlap(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_a: str,
     col_a: str,
     table_b: str,
     col_b: str,
 ) -> int:
+    """Count the number of distinct normalised values shared by two columns.
+
+    Args:
+        conn: DuckDB session connection.
+        table_a / col_a: First table and column.
+        table_b / col_b: Second table and column.
+
+    Returns:
+        Number of overlapping distinct normalised values.
+    """
     if not table_exists(conn, table_a) or not table_exists(conn, table_b):
         return 0
     t_a = quote_id(table_a)
@@ -117,11 +140,16 @@ def compute_overlap(
 
 
 def distinct_values_by_column_sql(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     max_per_col: int = 200,
     columns: list[str] | None = None,
 ) -> dict[str, list[str]]:
+    """Return distinct non-empty values for each column in a single-pass query.
+
+    Uses UNION ALL with per-column ROW_NUMBER to cap results, avoiding one
+    full table scan per column.
+    """
     if not table_exists(conn, table_name):
         return {}
     all_cols = read_table_columns(conn, table_name)
@@ -130,19 +158,41 @@ def distinct_values_by_column_sql(
     else:
         allowed = set(all_cols)
         cols = [c for c in columns if c in allowed]
-    result: dict[str, list[str]] = {}
+    if not cols:
+        return {}
+
+    tbl = quote_id(table_name)
+    parts = []
     for col in cols:
-        result[col] = column_distinct_values(conn, table_name, col, max_per_col)
+        qc = quote_id(col)
+        lit = "'" + col.replace("'", "''") + "'"
+        parts.append(
+            f"SELECT {lit} AS col_name, {qc} AS val "
+            f"FROM (SELECT DISTINCT {qc} FROM {tbl} "
+            f"WHERE {qc} IS NOT NULL AND TRIM({qc}) != '' "
+            f"LIMIT {int(max_per_col)}) _d"
+        )
+
+    sql = " UNION ALL ".join(parts)
+    rows = conn.execute(sql).fetchall()
+
+    result: dict[str, list[str]] = {c: [] for c in cols}
+    for r in rows:
+        result[r[0]].append(str(r[1]))
     return result
 
 
 def get_overlap_sql(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_map: list[dict[str, str]],
 ) -> dict[str, dict[str, Any]]:
     """Build per-file overlap map using SQL INTERSECT.
 
-    table_map: list of {"table_key": ..., "sql_name": ...}
+    Args:
+        table_map: list of {"table_key": ..., "sql_name": ...}
+
+    Returns:
+        Nested dict of overlap metrics between each pair of tables.
     """
     non_empty = [
         t for t in table_map if read_table_columns(conn, t["sql_name"])

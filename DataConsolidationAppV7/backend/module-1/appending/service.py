@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import sys
-import sqlite3
 from typing import Any
 
 _this_dir = os.path.dirname(os.path.abspath(__file__))
@@ -14,6 +13,7 @@ if _backend_dir not in sys.path:
 
 from shared.ai import call_ai_json
 from shared.db import (
+    DuckDBConnection,
     all_registered_tables,
     column_stats,
     get_meta,
@@ -64,7 +64,7 @@ def _trim_payload(
     return out
 
 
-def run_append_plan(conn: sqlite3.Connection, api_key: str | None) -> dict[str, Any]:
+def run_append_plan(conn: DuckDBConnection, api_key: str | None) -> dict[str, Any]:
     files_payload = build_files_payload_from_db(conn)
     set_meta(conn, "filesPayload", files_payload)
 
@@ -150,7 +150,7 @@ def run_append_plan(conn: sqlite3.Connection, api_key: str | None) -> dict[str, 
 
 
 def save_append_groups(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     append_groups: list | None,
     unassigned: list | None,
 ) -> None:
@@ -177,7 +177,7 @@ def save_append_groups(
 
 
 def run_append_mapping(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     append_groups: list[dict],
     api_key: str | None,
 ) -> dict[str, Any]:
@@ -230,7 +230,7 @@ def run_append_mapping(
 
 
 def run_append_execute(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     append_group_mappings: list[dict],
     unassigned_tables: list[str] | None,
 ) -> dict[str, Any]:

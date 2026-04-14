@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import math
-import sqlite3
 from datetime import datetime, date, time
 from typing import Any, TypeVar
+
+from .duckdb_compat import DuckDBConnection
 
 T = TypeVar("T")
 
@@ -35,7 +36,7 @@ def json_safe(value: Any) -> Any:
     return value
 
 
-def get_meta(conn: sqlite3.Connection, key: str, default: Any = None) -> Any:
+def get_meta(conn: DuckDBConnection, key: str, default: Any = None) -> Any:
     """Retrieve a JSON-encoded value from the meta table."""
     row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
     if not row:
@@ -46,7 +47,7 @@ def get_meta(conn: sqlite3.Connection, key: str, default: Any = None) -> Any:
         return default
 
 
-def set_meta(conn: sqlite3.Connection, key: str, value: Any, commit: bool = True) -> None:
+def set_meta(conn: DuckDBConnection, key: str, value: Any, commit: bool = True) -> None:
     """Store a value as JSON in the meta table."""
     safe_value = json_safe(value)
     conn.execute(
@@ -57,13 +58,13 @@ def set_meta(conn: sqlite3.Connection, key: str, value: Any, commit: bool = True
         conn.commit()
 
 
-def delete_meta(conn: sqlite3.Connection, key: str) -> None:
+def delete_meta(conn: DuckDBConnection, key: str) -> None:
     """Remove a key from the meta table."""
     conn.execute("DELETE FROM meta WHERE key = ?", (key,))
     conn.commit()
 
 
-def get_all_meta_keys(conn: sqlite3.Connection) -> list[str]:
+def get_all_meta_keys(conn: DuckDBConnection) -> list[str]:
     """Return all keys present in the meta table."""
     rows = conn.execute("SELECT key FROM meta").fetchall()
     return [r["key"] for r in rows]

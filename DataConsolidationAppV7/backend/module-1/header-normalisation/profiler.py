@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import sys
-import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,7 +24,7 @@ try:
 except Exception:
     _aliases_mod = None
 
-from shared.db import read_table_columns, table_row_count
+from shared.db import DuckDBConnection, read_table_columns, table_row_count
 from shared.db.stats_ops import column_stats, column_distinct_values
 
 infer_value_type = getattr(_aliases_mod, "infer_value_type", lambda samples: "text")
@@ -69,7 +68,7 @@ class ColumnProfile:
 
 
 def profile_table_columns(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     sql_name: str,
     max_samples: int = 20,
 ) -> list[ColumnProfile]:

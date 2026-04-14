@@ -1,20 +1,25 @@
-"""File loading: ZIP extraction + streaming Excel/CSV to SQLite."""
+"""File loading: ZIP extraction + streaming Excel/CSV to DuckDB."""
 
 from __future__ import annotations
 
 import csv
 import io
+import logging
 import os
-import sqlite3
+import time
 import zipfile
 from typing import Any, Iterator
 
 import pandas as pd
 
+logger = logging.getLogger(__name__)
+
 from shared.db import (
+    DuckDBConnection,
     safe_table_name,
     register_table,
     store_table_streaming,
+    store_df_native,
     table_exists,
     table_row_count,
     read_table_columns,
@@ -23,6 +28,8 @@ from shared.db import (
 from shared.utils import make_unique
 
 RAW_META_PREVIEW_ROWS = int(os.getenv("RAW_META_PREVIEW_ROWS", "20"))
+
+_EXCEL_EXTS = (".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm")
 
 _META_COLUMNS = ["FILE_NAME", "RECORD_ID"]
 
@@ -44,15 +51,49 @@ def _clean_header(cells: list) -> list[str]:
     return make_unique(result)
 
 
-def _clean_cell(val: Any) -> str | None:
+def _to_str(val: Any) -> str | None:
+    """Convert a value to string without cleaning. Preserves original casing and whitespace."""
     if val is None:
         return None
-    s = str(val).strip().upper()
-    return s if s else None
+    s = str(val)
+    return s if s.strip() else None
 
 
 def _is_empty_row(vals: list) -> bool:
     return all(v is None or str(v).strip() == "" for v in vals)
+
+
+def bulk_clean_table(conn: DuckDBConnection, table_name: str) -> None:
+    """Apply UPPER(TRIM(...)) to all VARCHAR columns in a table via a single SQL UPDATE.
+
+    This replaces per-cell Python cleaning with a single DuckDB operation
+    that processes the entire table at columnar speed. Empty strings are
+    set to NULL for consistency.
+    """
+    cols = read_table_columns(conn, table_name)
+    if not cols:
+        return
+    set_clauses = ", ".join(
+        f'{quote_id(c)} = CASE WHEN TRIM({quote_id(c)}) = \'\' THEN NULL '
+        f'ELSE UPPER(TRIM({quote_id(c)})) END'
+        for c in cols
+    )
+    conn.execute(f"UPDATE {quote_id(table_name)} SET {set_clauses}")
+    conn.commit()
+
+
+def _sql_all_null_condition(columns: list[str]) -> str:
+    """Build a SQL condition that is true when ALL columns are NULL or empty-string."""
+    parts = [
+        f"({quote_id(c)} IS NULL OR TRIM(CAST({quote_id(c)} AS VARCHAR)) = '')"
+        for c in columns
+    ]
+    return " AND ".join(parts)
+
+
+def _sql_literal(val: str) -> str:
+    """Escape a string for use as a SQL literal."""
+    return "'" + val.replace("'", "''") + "'"
 
 
 def _iter_csv_rows(text: str) -> Iterator[list[str]]:
@@ -76,7 +117,7 @@ def _df_row_to_list(row: tuple) -> list:
 
 
 def _load_excel_sheet(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_key: str,
     excel_file: pd.ExcelFile,
     sheet_name: str,
@@ -85,8 +126,8 @@ def _load_excel_sheet(
 ) -> None:
     """Load a single Excel sheet via calamine (fast Rust parser).
 
-    Streams rows directly from the DataFrame into SQLite without
-    materializing a full intermediate list.
+    Uses DuckDB native DataFrame ingestion for the raw table, then builds
+    the data table from the raw table via SQL — no Python row iteration.
     """
     try:
         df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
@@ -96,106 +137,101 @@ def _load_excel_sheet(
         max_cols = len(df.columns)
         header_raw = _df_row_to_list(next(df.itertuples(index=False, name=None)))
 
-        # Raw table: stream all DataFrame rows
+        # Raw table: native DataFrame ingestion (zero Python iteration)
         raw_cols = [f"RAW_{i + 1}" for i in range(max_cols)]
+        df.columns = raw_cols
         raw_name = safe_table_name("raw", table_key)
-        store_table_streaming(
-            conn, raw_name, raw_cols,
-            (_df_row_to_list(r) for r in df.itertuples(index=False, name=None)),
-            commit=commit,
-        )
+        store_df_native(conn, raw_name, df, commit=commit)
 
-        # Data table: skip header row, clean + add metadata columns
+        # Data table: build from raw table via SQL (skip header row)
         base_header = _clean_header(header_raw)
         file_name = _file_name_from_key(table_key)
-        header = _META_COLUMNS + base_header
-        num_base = len(base_header)
-
-        def _clean_gen() -> Iterator[list]:
-            record_id = 0
-            for raw_tuple in df.iloc[1:].itertuples(index=False, name=None):
-                r = _df_row_to_list(raw_tuple)
-                if _is_empty_row(r):
-                    continue
-                record_id += 1
-                yield [file_name, str(record_id)] + [
-                    _clean_cell(r[i]) if i < len(r) else None
-                    for i in range(num_base)
-                ]
-
         tbl_name = safe_table_name("tbl", table_key)
-        store_table_streaming(conn, tbl_name, header, _clean_gen(), commit=commit)
+
+        raw_select = ", ".join(
+            f"CAST({quote_id(raw_cols[i])} AS VARCHAR) AS {quote_id(base_header[i])}"
+            for i in range(len(base_header))
+        )
+        fname_lit = _sql_literal(file_name)
+        conn.execute(f"DROP TABLE IF EXISTS {quote_id(tbl_name)}")
+        conn.execute(
+            f"CREATE TABLE {quote_id(tbl_name)} AS "
+            f"SELECT "
+            f"  {fname_lit} AS \"FILE_NAME\", "
+            f"  CAST(ROW_NUMBER() OVER () AS VARCHAR) AS \"RECORD_ID\", "
+            f"  {raw_select} "
+            f"FROM ("
+            f"  SELECT *, ROW_NUMBER() OVER () AS _rn FROM {quote_id(raw_name)}"
+            f") _sub "
+            f"WHERE _rn > 1 "
+            f"AND NOT ({_sql_all_null_condition(raw_cols)})"
+        )
+        if commit:
+            conn.commit()
         register_table(conn, table_key, tbl_name, commit=commit)
     except Exception as e:
         warnings.append({"file": table_key, "message": str(e)})
 
 
 def _load_csv(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_key: str,
     csv_bytes: bytes,
     warnings: list[dict],
     commit: bool = True,
 ) -> None:
-    """Load a CSV file, streaming rows into SQLite without holding full list.
+    """Load a CSV file using native DataFrame ingestion + SQL.
 
-    Uses three lightweight passes over the same in-memory text string:
-    1. Quick scan for header and max column width
-    2. Stream into raw table
-    3. Stream into data table (skip header, clean cells)
+    Reads CSV into a DataFrame once, ingests the raw table natively, then
+    builds the data table from the raw table via SQL — no Python row loops.
     """
     try:
-        text = csv_bytes.decode("utf-8", errors="replace")
-
-        # Pass 1: find header and max_cols (no storage)
-        header_raw: list[str] | None = None
-        max_cols = 0
-        for row in _iter_csv_rows(text):
-            if header_raw is None:
-                header_raw = row
-            max_cols = max(max_cols, len(row))
-        if header_raw is None or max_cols <= 0:
+        df = pd.read_csv(io.BytesIO(csv_bytes), header=None, dtype=str,
+                         keep_default_na=False, encoding_errors="replace")
+        if df.empty:
             return
 
-        # Pass 2: stream raw table
-        raw_cols = [f"RAW_{i + 1}" for i in range(max_cols)]
-        raw_name = safe_table_name("raw", table_key)
-        store_table_streaming(
-            conn, raw_name, raw_cols,
-            (_pad_row(r, max_cols) for r in _iter_csv_rows(text)),
-            commit=commit,
-        )
+        max_cols = len(df.columns)
+        header_raw = list(df.iloc[0])
 
-        # Pass 3: stream data table (skip header row)
+        # Raw table: native ingestion
+        raw_cols = [f"RAW_{i + 1}" for i in range(max_cols)]
+        df.columns = raw_cols
+        raw_name = safe_table_name("raw", table_key)
+        store_df_native(conn, raw_name, df, commit=commit)
+
+        # Data table: build from raw table via SQL (skip header row)
         base_header = _clean_header(header_raw)
         file_name = _file_name_from_key(table_key)
-        header = _META_COLUMNS + base_header
-        num_base = len(base_header)
-
-        def _clean_gen() -> Iterator[list]:
-            record_id = 0
-            first = True
-            for r in _iter_csv_rows(text):
-                if first:
-                    first = False
-                    continue
-                if _is_empty_row(r):
-                    continue
-                record_id += 1
-                yield [file_name, str(record_id)] + [
-                    _clean_cell(r[i]) if i < len(r) else None
-                    for i in range(num_base)
-                ]
-
         tbl_name = safe_table_name("tbl", table_key)
-        store_table_streaming(conn, tbl_name, header, _clean_gen(), commit=commit)
+
+        raw_select = ", ".join(
+            f"CAST({quote_id(raw_cols[i])} AS VARCHAR) AS {quote_id(base_header[i])}"
+            for i in range(len(base_header))
+        )
+        fname_lit = _sql_literal(file_name)
+        conn.execute(f"DROP TABLE IF EXISTS {quote_id(tbl_name)}")
+        conn.execute(
+            f"CREATE TABLE {quote_id(tbl_name)} AS "
+            f"SELECT "
+            f"  {fname_lit} AS \"FILE_NAME\", "
+            f"  CAST(ROW_NUMBER() OVER () AS VARCHAR) AS \"RECORD_ID\", "
+            f"  {raw_select} "
+            f"FROM ("
+            f"  SELECT *, ROW_NUMBER() OVER () AS _rn FROM {quote_id(raw_name)}"
+            f") _sub "
+            f"WHERE _rn > 1 "
+            f"AND NOT ({_sql_all_null_condition(raw_cols)})"
+        )
+        if commit:
+            conn.commit()
         register_table(conn, table_key, tbl_name, commit=commit)
     except Exception as e:
         warnings.append({"file": table_key, "message": str(e)})
 
 
-def load_zip_to_session(conn: sqlite3.Connection, file_data: bytes) -> tuple[dict[str, list], list[dict]]:
-    """Parse a ZIP archive and stream all files into the session SQLite.
+def load_zip_to_session(conn: DuckDBConnection, file_data: bytes) -> tuple[dict[str, list], list[dict]]:
+    """Parse a ZIP archive and stream all files into the session DuckDB.
 
     Opens each Excel workbook exactly once and parses each file in a single
     pass.  All DB writes are batched into one commit at the end.
@@ -204,39 +240,85 @@ def load_zip_to_session(conn: sqlite3.Connection, file_data: bytes) -> tuple[dic
     compatibility but is always empty (raw data lives in raw__* tables).
     """
     warnings: list[dict] = []
+    file_count = 0
+
+    def _process_excel(data: bytes, name: str) -> None:
+        """Load all sheets from an in-memory Excel workbook."""
+        t = time.perf_counter()
+        excel_file = pd.ExcelFile(io.BytesIO(data), engine="calamine")
+        try:
+            for sheet in excel_file.sheet_names:
+                key = f"{name}::{sheet}"
+                _load_excel_sheet(
+                    conn, key, excel_file, sheet, warnings, commit=False,
+                )
+        finally:
+            excel_file.close()
+        logger.info("  Loaded Excel %s (%d sheets) in %.1fs", name, len(excel_file.sheet_names), time.perf_counter() - t)
 
     with zipfile.ZipFile(io.BytesIO(file_data)) as zf:
-        for entry in zf.infolist():
-            if entry.is_dir():
-                continue
+        entries = [e for e in zf.infolist() if not e.is_dir()]
+        logger.info("ZIP contains %d file(s)", len(entries))
+        for entry in entries:
             name = entry.filename
             lower = name.lower()
 
-            if lower.endswith((".xlsx", ".xlsm")):
-                data = zf.read(name)
-                excel_file = pd.ExcelFile(io.BytesIO(data), engine="calamine")
-                try:
-                    for sheet in excel_file.sheet_names:
-                        key = f"{name}::{sheet}"
-                        _load_excel_sheet(
-                            conn, key, excel_file, sheet, warnings, commit=False,
-                        )
-                finally:
-                    excel_file.close()
+            if lower.endswith(_EXCEL_EXTS):
+                _process_excel(zf.read(name), name)
+                file_count += 1
 
             elif lower.endswith(".csv"):
+                t = time.perf_counter()
                 key = f"{name}::"
                 _load_csv(conn, key, zf.read(name), warnings, commit=False)
+                logger.info("  Loaded CSV %s in %.1fs", name, time.perf_counter() - t)
+                file_count += 1
 
+            elif lower.endswith(".zip"):
+                try:
+                    nested_data = zf.read(name)
+                    with zipfile.ZipFile(io.BytesIO(nested_data)) as nested_zf:
+                        for nested_entry in nested_zf.infolist():
+                            if nested_entry.is_dir():
+                                continue
+                            nested_name = nested_entry.filename
+                            nested_lower = nested_name.lower()
+                            full_key_prefix = f"{name}/{nested_name}"
+
+                            if nested_lower.endswith(_EXCEL_EXTS):
+                                _process_excel(nested_zf.read(nested_name), full_key_prefix)
+                                file_count += 1
+
+                            elif nested_lower.endswith(".csv"):
+                                t = time.perf_counter()
+                                key = f"{full_key_prefix}::"
+                                _load_csv(conn, key, nested_zf.read(nested_name), warnings, commit=False)
+                                logger.info("  Loaded nested CSV %s in %.1fs", nested_name, time.perf_counter() - t)
+                                file_count += 1
+                except Exception as e:
+                    warnings.append({"file": name, "message": f"Failed to extract nested ZIP: {e}"})
+
+    t_commit = time.perf_counter()
     conn.commit()
+    logger.info("Committed %d file(s) to DuckDB in %.1fs", file_count, time.perf_counter() - t_commit)
     return {}, warnings
 
 
 def get_raw_array_from_table(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_key: str,
     limit: int | None = None,
 ) -> list[list[Any]]:
+    """Read raw table data as a list-of-lists.
+
+    Args:
+        conn: DuckDB session connection.
+        table_key: Logical table key.
+        limit: Optional max rows.
+
+    Returns:
+        2D array of raw values.
+    """
     raw_name = safe_table_name("raw", table_key)
     if not table_exists(conn, raw_name):
         return []
@@ -273,11 +355,16 @@ def _build_columns_from_header(
 
 
 def rebuild_table_from_raw_table(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_key: str,
     header_row_index: int,
     custom_column_names: dict[int, str] | None = None,
 ) -> None:
+    """Rebuild a data table from raw data using a new header row.
+
+    Uses ROW_NUMBER() OVER() instead of rowid for row addressing, since
+    DuckDB does not have SQLite's implicit rowid.
+    """
     raw_name = safe_table_name("raw", table_key)
     if not table_exists(conn, raw_name):
         raise ValueError("Raw table data not found for this table. Please re-upload.")
@@ -291,8 +378,16 @@ def rebuild_table_from_raw_table(
         raise ValueError(f"headerRowIndex {header_row_index} is out of range.")
 
     select_cols = ", ".join(quote_id(c) for c in raw_cols)
+    # Use ROW_NUMBER() to create a 1-based row index (replaces SQLite rowid)
+    numbered_cte = (
+        f"WITH numbered AS ("
+        f"  SELECT {select_cols}, ROW_NUMBER() OVER() AS _rn "
+        f"  FROM {quote_id(raw_name)}"
+        f")"
+    )
+
     header_row = conn.execute(
-        f"SELECT {select_cols} FROM {quote_id(raw_name)} WHERE rowid = ?",
+        f"{numbered_cte} SELECT {select_cols} FROM numbered WHERE _rn = ?",
         (header_row_index + 1,),
     ).fetchone()
     if not header_row:
@@ -306,7 +401,7 @@ def rebuild_table_from_raw_table(
     # Pass 1: detect columns that are entirely empty below the selected header row.
     has_value = [False] * len(final_columns)
     row_cursor = conn.execute(
-        f"SELECT {select_cols} FROM {quote_id(raw_name)} WHERE rowid > ?",
+        f"{numbered_cte} SELECT {select_cols} FROM numbered WHERE _rn > ?",
         (header_row_index + 1,),
     )
     for row in row_cursor:
@@ -325,7 +420,7 @@ def rebuild_table_from_raw_table(
     def _data_gen():
         record_id = 0
         cur = conn.execute(
-            f"SELECT {select_cols} FROM {quote_id(raw_name)} WHERE rowid > ?",
+            f"{numbered_cte} SELECT {select_cols} FROM numbered WHERE _rn > ?",
             (header_row_index + 1,),
         )
         for row in cur:
@@ -333,9 +428,9 @@ def rebuild_table_from_raw_table(
             non_empty = False
             for i in valid_idx:
                 raw_val = row[raw_cols[i]] if i < len(raw_cols) else None
-                cleaned = _clean_cell(raw_val)
-                out_row.append(cleaned)
-                if cleaned is not None and cleaned != "":
+                val = _to_str(raw_val)
+                out_row.append(val)
+                if val is not None and val.strip() != "":
                     non_empty = True
             if non_empty:
                 record_id += 1
@@ -343,6 +438,7 @@ def rebuild_table_from_raw_table(
 
     tbl_name = safe_table_name("tbl", table_key)
     store_table_streaming(conn, tbl_name, output_columns, _data_gen())
+    bulk_clean_table(conn, tbl_name)
     register_table(conn, table_key, tbl_name)
 
 
@@ -373,30 +469,3 @@ def array_to_objects(
     ]
 
 
-def clean_rows_sql(rows: list[dict]) -> list[dict]:
-    """Clean a list of row-dicts: trim+uppercase keys and values, drop empty rows/cols."""
-    if not rows:
-        return []
-
-    cleaned = []
-    for row in rows:
-        new_row = {}
-        for k, v in row.items():
-            clean_key = str(k).strip().upper()
-            if isinstance(v, str):
-                new_row[clean_key] = v.strip().upper()
-            else:
-                new_row[clean_key] = v
-        if any(val is not None and val != "" for val in new_row.values()):
-            cleaned.append(new_row)
-
-    if not cleaned:
-        return []
-
-    all_cols = list(cleaned[0].keys())
-    valid_cols = [
-        c for c in all_cols
-        if any(row.get(c) is not None and row.get(c) != "" for row in cleaned)
-    ]
-
-    return [{c: row.get(c) for c in valid_cols} for row in cleaned]

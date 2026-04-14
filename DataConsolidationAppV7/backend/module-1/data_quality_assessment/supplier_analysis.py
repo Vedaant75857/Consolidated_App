@@ -7,10 +7,9 @@ normalisation opportunity detection.
 from __future__ import annotations
 
 import logging
-import sqlite3
 from typing import Any
 
-from shared.db import quote_id, read_table_columns
+from shared.db import DuckDBConnection, quote_id, read_table_columns
 
 from .ai_prompts import generate_supplier_insight
 from .metrics import _non_null_condition, _safe_pct
@@ -40,14 +39,14 @@ def _pick_spend_column(available: set[str]) -> str | None:
 def _numeric_spend_expr(qs: str) -> str:
     """SQL expression that safely casts a spend column to REAL."""
     return (
-        f"CASE WHEN TRIM({qs}) GLOB '*[0-9]*' "
-        f"AND TRIM({qs}) NOT GLOB '*[^0-9.eE+-]*' "
+        f"CASE WHEN regexp_matches(TRIM({qs}), '[0-9]') "
+        f"AND regexp_matches(TRIM({qs}), '^[0-9eE.+-]+$') "
         f"THEN CAST({qs} AS REAL) ELSE 0 END"
     )
 
 
 def run_supplier_analysis(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     api_key: str,
 ) -> dict[str, Any]:

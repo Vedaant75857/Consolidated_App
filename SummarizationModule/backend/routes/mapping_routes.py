@@ -28,55 +28,60 @@ def map_columns():
             return jsonify({"error": "API key required"}), 400
 
         conn = get_session_db(session_id)
-        columns = get_meta(conn, "columns")
-        if not columns:
-            return jsonify({"error": "No columns found. Upload data first."}), 400
+        try:
+            columns = get_meta(conn, "columns")
+            if not columns:
+                return jsonify({"error": "No columns found. Upload data first."}), 400
 
-        # Pass 1: deterministic exact-name matching
-        exact_matched, unmatched_fields, unmatched_cols = deterministic_match(columns)
-        logger.info(
-            "Deterministic pass: %d exact matches, %d fields remaining",
-            len(exact_matched),
-            len(unmatched_fields),
-        )
+            # Pass 1: deterministic exact-name matching
+            exact_matched, unmatched_fields, unmatched_cols = deterministic_match(columns)
+            logger.info(
+                "Deterministic pass: %d exact matches, %d fields remaining",
+                len(exact_matched),
+                len(unmatched_fields),
+            )
 
-        # Pass 2: parallel per-field AI calls for remaining fields
-        ai_results = ai_map_columns(unmatched_fields, unmatched_cols, api_key)
-        logger.info("AI pass returned %d mapping(s)", len(ai_results))
+            # Pass 2: parallel per-field AI calls for remaining fields
+            ai_results = ai_map_columns(unmatched_fields, unmatched_cols, api_key)
+            logger.info("AI pass returned %d mapping(s)", len(ai_results))
 
-        # Merge results into a single mappings list for all 28 fields
-        mappings: list[dict] = []
-        for field in STANDARD_FIELDS:
-            fk = field["fieldKey"]
-            if fk in exact_matched:
-                mappings.append({
-                    "fieldKey": fk,
-                    "bestMatch": exact_matched[fk],
-                    "alternatives": [],
-                    "reasoning": "Exact name match",
-                    "expectedType": field["expectedType"],
-                })
-            else:
-                ai_entry = next((r for r in ai_results if r["fieldKey"] == fk), None)
-                if ai_entry:
-                    mappings.append(ai_entry)
-                else:
+            # Merge results into a single mappings list for all 28 fields
+            mappings: list[dict] = []
+            for field in STANDARD_FIELDS:
+                fk = field["fieldKey"]
+                if fk in exact_matched:
                     mappings.append({
                         "fieldKey": fk,
-                        "bestMatch": None,
+                        "bestMatch": exact_matched[fk],
                         "alternatives": [],
-                        "reasoning": "No match found",
+                        "reasoning": "Exact name match",
                         "expectedType": field["expectedType"],
                     })
+                else:
+                    ai_entry = next((r for r in ai_results if r["fieldKey"] == fk), None)
+                    if ai_entry:
+                        mappings.append(ai_entry)
+                    else:
+                        mappings.append({
+                            "fieldKey": fk,
+                            "bestMatch": None,
+                            "alternatives": [],
+                            "reasoning": "No match found",
+                            "expectedType": field["expectedType"],
+                        })
 
-        set_meta(conn, "ai_mappings", mappings)
-        set_meta(conn, "step", 3)
-        conn.close()
+            set_meta(conn, "ai_mappings", mappings)
+            set_meta(conn, "step", 3)
 
-        return jsonify({
-            "mappings": mappings,
-            "standardFields": STANDARD_FIELDS,
-        })
+            return jsonify({
+                "mappings": mappings,
+                "standardFields": STANDARD_FIELDS,
+            })
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -91,8 +96,13 @@ def procurement_views():
             return jsonify({"error": "Invalid session"}), 400
 
         conn = get_session_db(session_id)
-        mapping = get_meta(conn, "mapping")
-        conn.close()
+        try:
+            mapping = get_meta(conn, "mapping")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
         if not mapping:
             return jsonify({"error": "No mapping found. Complete column mapping first."}), 400
@@ -116,12 +126,17 @@ def confirm_mapping():
             return jsonify({"error": "Mapping required"}), 400
 
         conn = get_session_db(session_id)
-        set_meta(conn, "mapping", mapping)
+        try:
+            set_meta(conn, "mapping", mapping)
 
-        cast_report = build_typed_table(conn, mapping)
-        set_meta(conn, "step", 4)
-        conn.close()
+            cast_report = build_typed_table(conn, mapping)
+            set_meta(conn, "step", 4)
 
-        return jsonify({"castReport": cast_report})
+            return jsonify({"castReport": cast_report})
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500

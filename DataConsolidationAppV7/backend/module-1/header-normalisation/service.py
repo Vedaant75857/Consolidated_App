@@ -11,7 +11,6 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
-import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -24,6 +23,7 @@ if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
 from shared.db import (
+    DuckDBConnection,
     all_registered_tables,
     quote_id,
     read_table,
@@ -98,7 +98,7 @@ except Exception:
 # ---------------------------------------------------------------------------
 
 def run_header_norm(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     api_key: str | None,
 ) -> dict[str, Any]:
     """Profile tables, run 8-tier matching, optionally AI-enhance, return decisions.
@@ -217,7 +217,7 @@ def run_header_norm(
     }
 
 
-def _get_data_rows(conn: sqlite3.Connection, sql_name: str, limit: int = 50) -> list[list]:
+def _get_data_rows(conn: DuckDBConnection, sql_name: str, limit: int = 50) -> list[list]:
     """Read rows as list-of-lists for AI sample extraction."""
     cols = read_table_columns(conn, sql_name)
     rows = pick_best_rows(read_table(conn, sql_name, PREVIEW_POOL), limit)
@@ -271,7 +271,7 @@ def _to_ui_decision(engine_result: dict) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def apply_header_norm(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     decisions: dict[str, list[dict[str, Any]]],
 ) -> dict[str, Any]:
     """Apply user-approved mapping decisions and create hn__ tables.
@@ -346,7 +346,7 @@ def apply_header_norm(
     return {"appliedTables": applied}
 
 
-def _resolve_tbl(conn: sqlite3.Connection, table_key: str) -> str | None:
+def _resolve_tbl(conn: DuckDBConnection, table_key: str) -> str | None:
     """Find the source SQL name for a table_key.
 
     Prefers appended__ tables (group-level), then tbl__ (individual source).
@@ -375,7 +375,7 @@ def _resolve_tbl(conn: sqlite3.Connection, table_key: str) -> str | None:
     return None
 
 
-def _rebuild_meta(conn: sqlite3.Connection) -> None:
+def _rebuild_meta(conn: DuckDBConnection) -> None:
     """Rebuild inv and filesPayload meta to reflect current table state."""
     set_meta(conn, "inv", build_inventory_from_db(conn))
     set_meta(conn, "filesPayload", build_files_payload_from_db(conn))
@@ -386,7 +386,7 @@ def _rebuild_meta(conn: sqlite3.Connection) -> None:
 # ---------------------------------------------------------------------------
 
 def get_table_preview(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_key: str,
     limit: int = 100,
 ) -> dict[str, Any]:

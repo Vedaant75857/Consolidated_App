@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
-import sqlite3
 from typing import Any
+
+from shared.db import DuckDBConnection
 
 from .json_helpers import json_default, json_safe
 
@@ -25,7 +26,7 @@ class StepSpec:
     produces_meta: list[str] = field(default_factory=list)
 
 
-def resolve_input_table(conn: sqlite3.Connection, table_ref: str) -> str | None:
+def resolve_input_table(conn: DuckDBConnection, table_ref: str) -> str | None:
     """Resolve table references across table_key/sql_name and simple aliases."""
     # Lazy import to avoid circular dependency with shared.db at module-load time
     from shared.db import all_registered_tables, lookup_sql_name, table_exists
@@ -53,7 +54,7 @@ def resolve_input_table(conn: sqlite3.Connection, table_ref: str) -> str | None:
     return None
 
 
-def validate_step_inputs(conn: sqlite3.Connection, spec: StepSpec) -> tuple[bool, list[str]]:
+def validate_step_inputs(conn: DuckDBConnection, spec: StepSpec) -> tuple[bool, list[str]]:
     """Check whether StepSpec prerequisites exist in the current session."""
     from shared.db import get_meta, table_exists
 

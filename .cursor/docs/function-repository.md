@@ -16,17 +16,21 @@ A complete list of every Python function in the app, organised by module and ste
 | `_rebuild_meta` | `routes/data_loading_routes.py` | Refreshes the session's summary information (like column counts and row stats) after something changes. |
 | `_file_name_from_key` | `data_loading/file_loader.py` | Turns an internal table identifier into a human-readable file name for display. |
 | `_clean_header` | `data_loading/file_loader.py` | Tidies up a header cell — trims spaces, converts to text — so column names are consistent. |
-| `_clean_cell` | `data_loading/file_loader.py` | Tidies up a single cell value, turning it into clean text or marking it as empty. |
+| `_to_str` | `data_loading/file_loader.py` | Converts a value to a string without cleaning. Returns None for blank values. |
+| `bulk_clean_table` | `data_loading/file_loader.py` | Applies UPPER and TRIM to every column in a table using a single fast SQL statement instead of cleaning each cell one by one in Python. |
+| `_sql_all_null_condition` | `data_loading/file_loader.py` | Builds a SQL fragment that checks whether all columns in a row are empty — used to skip blank rows when building data tables from raw tables. |
+| `_sql_literal` | `data_loading/file_loader.py` | Safely escapes a string for use as a value in a SQL query. |
 | `_is_empty_row` | `data_loading/file_loader.py` | Checks whether a row is completely blank or has no meaningful data. |
 | `_iter_csv_rows` | `data_loading/file_loader.py` | Reads a CSV file and produces rows one at a time for processing. |
 | `_pad_row` | `data_loading/file_loader.py` | Makes a row the right width by adding empty cells or trimming extras so all rows match. |
-| `_load_excel_sheet` | `data_loading/file_loader.py` | Reads one sheet from an Excel file and produces cleaned rows ready to store. |
-| `_load_csv` | `data_loading/file_loader.py` | Reads a CSV file and produces cleaned rows ready to store. |
-| `load_zip_to_session` | `data_loading/file_loader.py` | Opens a ZIP file, finds all the spreadsheets and CSVs inside, and loads each one into the session database. |
+| `_load_excel_sheet` | `data_loading/file_loader.py` | Reads one sheet from an Excel file using DuckDB native ingestion for the raw table, then builds the data table from the raw table via SQL — no Python row iteration. |
+| `_load_csv` | `data_loading/file_loader.py` | Reads a CSV file using native DataFrame ingestion + SQL. Reads CSV once into memory, ingests natively, then builds the data table via SQL — no Python row loops. |
+| `load_zip_to_session` | `data_loading/file_loader.py` | Opens a ZIP file, finds all spreadsheets (.xlsx, .xlsm, .xlsb, .xltx, .xltm), CSVs, and nested ZIP files inside, and loads each one into the session database. Nested ZIPs are extracted one level deep. |
 | `_build_columns_from_header` | `data_loading/file_loader.py` | Takes the chosen header row and builds a list of column names and their metadata. |
 | `rebuild_table_from_raw_table` | `data_loading/file_loader.py` | Rebuilds the working data table from scratch after the user changes the header row. |
-| `infer_file_type` | `data_loading/service.py` | Guesses whether a table came from a CSV, Excel, or other file type based on its name. |
+| `infer_file_type` | `data_loading/service.py` | Guesses whether a table came from a CSV, Excel (.xlsx, .xlsm, .xlsb, .xltx, .xltm), or other file type based on its name. |
 | `file_display_name` | `data_loading/service.py` | Creates a nice display label for a file (e.g. "Sales_Data.xlsx — Sheet1"). |
+| `_bulk_table_meta` | `data_loading/service.py` | Fetches row counts and column lists for many tables at once using two SQL queries instead of querying each table one by one. |
 | `build_inventory_from_db` | `data_loading/service.py` | Builds the list of all uploaded tables with their row counts and column info for the sidebar. |
 | `build_files_payload_from_db` | `data_loading/service.py` | Builds the data package the browser needs to show file paths, sheet names, and table keys. |
 | `build_previews_from_db` | `data_loading/service.py` | Builds quick column-and-header previews for every table to show in the UI. |
@@ -304,6 +308,7 @@ A complete list of every Python function in the app, organised by module and ste
 | `quote_id` | `shared/db/table_ops.py` | Wraps a table or column name in quotes so it's safe to use in database queries. |
 | `store_table` | `shared/db/table_ops.py` | Saves a batch of rows into a database table in one transaction. |
 | `store_table_streaming` | `shared/db/table_ops.py` | Saves rows into a database table in smaller chunks, for very large datasets that won't fit in memory at once. |
+| `store_df_native` | `shared/db/table_ops.py` | Saves a pandas DataFrame into a database table using DuckDB's zero-copy path — no Python row iteration, orders of magnitude faster for large datasets. |
 | `read_table` | `shared/db/table_ops.py` | Reads rows from a database table and returns them as a list of row-objects. |
 | `read_table_columns` | `shared/db/table_ops.py` | Returns the ordered list of column names for a table. |
 | `table_exists` | `shared/db/table_ops.py` | Checks whether a specific table exists in the database. |
@@ -319,6 +324,11 @@ A complete list of every Python function in the app, organised by module and ste
 | `set_meta` | `shared/db/meta_ops.py` | Saves a setting or piece of metadata to the session. |
 | `delete_meta` | `shared/db/meta_ops.py` | Removes a stored setting from the session. |
 | `get_all_meta_keys` | `shared/db/meta_ops.py` | Lists all the settings currently stored in the session. |
+| `duckdb_connect` | `shared/db/duckdb_compat.py` | Opens a DuckDB database file and returns a connection that works just like the old database connections. |
+| `DuckDBConnection` | `shared/db/duckdb_compat.py` | A wrapper around DuckDB that makes it behave the same way as the old database — so all existing code works without changes. |
+| `DictRow` | `shared/db/duckdb_compat.py` | Makes database rows work like dictionaries — you can access values by column name (e.g. row["name"]). |
+| `DuckCursorWrapper` | `shared/db/duckdb_compat.py` | Wraps query results so they return dictionary-style rows and support familiar methods like fetchone() and fetchall(). |
+| `normalize_for_match` | `shared/db/table_ops.py` | Creates a formula that cleans up values for matching — trims spaces, ignores case, and normalises numbers so "123" and "123.0" match. |
 | `get_client` | `shared/ai/client.py` | Creates the AI client connection using the user's API key. |
 | `get_model` | `shared/ai/client.py` | Returns the name of the AI model being used. |
 | `call_ai_json` | `shared/ai/client.py` | Sends a prompt to the AI and gets back a structured JSON answer (with caching and retries). |
@@ -434,10 +444,6 @@ A complete list of every Python function in the app, organised by module and ste
 |----------|------|--------------|
 | `_nan_to_none` | `app.py` | Cleans up data for JSON responses by replacing "not a number" values with proper empty values. |
 | `_get_session_id` | `app.py` | Reads the session ID from the request (JSON body, form data, query param, or header). |
-| `_build_xlsx_buf` | `app.py` | Creates an Excel file in memory from the current data (for downloading). |
-| `_pregenerate_xlsx_to_disk` | `app.py` | Builds an Excel file in a background thread and writes it to disk next to the session database. |
-| `_trigger_xlsx_cache` | `app.py` | Loads the active table from SQLite and starts background Excel generation to disk. |
-| `_get_xlsx_bytes` | `app.py` | Returns the finished Excel file bytes — reads from the disk cache or builds on the fly. |
 | `_clean_preview_rows` | `app.py` | Replaces NaN-like string values with empty strings for display in the browser. |
 | `get_api_key` | `app.py` | Reads the API key from the request body or from an environment variable. |
 | `health_check` | `app.py` | A simple endpoint that returns "ok" to confirm the server is running. |
@@ -445,7 +451,7 @@ A complete list of every Python function in the app, organised by module and ste
 | `transfer_to_analyzer` | `app.py` | Sends the normalised data to the Summarizer module (Module 3). |
 | `reset_normalization` | `app.py` | Reloads the original data from the session database, discarding all normalisation changes. |
 | `reset_state` | `app.py` | Deletes the entire session database for a completely fresh start. |
-| `download` | `app.py` | Sends the normalised dataset to the browser as an Excel download. |
+| `download` | `app.py` | Sends the normalised dataset to the browser as a CSV download. |
 | `get_session_db` | `db/session_db.py` | Opens (or retrieves from cache) the SQLite database connection for a session. |
 | `get_session_lock` | `db/session_db.py` | Returns a per-session lock that route handlers grab before touching the database, so two requests for the same session don't collide. |
 | `close_session_db` | `db/session_db.py` | Closes the database connection for a session and removes it from cache. |
@@ -459,6 +465,7 @@ A complete list of every Python function in the app, organised by module and ste
 | `cleanup_all_sessions` | `db/session_db.py` | Closes all connections and deletes all session database files. |
 | `store_table` | `db/table_ops.py` | Saves a batch of rows into a database table in one go. |
 | `store_table_streaming` | `db/table_ops.py` | Saves rows into a database table in smaller chunks, for large datasets. |
+| `store_df_native` | `db/table_ops.py` | Saves a pandas DataFrame into a database table using DuckDB's zero-copy path — no Python row iteration. |
 | `read_table` | `db/table_ops.py` | Reads rows from a database table and returns them as a list of row-objects. |
 | `read_table_columns` | `db/table_ops.py` | Returns the ordered list of column names for a table. |
 | `table_exists` | `db/table_ops.py` | Checks whether a specific table exists in the database. |
@@ -469,7 +476,7 @@ A complete list of every Python function in the app, organised by module and ste
 | `set_meta` | `db/meta_ops.py` | Saves a setting or piece of metadata to the session. |
 | `delete_meta` | `db/meta_ops.py` | Removes a stored setting from the session. |
 | `sqlite_to_df` | `db/bridge.py` | Loads a SQLite table into a pandas DataFrame for agent processing. |
-| `df_to_sqlite` | `db/bridge.py` | Saves a pandas DataFrame back to a SQLite table after agent processing. |
+| `df_to_sqlite` | `db/bridge.py` | Saves a pandas DataFrame to a DuckDB table using native zero-copy ingestion. All values are cast to text. |
 | `_resolve_provider_and_key` | `agents/helpers.py` | Determines which AI provider to use (Portkey or OpenAI) and finds the correct API key. |
 | `get_client` | `agents/helpers.py` | Creates the AI client connection using the resolved provider and key. |
 | `get_model` | `agents/helpers.py` | Returns the AI model name for the active provider. |
@@ -497,10 +504,11 @@ A complete list of every Python function in the app, organised by module and ste
 | `_register_table` | `services/upload/file_loader.py` | Adds a new entry to the tracking table for a freshly loaded data table. |
 | `_get_registry` | `services/upload/file_loader.py` | Reads all entries from the tracking table to see which tables are in the session. |
 | `_unregister_table` | `services/upload/file_loader.py` | Removes a table's entry from the tracking table (used when deleting a table). |
-| `_parse_csv_bytes` | `services/upload/file_loader.py` | Reads raw CSV file contents and splits them into a grid of rows plus a header row. |
-| `_parse_excel_bytes` | `services/upload/file_loader.py` | Reads raw Excel file contents and splits each sheet into a grid of rows plus headers. |
-| `_store_raw_table` | `services/upload/file_loader.py` | Saves the raw, unprocessed row grid into a database table (kept as a backup for re-picking headers). |
-| `_store_data_table` | `services/upload/file_loader.py` | Saves the processed, typed data rows into the working database table. |
+| `_parse_csv_bytes` | `services/upload/file_loader.py` | Reads raw CSV file contents into a DataFrame and extracts headers. Returns a DataFrame for native DuckDB ingestion. |
+| `_parse_excel_bytes` | `services/upload/file_loader.py` | Reads raw Excel file contents and returns DataFrames per sheet (not Python grids) for native DuckDB ingestion. |
+| `_store_df_native` | `services/upload/file_loader.py` | Saves a pandas DataFrame into a database table using DuckDB's zero-copy path — no Python row iteration. |
+| `_store_raw_table` | `services/upload/file_loader.py` | Saves the raw DataFrame into a database table using native ingestion (kept as a backup for re-picking headers). |
+| `_store_data_table_from_raw` | `services/upload/file_loader.py` | Builds the working data table from the raw table via SQL, skipping the header row and empty rows — no Python iteration. |
 | `_build_table_key` | `services/upload/file_loader.py` | Creates a stable identifier for a file-and-sheet combination (e.g. "Sales.xlsx__Sheet1"). |
 | `_set_bulk_pragmas` | `services/upload/file_loader.py` | Speeds up the database during large bulk loads by temporarily relaxing safety settings. |
 | `_restore_pragmas` | `services/upload/file_loader.py` | Restores normal database safety settings after a bulk load finishes. |
@@ -519,7 +527,7 @@ A complete list of every Python function in the app, organised by module and ste
 | `build_preview` | `services/upload/file_loader.py` | Builds a limited-row preview of every table in the session for the UI. |
 | `build_single_preview` | `services/upload/file_loader.py` | Builds a preview (first 50 rows) for one specific table. Used for lazy-loading previews when the user expands a table. |
 | `get_raw_preview` | `services/upload/file_loader.py` | Reads a window of raw rows from the backup table for the header-selection screen. |
-| `set_header_row_for_table` | `services/upload/file_loader.py` | Rebuilds a table from the raw grid using the newly chosen header row and any custom name overrides. |
+| `set_header_row_for_table` | `services/upload/file_loader.py` | Rebuilds a table from the raw table using SQL (only fetches the header row into Python). Skips the header row and empty rows entirely in SQL. |
 | `delete_rows_from_table` | `services/upload/file_loader.py` | Deletes rows from a table by their row IDs and returns how many were removed. |
 | `collect_column_info` | `services/upload/file_loader.py` | Gathers column metadata (names, types, sample values) across all tables for the mapping step. |
 | `build_inventory` | `services/upload/file_loader.py` | Returns the list of all tables with their keys, row counts, and sheet names. |
@@ -532,9 +540,12 @@ A complete list of every Python function in the app, organised by module and ste
 |----------|------|--------------|
 | `map_columns` | `routes/mapping_routes.py` | Receives the "Detect Columns" request, runs deterministic matching then AI mapping, and returns suggestions. |
 | `confirm_mapping` | `routes/mapping_routes.py` | Saves the user's confirmed field-to-column mapping, builds the typed analysis table, and returns a cast report. |
-| `deterministic_match` | `services/mapping/column_mapper.py` | Matches upload columns to standard fields using exact name comparison (ignoring case). |
-| `_ai_map_single_field` | `services/mapping/column_mapper.py` | Asks the AI to suggest the best column match for one standard procurement field. |
-| `ai_map_columns` | `services/mapping/column_mapper.py` | Runs AI mapping in parallel for all fields that couldn't be matched automatically. |
+| `deterministic_match` | `services/mapping/column_mapper.py` | Matches upload columns to standard fields using exact name comparison first, then a fuzzy token-based matching pass that scores similarity and checks type compatibility. |
+| `_tokenize` | `services/mapping/column_mapper.py` | Breaks a column name into lowercase words for fuzzy comparison (splits on spaces, underscores, and camelCase). |
+| `_fuzzy_score` | `services/mapping/column_mapper.py` | Scores how similar a column name is to a standard field name using token overlap and substring checks. |
+| `_ai_map_single_field` | `services/mapping/column_mapper.py` | Asks the AI to suggest the best column match for one standard procurement field, sending column statistics (type, null rate, distinct count) for better accuracy. |
+| `ai_map_columns` | `services/mapping/column_mapper.py` | Runs AI mapping in parallel for all fields that couldn't be matched automatically, then validates results to resolve conflicts and check column existence. |
+| `_validate_ai_results` | `services/mapping/column_mapper.py` | Checks AI mapping results for conflicts (two fields claiming the same column), verifies column existence, and checks type compatibility. Reassigns conflicting columns by confidence. |
 | `_excel_serial` | `services/mapping/column_mapper.py` | Converts an Excel serial number into a proper date (same logic as Module 2). |
 | `_date_preprocess` | `services/mapping/column_mapper.py` | Cleans up a raw date string before trying to parse it. |
 | `_parse_partial_date` | `services/mapping/column_mapper.py` | Handles incomplete dates like just a year or month-year. |
@@ -634,7 +645,8 @@ A complete list of every Python function in the app, organised by module and ste
 | `export_csv` | `routes/export_routes.py` | Finds a stored view result and sends it to the browser as a CSV download. |
 | `_resolve_sessions_dir` | `shared/db.py` | Finds the folder on disk where session database files are stored. |
 | `_db_path` | `shared/db.py` | Builds the full file path for a specific session's database. |
-| `get_session_db` | `shared/db.py` | Opens (or creates) the database connection for a session. |
+| `get_session_db` | `shared/db.py` | Opens (or retrieves from cache) the database connection for a session. Reuses existing connections from an LRU cache and evicts old ones when the cache is full. |
+| `close_session_db` | `shared/db.py` | Closes a cached connection for a session and removes it from the cache. |
 | `session_exists` | `shared/db.py` | Checks whether a session database file exists on disk. |
 | `_ensure_meta` | `shared/db.py` | Creates the internal settings table if it doesn't exist yet. |
 | `get_meta` | `shared/db.py` | Reads a stored setting from the session. |

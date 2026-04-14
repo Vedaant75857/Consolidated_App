@@ -304,15 +304,24 @@ def _create_landing_app():
 # Server runner
 # ---------------------------------------------------------------------------
 
-_servers: list = []  # keep references so we can .close() on shutdown
+_servers: list = []          # keep references so we can .close() on shutdown
+_server_errors: list = []    # (label, port) pairs for threads that failed to start
 
 
 def _run_server(app, port: int, label: str):
-    """Start a waitress server for *app* on *port* (blocking call)."""
-    srv = create_server(app, host="0.0.0.0", port=port)
-    _servers.append(srv)
-    log.info("%s ready on http://localhost:%d", label, port)
-    srv.run()
+    """Start a waitress server for *app* on *port* (blocking call).
+
+    Binds to 127.0.0.1 (localhost only) so Windows Firewall never prompts
+    the user — this is a local desktop tool, not a network service.
+    """
+    try:
+        srv = create_server(app, host="127.0.0.1", port=port)
+        _servers.append(srv)
+        log.info("%s ready on http://localhost:%d", label, port)
+        srv.run()
+    except Exception:
+        log.exception("Server thread crashed for %s (port %d)", label, port)
+        _server_errors.append((label, port))
 
 
 SERVICES = [
@@ -327,6 +336,24 @@ SERVICES = [
 # Main
 # ---------------------------------------------------------------------------
 
+def _wait_for_servers(ports: list[int], timeout: int = 15) -> set[int]:
+    """Block until every port in *ports* accepts a TCP connection.
+
+    Returns the set of ports that did NOT come up within *timeout* seconds.
+    """
+    deadline = time.time() + timeout
+    pending = set(ports)
+    while pending and time.time() < deadline:
+        for port in list(pending):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.5)
+                if s.connect_ex(("127.0.0.1", port)) == 0:
+                    pending.discard(port)
+        if pending:
+            time.sleep(0.3)
+    return pending
+
+
 def main():
     print(r"""
     ╔══════════════════════════════════════════╗
@@ -334,6 +361,8 @@ def main():
     ║  Starting all services — please wait…    ║
     ╚══════════════════════════════════════════╝
     """)
+
+    total = len(SERVICES)
 
     # Pre-check all ports
     for _, port, label in SERVICES:
@@ -345,7 +374,8 @@ def main():
 
     # Create all apps first (sequentially, so module isolation works)
     apps: list[tuple] = []
-    for factory, port, label in SERVICES:
+    for idx, (factory, port, label) in enumerate(SERVICES, 1):
+        print(f"  [{idx}/{total}] Loading {label} ...")
         try:
             app = factory()
         except Exception:
@@ -359,19 +389,38 @@ def main():
     _post_load_cleanup()
 
     # Start each service in a daemon thread
+    print(f"\n  Starting {total} servers ...")
     for app, port, label in apps:
         t = threading.Thread(target=_run_server, args=(app, port, label), daemon=True)
         t.start()
 
-    # Give servers a moment to bind
-    time.sleep(2)
+    # Wait until every server is actually accepting connections
+    all_ports = [port for _, port, _ in SERVICES]
+    stalled = _wait_for_servers(all_ports, timeout=15)
+
+    # Also check if any server thread crashed during startup
+    if _server_errors:
+        for label, port in _server_errors:
+            log.error("  ✗ %s (port %d) failed to start.", label, port)
+        print("\n  Some services failed to start. Check the log above.")
+        input("Press Enter to exit...")
+        sys.exit(1)
+
+    if stalled:
+        port_to_label = {port: label for _, port, label in SERVICES}
+        for port in stalled:
+            log.warning("  ✗ %s (port %d) did not respond in time.",
+                        port_to_label.get(port, "Unknown"), port)
+        print("\n  Some services are slow to start — the app may not work correctly.")
+        print("  Opening the browser anyway. If it shows an error, wait a moment and refresh.\n")
+    else:
+        print("  All services ready.")
 
     url = "http://localhost:3000"
     log.info("Opening %s in your browser…", url)
     webbrowser.open(url)
 
-    print("\n  All services are running.")
-    print("  Close this window (or press Ctrl+C) to stop.\n")
+    print("\n  Close this window (or press Ctrl+C) to stop.\n")
 
     try:
         while True:

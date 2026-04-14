@@ -13,13 +13,13 @@ The DataStitcher helps users combine multiple data files into one clean, merged 
 | # | Feature | Details |
 |---|---------|---------|
 | 1 | Drag-and-drop upload | Drag files or an entire folder onto the upload area. The area highlights when you drag over it. |
-| 2 | Browse files | Click "Browse Files" to pick one or more files from your computer (ZIP, CSV, Excel). |
-| 3 | Browse folder | Click "Browse Folder" to select a whole folder — all supported files inside are picked up. |
+| 2 | Browse files | Click "Browse Files" to pick one or more files from your computer (ZIP, CSV, or Excel — including .xlsx, .xlsm, .xlsb, .xltx, .xltm). |
+| 3 | Browse folder | Click "Browse Folder" to select a whole folder — all supported files inside are picked up, including any ZIP files in the folder (their contents are automatically extracted). |
 | 4 | Multi-file staging | Add files one at a time — they appear in a scrollable list. Hover any file to see its full path. |
 | 5 | Remove single file | Click the X next to any staged file to remove just that one. |
 | 6 | Remove all files | Click "Remove All" to clear the entire file list and start over. |
 | 7 | Add more files | Click "Add Files" after staging some to add more from the file picker. |
-| 8 | ZIP packaging | When you drop multiple non-ZIP files, the app automatically zips them together (shows a "Zipping files…" spinner). |
+| 8 | ZIP packaging | When you drop multiple non-ZIP files, the app automatically zips them together (shows a "Zipping files…" spinner). ZIP files found inside a folder are automatically extracted — their contents are treated as individual files. |
 | 9 | API key entry | Type or paste your Portkey API key into a password field. This key is needed for AI-powered steps. |
 | 10 | Initialize workspace | Click "Initialize Workspace" to upload everything and move to Data Preview. The button is disabled while uploading or if no files are selected. |
 
@@ -259,7 +259,7 @@ The Normalizer takes a single data table (uploaded directly or received from the
 | 1 | Disabled status | This operation is currently disabled in the app and cannot be clicked in the sidebar. |
 | 2 | Run (when enabled) | When enabled, clicking "Run" would clean supplier names by removing legal suffixes (Inc, Ltd), trimming spaces, and merging near-duplicate names. |
 | 3 | Result message | After running, a success or error message appears with details. |
-| 4 | Download Excel | After a successful run, download the result as Excel. |
+| 4 | Download CSV | After a successful run, download the result as CSV. |
 | 5 | Send to Summarizer | After a successful run, send the data to Module 3. |
 
 ### Normalization — Supplier Country
@@ -272,7 +272,7 @@ The Normalizer takes a single data table (uploaded directly or received from the
 | 4 | Confirm and run | Click "Confirm & Run" to standardise country names using a built-in lookup of abbreviations and aliases, with AI as a fallback for unclear values. |
 | 5 | Normalization summary | After running, see a summary: total rows normalised, how many used the lookup vs. AI, number of distinct countries found, and any rows that couldn't be matched. |
 | 6 | AI error list | If the AI couldn't handle some values, they appear in an amber warning list. |
-| 7 | Download Excel | Download the normalised data as Excel. |
+| 7 | Download CSV | Download the normalised data as CSV. |
 | 8 | Send to Summarizer | Send the data directly to Module 3. |
 | 9 | Preview table | After running, see a preview of the data with the normalised country column highlighted. Click "Refresh" to reload the preview. |
 
@@ -284,7 +284,7 @@ The Normalizer takes a single data table (uploaded directly or received from the
 | 2 | Run normalization | Click "Run" to convert all date-like columns to the chosen format. The app handles Excel serial numbers, partial dates, and many international formats. |
 | 3 | Re-run | Click "Re-run" to normalise again (e.g. after changing the target format). |
 | 4 | Result message | See a success or error message with details after running. |
-| 5 | Download Excel | Download the result as Excel. |
+| 5 | Download CSV | Download the result as CSV. |
 | 6 | Send to Summarizer | Send data to Module 3. |
 | 7 | Preview table | See a preview with the new normalised date columns highlighted next to the originals. |
 
@@ -304,7 +304,7 @@ The Normalizer takes a single data table (uploaded directly or received from the
 | 10 | Validation feedback | If required FX rates are missing, fields get a red border and a warning message appears. |
 | 11 | Confirm and run | Click "Confirm & Run" to convert all spend values to USD using the exchange rate table. |
 | 12 | Conversion summary | After running, see: rows converted, rows using fallback rates, and a breakdown of any rows not converted (missing currency, unsupported, invalid spend, unparseable date). |
-| 13 | Download Excel | Download the result. |
+| 13 | Download CSV | Download the result. |
 | 14 | Send to Summarizer | Send data to Module 3. |
 | 15 | Preview table | See a preview with the converted spend columns highlighted. |
 
@@ -315,7 +315,7 @@ The Normalizer takes a single data table (uploaded directly or received from the
 | 1 | Run normalization | Click "Run" to standardise payment terms. The app uses pattern matching to extract days, discount, and a "doubt" flag, then uses AI for clean English descriptions. |
 | 2 | Re-run | Click "Re-run" to process again. |
 | 3 | Result message | See a success or error message. |
-| 4 | Download Excel | Download the result. |
+| 4 | Download CSV | Download the result. |
 | 5 | Send to Summarizer | Send data to Module 3. |
 | 6 | Preview table | See a preview with the new payment terms columns highlighted. |
 
@@ -331,7 +331,7 @@ The Normalizer takes a single data table (uploaded directly or received from the
 | 6 | Confirm and run | Click "Confirm & Run" to assign standard regions (NA, EMEA, APAC, LATAM) using built-in rules, with AI for edge cases. |
 | 7 | Normalization summary | See totals: deterministic matches, AI matches, country-derived fills, and any unmatched rows. |
 | 8 | AI error list | Any AI failures appear in an amber list. |
-| 9 | Download Excel | Download the result. |
+| 9 | Download CSV | Download the result. |
 | 10 | Send to Summarizer | Send data to Module 3. |
 | 11 | Preview table | See a preview with the normalised region column highlighted. |
 
@@ -342,7 +342,7 @@ The Normalizer takes a single data table (uploaded directly or received from the
 | 1 | Run normalization | Click "Run" to clean up all plant, site, and location columns using rules and AI. |
 | 2 | Re-run | Click "Re-run" to process again. |
 | 3 | Result message | See a success or error message. |
-| 4 | Download Excel | Download the result. |
+| 4 | Download CSV | Download the result. |
 | 5 | Send to Summarizer | Send data to Module 3. |
 | 6 | Preview table | See a preview with the normalised plant columns highlighted. |
 
@@ -350,7 +350,7 @@ The Normalizer takes a single data table (uploaded directly or received from the
 
 | # | Feature | Details |
 |---|---------|---------|
-| 1 | Download Excel | Download the fully normalised dataset as an Excel file. A note shows how many of the 7 normalizations were completed. |
+| 1 | Download CSV | Download the fully normalised dataset as a CSV file. A note shows how many of the 7 normalizations were completed. |
 | 2 | Send to Summarizer | Click "Send to Summarizer" to transfer data to Module 3. An inline confirmation strip appears — click "Send" to proceed or "Cancel" to back out. |
 | 3 | Transfer result | After sending, see a green success or red error banner with a message. |
 | 4 | Download on failure | If the transfer fails, click "Download instead" to get the file locally. |
@@ -498,7 +498,7 @@ The Spend Summarizer takes a procurement dataset and produces charts, quality as
 | # | Feature | Details |
 |---|---------|---------|
 | 9 | Loading state | While the AI generates the email, a spinner shows with "Generating your email…" and a time estimate. |
-| 10 | Back to Dashboard | Click "Back to Dashboard" to return to Procurement Views. |
+| 10 | Back to Procurement Views | Click "Back to Procurement Views" to return to the Procurement Views step. |
 | 11 | Edit/Preview toggle | Switch between "Edit" mode (editable text fields) and "Preview" mode (formatted display). |
 | 12 | Edit subject | In edit mode, change the email subject line in a text field. |
 | 13 | Edit body | In edit mode, edit the email body in a large text area. |
@@ -519,6 +519,6 @@ The Spend Summarizer takes a procurement dataset and produces charts, quality as
 | 5 | Hero banner | The top banner shows the current step name, description, and step counter. |
 | 6 | Loading overlay | Full-screen overlay with spinner during long operations. During file upload, a progress bar shows the upload percentage; once the file reaches the server, the message switches to "Processing". |
 | 7 | Step-change warning | Warning dialog when going back would reset later work. |
-| 8 | Error banner | Red error banner for steps 1–4 (steps 5–7 handle errors inline). |
+| 8 | Error banner | Red error banner shown on all steps when something goes wrong. |
 | 9 | Error boundary | If a step crashes, a "Something went wrong" screen appears with "Try Again". |
 | 10 | Session restore | The app can restore your session from the URL or local storage so you pick up where you left off. |

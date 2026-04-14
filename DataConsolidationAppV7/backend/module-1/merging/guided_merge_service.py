@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import difflib
-import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any
 
 from shared.ai import call_ai_json
 from shared.db import (
+    DuckDBConnection,
     get_meta,
     lookup_sql_name,
     quote_id,
@@ -38,7 +38,7 @@ from merging.column_metadata import (
 )
 
 
-_KNOWN_EXTS = {".xlsx", ".xlsm", ".xltx", ".xltm", ".csv", ".zip"}
+_KNOWN_EXTS = {".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm", ".csv", ".zip"}
 
 
 def _strip_file_ext(name: str) -> str:
@@ -82,7 +82,7 @@ def _parse_explain_plan(plan_rows: list) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def recommend_base_file(
-    conn: sqlite3.Connection, session_id: str, api_key: str | None
+    conn: DuckDBConnection, session_id: str, api_key: str | None
 ) -> dict[str, Any]:
     schema = get_meta(conn, "groupSchemaTableRows") or []
     if not schema:
@@ -149,7 +149,7 @@ def recommend_base_file(
 # ---------------------------------------------------------------------------
 
 def find_common_columns(
-    conn: sqlite3.Connection, base_sql_name: str, source_sql_name: str
+    conn: DuckDBConnection, base_sql_name: str, source_sql_name: str
 ) -> list[dict[str, Any]]:
     base_cols = read_table_columns(conn, base_sql_name)
     source_cols = read_table_columns(conn, source_sql_name)
@@ -262,7 +262,7 @@ def find_common_columns(
     return results
 
 
-def _get_distinct_str(conn: sqlite3.Connection, table: str, col: str, limit: int = 2000) -> list[str]:
+def _get_distinct_str(conn: DuckDBConnection, table: str, col: str, limit: int = 2000) -> list[str]:
     """Get distinct non-null string values for a column, capped at `limit` for speed."""
     tbl = quote_id(table)
     qc = quote_id(col)
@@ -295,7 +295,7 @@ def classify_all_columns(columns: list[str]) -> dict[str, dict[str, str]]:
 # ---------------------------------------------------------------------------
 
 def classify_columns(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     session_id: str,
     api_key: str | None,
     common_columns: list[dict[str, Any]],
@@ -374,7 +374,7 @@ def classify_columns(
 # ---------------------------------------------------------------------------
 
 def simulate_join(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     base_sql: str,
     source_sql: str,
     key_pairs: list[dict[str, str]],
@@ -465,7 +465,7 @@ def simulate_join(
 # ---------------------------------------------------------------------------
 
 def execute_merge(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     session_id: str,
     base_sql: str,
     source_sql: str,
@@ -507,13 +507,13 @@ def execute_merge(
     conn.execute("DROP TABLE IF EXISTS _dedup_source")
     conn.execute(f"""
         CREATE TEMP TABLE _dedup_source AS
-        SELECT {pruned_source_cols} FROM {st}
-        WHERE {null_filters}
-          AND rowid IN (
-              SELECT MIN(rowid) FROM {st}
-              WHERE {null_filters}
-              GROUP BY {source_key_expr}
-          )
+        SELECT {pruned_source_cols} FROM (
+            SELECT {pruned_source_cols},
+                   ROW_NUMBER() OVER (PARTITION BY {source_key_expr} ORDER BY (SELECT NULL)) AS _rn
+            FROM {st}
+            WHERE {null_filters}
+        ) AS _sub
+        WHERE _sub._rn = 1
     """)
 
     # Composite indexes for the join
@@ -596,7 +596,7 @@ def execute_merge(
 # ---------------------------------------------------------------------------
 
 def generate_validation_report(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     base_sql: str,
     source_sql: str,
     result_table: str,
@@ -662,7 +662,7 @@ def generate_validation_report(
 # ---------------------------------------------------------------------------
 
 def finalize_merge(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     session_id: str,
     approved_merges: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -793,7 +793,7 @@ def finalize_merge(
 # Skip merge: single group -> final_merged
 # ---------------------------------------------------------------------------
 
-def skip_merge(conn: sqlite3.Connection, session_id: str, base_group_id: str) -> dict[str, Any]:
+def skip_merge(conn: DuckDBConnection, session_id: str, base_group_id: str) -> dict[str, Any]:
     base_sql = lookup_sql_name(conn, base_group_id)
     if not base_sql or not table_exists(conn, base_sql):
         raise ValueError(f"Table not found for group {base_group_id}")
@@ -875,7 +875,7 @@ def skip_merge(conn: sqlite3.Connection, session_id: str, base_group_id: str) ->
 # ---------------------------------------------------------------------------
 
 def persist_merge_output(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     session_id: str,
     result_table: str,
     base_group_id: str,
@@ -965,7 +965,7 @@ def persist_merge_output(
 # ---------------------------------------------------------------------------
 
 def delete_merge_output(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     session_id: str,
     version: int,
 ) -> dict[str, Any]:

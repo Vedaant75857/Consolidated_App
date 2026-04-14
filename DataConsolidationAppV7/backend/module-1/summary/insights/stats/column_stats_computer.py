@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import sqlite3
 from typing import Any
 
 from shared.db import (
+    DuckDBConnection,
     column_stats,
     column_distinct_values,
     quote_id,
@@ -19,7 +19,7 @@ from shared.db.stats_ops import column_distinct_count, compute_overlap
 def _numeric_predicate(qc: str) -> str:
     """Expression true when trimmed text looks numeric (GLOB, not CAST)."""
     t = f"TRIM(CAST({qc} AS TEXT))"
-    return f"({t} GLOB '*[0-9]*' AND {t} NOT GLOB '*[^0-9.eE+-]*')"
+    return f"(regexp_matches({t}, '[0-9]') AND regexp_matches({t}, '^[0-9eE.+-]+$'))"
 
 
 def _infer_type(numeric_ratio: float, distinct_count: int, non_null: int) -> str:
@@ -31,7 +31,7 @@ def _infer_type(numeric_ratio: float, distinct_count: int, non_null: int) -> str
 
 
 def compute_deep_column_stats(
-    conn: sqlite3.Connection, table_name: str
+    conn: DuckDBConnection, table_name: str
 ) -> list[dict[str, Any]]:
     """Per-column deep stats using consolidated SQL queries for speed."""
     if not table_exists(conn, table_name):
@@ -70,8 +70,8 @@ def compute_deep_column_stats(
                     AND LOWER(TRIM(CAST({qc} AS TEXT))) != TRIM(CAST({qc} AS TEXT)) THEN 1 ELSE 0 END) AS n_upper,
                 SUM(CASE WHEN LOWER(TRIM(CAST({qc} AS TEXT))) = TRIM(CAST({qc} AS TEXT))
                     AND LENGTH(TRIM(CAST({qc} AS TEXT))) > 0 THEN 1 ELSE 0 END) AS n_lower,
-                SUM(CASE WHEN TRIM(CAST({qc} AS TEXT)) GLOB '*[!0-9A-Za-z ./_-]*' THEN 1 ELSE 0 END) AS n_special,
-                SUM(CASE WHEN TRIM(CAST({qc} AS TEXT)) GLOB '*[0-9]*' THEN 1 ELSE 0 END) AS n_digit
+                SUM(CASE WHEN regexp_matches(TRIM(CAST({qc} AS TEXT)), '[^0-9A-Za-z ./_-]') THEN 1 ELSE 0 END) AS n_special,
+                SUM(CASE WHEN regexp_matches(TRIM(CAST({qc} AS TEXT)), '[0-9]') THEN 1 ELSE 0 END) AS n_digit
             FROM {tbl}
             WHERE {nn_filter}"""
         ).fetchone()
@@ -114,20 +114,21 @@ def compute_deep_column_stats(
             # Consolidated numeric query: min/max/mean/stddev in one pass
             num_row = conn.execute(
                 f"""SELECT
-                    MIN(CAST({qc} AS REAL)) AS min_val,
-                    MAX(CAST({qc} AS REAL)) AS max_val,
-                    AVG(CAST({qc} AS REAL)) AS mean_val,
-                    AVG(CAST({qc} AS REAL) * CAST({qc} AS REAL)) AS avg_sq
+                    MIN(TRY_CAST({qc} AS REAL)) AS min_val,
+                    MAX(TRY_CAST({qc} AS REAL)) AS max_val,
+                    AVG(TRY_CAST({qc} AS REAL)) AS mean_val,
+                    AVG(TRY_CAST({qc} AS REAL) * TRY_CAST({qc} AS REAL)) AS avg_sq
                 FROM {tbl}
                 WHERE {nn_filter} AND {num_pred}
-                  AND CAST({qc} AS REAL) = CAST({qc} AS REAL)"""
+                  AND TRY_CAST({qc} AS REAL) IS NOT NULL"""
             ).fetchone()
             if num_row and num_row["min_val"] is not None:
                 offset = max(0, non_null // 2)
                 med_row = conn.execute(
-                    f"""SELECT CAST({qc} AS REAL) AS v FROM {tbl}
+                    f"""SELECT TRY_CAST({qc} AS REAL) AS v FROM {tbl}
                     WHERE {nn_filter} AND {num_pred}
-                    ORDER BY CAST({qc} AS REAL) LIMIT 1 OFFSET ?""",
+                      AND TRY_CAST({qc} AS REAL) IS NOT NULL
+                    ORDER BY TRY_CAST({qc} AS REAL) LIMIT 1 OFFSET ?""",
                     (offset,),
                 ).fetchone()
                 avg_v = float(num_row["mean_val"] or 0)
@@ -157,7 +158,7 @@ def compute_deep_column_stats(
 
 
 def estimate_duplicate_rows(
-    conn: sqlite3.Connection, table_name: str, max_cols: int = 5
+    conn: DuckDBConnection, table_name: str, max_cols: int = 5
 ) -> int:
     if not table_exists(conn, table_name):
         return 0
@@ -175,7 +176,7 @@ def estimate_duplicate_rows(
 
 
 def compute_cross_table_consistency(
-    conn: sqlite3.Connection, table_sql_names: list[str]
+    conn: DuckDBConnection, table_sql_names: list[str]
 ) -> float:
     if len(table_sql_names) <= 1:
         return 1.0
@@ -199,7 +200,7 @@ def compute_cross_table_consistency(
 
 
 def analyze_cross_group_sql(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     group_profiles: list[dict[str, Any]],
     group_sql_names: dict[str, str],
 ) -> dict[str, Any]:

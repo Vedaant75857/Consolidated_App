@@ -103,7 +103,7 @@ export default function App() {
   const [error, setError] = useState("");
 
   const [file, setFile] = useState<File | null>(null);
-  const [apiKey, setApiKey] = useState("");
+  const [apiKey, setApiKey] = useState(() => sessionStorage.getItem("summarizer_apiKey") || "");
 
   const [columns, setColumns] = useState<ColumnInfo[]>([]);
   const [inventory, setInventory] = useState<FileInventoryItem[]>([]);
@@ -141,6 +141,7 @@ export default function App() {
   const [pendingInvalidation, setPendingInvalidation] = useState<{
     step: number;
     action: () => void;
+    onCancel?: () => void;
   } | null>(null);
 
   const invalidateDownstream = useCallback(
@@ -189,6 +190,11 @@ export default function App() {
     },
     [maxStepReached],
   );
+
+  // Persist apiKey to sessionStorage so it survives page refreshes
+  useEffect(() => {
+    if (apiKey) sessionStorage.setItem("summarizer_apiKey", apiKey);
+  }, [apiKey]);
 
   useEffect(() => {
     localStorage.removeItem(LS_SESSION_KEY);
@@ -477,16 +483,25 @@ export default function App() {
   const handleConfirmMapping = useCallback(
     (mapping: Record<string, string | null>) => {
       if (maxStepReached > 3) {
-        return new Promise<CastReport>((resolve) => {
-          guardedAction(3, async () => {
-            const result = await doConfirmMapping(mapping);
-            resolve(result);
+        return new Promise<CastReport>((resolve, reject) => {
+          setPendingInvalidation({
+            step: 3,
+            action: async () => {
+              try {
+                await invalidateDownstream(3);
+                const result = await doConfirmMapping(mapping);
+                resolve(result);
+              } catch (err) {
+                reject(err);
+              }
+            },
+            onCancel: () => reject(new Error("Cancelled")),
           });
         });
       }
       return doConfirmMapping(mapping);
     },
-    [maxStepReached, guardedAction, doConfirmMapping]
+    [maxStepReached, invalidateDownstream, doConfirmMapping]
   );
 
   /* ──── Compute views (step 5 -> 6) ──── */
@@ -534,19 +549,24 @@ export default function App() {
     (selectedViews: string[], config: ViewConfig) => {
       if (maxStepReached > 5) {
         return new Promise<void>((resolve, reject) => {
-          guardedAction(5, async () => {
-            try {
-              await doComputeViews(selectedViews, config);
-              resolve();
-            } catch (err) {
-              reject(err);
-            }
+          setPendingInvalidation({
+            step: 5,
+            action: async () => {
+              try {
+                await invalidateDownstream(5);
+                await doComputeViews(selectedViews, config);
+                resolve();
+              } catch (err) {
+                reject(err);
+              }
+            },
+            onCancel: () => reject(new Error("Cancelled")),
           });
         });
       }
       return doComputeViews(selectedViews, config);
     },
-    [maxStepReached, guardedAction, doComputeViews]
+    [maxStepReached, invalidateDownstream, doComputeViews]
   );
 
   /* ──── Recompute single view (dashboard slider changes) ──── */
@@ -803,14 +823,14 @@ export default function App() {
                   <div className="rounded-2xl bg-white/10 px-4 py-3 backdrop-blur shrink-0">
                     <p className="text-[10px] uppercase tracking-wider text-red-200">Current step</p>
                     <p className="mt-1 text-lg font-semibold tabular-nums">
-                      {step} <span className="text-red-200/70 text-sm font-normal">of 7</span>
+                      {step} <span className="text-red-200/70 text-sm font-normal">of 8</span>
                     </p>
                   </div>
                 </div>
               </motion.div>
 
               {/* Error banner */}
-              {error && step !== 5 && step !== 6 && step !== 7 && (
+              {error && (
                 <motion.div
                   initial={{ opacity: 0, y: -8 }}
                   animate={{ opacity: 1, y: 0 }}
@@ -927,7 +947,10 @@ export default function App() {
 
       <StepChangeWarningDialog
         open={!!pendingInvalidation}
-        onCancel={() => setPendingInvalidation(null)}
+        onCancel={() => {
+          pendingInvalidation?.onCancel?.();
+          setPendingInvalidation(null);
+        }}
         onConfirm={async () => {
           if (pendingInvalidation) {
             await invalidateDownstream(pendingInvalidation.step);

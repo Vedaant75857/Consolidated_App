@@ -5,13 +5,11 @@ import math
 import os
 import io
 import re as _re
-import threading
 import uuid
 import warnings
 from flask import Flask, request, jsonify, send_file, g
 from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS
-from openpyxl import Workbook
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
@@ -34,6 +32,7 @@ from db import (
     table_row_count,
     set_meta,
     get_meta,
+    quote_id,
     DB_DIR,
 )
 from db.bridge import sqlite_to_df, df_to_sqlite, PREVIEW_POOL, pick_best_df_rows
@@ -133,7 +132,11 @@ def _get_session_id() -> str:
 
 
 def get_api_key():
-    """Read API key from JSON body or environment."""
+    """Read API key from JSON body or environment.
+
+    Fallback order: request body → PORTKEY_API_KEY → OPENAI_API_KEY.
+    PORTKEY_API_KEY is checked first because the default AI_PROVIDER is 'portkey'.
+    """
     try:
         data = request.get_json(silent=True) or {}
         key = data.get('apiKey')
@@ -141,80 +144,7 @@ def get_api_key():
             return key
     except Exception:
         pass
-    return os.getenv('OPENAI_API_KEY', '')
-
-
-# ── Fast XLSX writer + per-session disk cache ──────────────────────────────────
-
-def _build_xlsx_buf(df: pd.DataFrame) -> io.BytesIO:
-    """Build XLSX in memory using openpyxl write_only."""
-    CHUNK = 5000
-    wb = Workbook(write_only=True)
-    ws = wb.create_sheet("Normalized Data")
-    ws.append([str(c) for c in df.columns])
-    for start in range(0, len(df), CHUNK):
-        chunk = df.iloc[start:start + CHUNK]
-        for row in chunk.itertuples(index=False, name=None):
-            ws.append([None if (isinstance(v, float) and pd.isna(v)) else v for v in row])
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return buf
-
-
-def _xlsx_cache_path(session_id: str) -> str:
-    """Return the file path for a session's cached XLSX."""
-    return os.path.join(DB_DIR, f"{session_id}.xlsx")
-
-
-_xlsx_gen: dict[str, int] = {}
-_xlsx_threads: dict[str, threading.Thread] = {}
-
-
-def _pregenerate_xlsx_to_disk(session_id: str, df_snapshot: pd.DataFrame, gen_id: int):
-    """Background thread target: build XLSX and write to disk."""
-    try:
-        buf = _build_xlsx_buf(df_snapshot)
-        if _xlsx_gen.get(session_id) == gen_id:
-            path = _xlsx_cache_path(session_id)
-            with open(path, "wb") as f:
-                f.write(buf.getvalue())
-            logger.info("XLSX cache written for session %s (gen=%s, %s bytes)", session_id, gen_id, len(buf.getvalue()))
-    except Exception as e:
-        logger.error("XLSX pre-generation failed for session %s: %s", session_id, e)
-
-
-def _trigger_xlsx_cache(conn, session_id: str):
-    """Snapshot the active table and start background XLSX generation to disk."""
-    df = sqlite_to_df(conn, "active")
-    if df is None or df.empty:
-        return
-    gen = _xlsx_gen.get(session_id, 0) + 1
-    _xlsx_gen[session_id] = gen
-    # Remove stale cache file
-    try:
-        os.unlink(_xlsx_cache_path(session_id))
-    except OSError:
-        pass
-    t = threading.Thread(target=_pregenerate_xlsx_to_disk, args=(session_id, df, gen), daemon=True)
-    _xlsx_threads[session_id] = t
-    t.start()
-
-
-def _get_xlsx_bytes(conn, session_id: str) -> io.BytesIO:
-    """Return XLSX bytes — waits for background thread or builds on the fly."""
-    t = _xlsx_threads.get(session_id)
-    if t is not None and t.is_alive():
-        logger.info("Download requested — waiting for background XLSX generation…")
-        t.join()
-    path = _xlsx_cache_path(session_id)
-    if os.path.exists(path):
-        with open(path, "rb") as f:
-            return io.BytesIO(f.read())
-    df = sqlite_to_df(conn, "active")
-    if df is None:
-        return io.BytesIO()
-    return _build_xlsx_buf(df)
+    return os.getenv('PORTKEY_API_KEY') or os.getenv('OPENAI_API_KEY', '')
 
 
 # ── Column suggestion heuristic (unchanged) ───────────────────────────────────
@@ -416,7 +346,8 @@ def upload_file():
                                         raw_sql = safe_table_name("raw", key)
                                         data_sql = safe_table_name("data", key)
                                         df_to_sqlite(conn, raw_sql, df, commit=False)
-                                        df_to_sqlite(conn, data_sql, df, commit=False)
+                                        conn.execute(f"DROP TABLE IF EXISTS {quote_id(data_sql)}")
+                                        conn.execute(f"CREATE TABLE {quote_id(data_sql)} AS SELECT * FROM {quote_id(raw_sql)}")
                                         register_table(conn, key, data_sql, commit=False)
                                         inventory.append({"table_key": key, "rows": len(df), "cols": len(df.columns)})
                             elif lower.endswith('.csv'):
@@ -427,7 +358,8 @@ def upload_file():
                                     raw_sql = safe_table_name("raw", key)
                                     data_sql = safe_table_name("data", key)
                                     df_to_sqlite(conn, raw_sql, df, commit=False)
-                                    df_to_sqlite(conn, data_sql, df, commit=False)
+                                    conn.execute(f"DROP TABLE IF EXISTS {quote_id(data_sql)}")
+                                    conn.execute(f"CREATE TABLE {quote_id(data_sql)} AS SELECT * FROM {quote_id(raw_sql)}")
                                     register_table(conn, key, data_sql, commit=False)
                                     inventory.append({"table_key": key, "rows": len(df), "cols": len(df.columns)})
                         except Exception as e:
@@ -443,7 +375,8 @@ def upload_file():
                                 raw_sql = safe_table_name("raw", key)
                                 data_sql = safe_table_name("data", key)
                                 df_to_sqlite(conn, raw_sql, df, commit=False)
-                                df_to_sqlite(conn, data_sql, df, commit=False)
+                                conn.execute(f"DROP TABLE IF EXISTS {quote_id(data_sql)}")
+                                conn.execute(f"CREATE TABLE {quote_id(data_sql)} AS SELECT * FROM {quote_id(raw_sql)}")
                                 register_table(conn, key, data_sql, commit=False)
                                 inventory.append({"table_key": key, "rows": len(df), "cols": len(df.columns)})
                     elif filename.endswith('.csv'):
@@ -453,7 +386,8 @@ def upload_file():
                             raw_sql = safe_table_name("raw", key)
                             data_sql = safe_table_name("data", key)
                             df_to_sqlite(conn, raw_sql, df, commit=False)
-                            df_to_sqlite(conn, data_sql, df, commit=False)
+                            conn.execute(f"DROP TABLE IF EXISTS {quote_id(data_sql)}")
+                            conn.execute(f"CREATE TABLE {quote_id(data_sql)} AS SELECT * FROM {quote_id(raw_sql)}")
                             register_table(conn, key, data_sql, commit=False)
                             inventory.append({"table_key": key, "rows": len(df), "cols": len(df.columns)})
                 except Exception as e:
@@ -562,7 +496,7 @@ def suggest_columns():
 
     with get_session_lock(session_id):
         conn = get_session_db(session_id)
-        df = sqlite_to_df(conn, "active")
+        df = sqlite_to_df(conn, "active", limit=200)
         if df is None:
             return jsonify({"error": "No active dataset loaded"}), 400
 
@@ -585,11 +519,42 @@ def current_inventory():
     with get_session_lock(session_id):
         conn = get_session_db(session_id)
         entries = all_registered_tables(conn)
+        if not entries:
+            return jsonify({"inventory": []})
+
+        sql_names = [e["sql_name"] for e in entries]
+
+        # Batch: column counts
+        col_rows = conn.execute(
+            "SELECT table_name, COUNT(*) "
+            "FROM information_schema.columns "
+            "WHERE table_name = ANY(?) "
+            "GROUP BY table_name",
+            (sql_names,),
+        ).fetchall()
+        col_map = {r[0]: r[1] for r in col_rows}
+
+        # Batch: row counts
+        existing = [t for t in sql_names if t in col_map]
+        row_map: dict[str, int] = {}
+        if existing:
+            parts = [
+                f"SELECT '{t}' AS tbl, COUNT(*) AS cnt FROM {quote_id(t)}"
+                for t in existing
+            ]
+            for r in conn.execute(" UNION ALL ".join(parts)).fetchall():
+                row_map[r[0]] = r[1]
+
         inventory = []
         for entry in entries:
-            rows = table_row_count(conn, entry["sql_name"])
-            cols_list = read_table_columns(conn, entry["sql_name"])
-            inventory.append({"table_key": entry["table_key"], "rows": rows, "cols": len(cols_list)})
+            sn = entry["sql_name"]
+            if sn not in col_map:
+                continue
+            inventory.append({
+                "table_key": entry["table_key"],
+                "rows": row_map.get(sn, 0),
+                "cols": col_map[sn],
+            })
 
     return jsonify({"inventory": inventory})
 
@@ -672,12 +637,26 @@ def delete_rows():
         if not data_sql or not table_exists(conn, data_sql):
             return jsonify({"error": "Table not found"}), 404
 
-        df = sqlite_to_df(conn, data_sql)
-        indices_to_drop = [int(i) for i in row_ids if int(i) in df.index]
-        df = df.drop(indices_to_drop).reset_index(drop=True)
-        df_to_sqlite(conn, data_sql, df)
+        tbl = quote_id(data_sql)
+        row_set = {int(i) for i in row_ids}
+        cols = read_table_columns(conn, data_sql)
+        col_select = ", ".join(quote_id(c) for c in cols)
+        placeholders = ",".join(str(r) for r in row_set)
 
-    return jsonify({"message": f"Deleted {len(row_ids)} rows successfully", "rows": len(df)})
+        tmp = quote_id("_tmp_del")
+        conn.execute(f"DROP TABLE IF EXISTS {tmp}")
+        conn.execute(
+            f"CREATE TABLE {tmp} AS "
+            f"SELECT {col_select} FROM ("
+            f"  SELECT *, ROW_NUMBER() OVER () - 1 AS _rn FROM {tbl}"
+            f") sub WHERE _rn NOT IN ({placeholders})"
+        )
+        conn.execute(f"DROP TABLE IF EXISTS {tbl}")
+        conn.execute(f"ALTER TABLE {tmp} RENAME TO {tbl}")
+        conn.commit()
+        new_count = conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+
+    return jsonify({"message": f"Deleted {len(row_ids)} rows successfully", "rows": new_count})
 
 
 @app.route('/api/delete-table', methods=['POST'])
@@ -719,18 +698,23 @@ def select_table():
         if not data_sql or not table_exists(conn, data_sql):
             return jsonify({"error": "Table not found"}), 404
 
-        df = sqlite_to_df(conn, data_sql)
-        df_to_sqlite(conn, "active", df)
+        tbl_src = quote_id(data_sql)
+        tbl_dst = quote_id("active")
+        conn.execute(f"DROP TABLE IF EXISTS {tbl_dst}")
+        conn.execute(f"CREATE TABLE {tbl_dst} AS SELECT * FROM {tbl_src}")
+        conn.commit()
         set_meta(conn, "active_table_key", table_key)
         fname = table_key.split('::')[0]
         set_meta(conn, "filename", fname)
 
-        _trigger_xlsx_cache(conn, session_id)
+        row_count = conn.execute(f"SELECT COUNT(*) FROM {tbl_dst}").fetchone()[0]
+        columns = read_table_columns(conn, "active")
+        preview_df = sqlite_to_df(conn, "active", limit=PREVIEW_POOL)
 
-    preview_df = pick_best_df_rows(df, 10).fillna("").astype(str)
+    preview_df = pick_best_df_rows(preview_df, 10).fillna("").astype(str)
     return jsonify({
-        "columns": [str(c) for c in df.columns],
-        "rows": len(df),
+        "columns": columns,
+        "rows": row_count,
         "previewData": preview_df.to_dict(orient='records')
     })
 
@@ -749,21 +733,24 @@ def reset_normalization():
             body = request.get_json(silent=True) or {}
             table_key = body.get('tableKey') or get_meta(conn, "active_table_key")
 
+            source_sql = None
             if table_key:
                 data_sql = lookup_sql_name(conn, table_key)
                 if data_sql and table_exists(conn, data_sql):
-                    df = sqlite_to_df(conn, data_sql)
-                    df_to_sqlite(conn, "active", df)
-                    _trigger_xlsx_cache(conn, session_id)
-                    return jsonify({"ok": True, "rows": len(df) if df is not None else 0})
+                    source_sql = data_sql
 
-            entries = all_registered_tables(conn)
-            if entries:
-                first_sql = entries[0]["sql_name"]
-                df = sqlite_to_df(conn, first_sql)
-                df_to_sqlite(conn, "active", df)
-                _trigger_xlsx_cache(conn, session_id)
-                return jsonify({"ok": True, "rows": len(df) if df is not None else 0})
+            if not source_sql:
+                entries = all_registered_tables(conn)
+                if entries:
+                    source_sql = entries[0]["sql_name"]
+
+            if source_sql:
+                tbl_dst = quote_id("active")
+                conn.execute(f"DROP TABLE IF EXISTS {tbl_dst}")
+                conn.execute(f"CREATE TABLE {tbl_dst} AS SELECT * FROM {quote_id(source_sql)}")
+                conn.commit()
+                row_count = conn.execute(f"SELECT COUNT(*) FROM {tbl_dst}").fetchone()[0]
+                return jsonify({"ok": True, "rows": row_count})
 
         return jsonify({"ok": True, "rows": 0})
     except Exception as e:
@@ -779,11 +766,6 @@ def reset_state():
         return jsonify({"error": str(e)}), 400
 
     delete_session_db(session_id)
-    # Also remove XLSX cache
-    try:
-        os.unlink(_xlsx_cache_path(session_id))
-    except OSError:
-        pass
     return jsonify({"ok": True})
 
 
@@ -893,7 +875,6 @@ def run_normalization():
             if isinstance(result, tuple) and len(result) >= 2:
                 modified_df, message = result[0], result[1]
                 df_to_sqlite(conn, "active", modified_df)
-                _trigger_xlsx_cache(conn, session_id)
                 columns = [str(c) for c in modified_df.columns]
                 response = {"message": message, "columns": columns}
                 if len(result) >= 4 and result[3] is not None:
@@ -997,6 +978,7 @@ def transfer_to_analyzer():
 
 @app.route('/api/download', methods=['GET'])
 def download():
+    """Download the active table as CSV."""
     try:
         session_id = _get_session_id()
     except ValueError as e:
@@ -1010,13 +992,19 @@ def download():
         filename = get_meta(conn, "filename") or "normalized_data"
         base = filename.rsplit('.', 1)[0] if '.' in filename else filename
 
-        buf = _get_xlsx_bytes(conn, session_id)
+        df = sqlite_to_df(conn, "active")
+        if df is None:
+            return jsonify({"error": "No data available"}), 400
+
+    buf = io.BytesIO()
+    df.to_csv(buf, index=False, na_rep="")
+    buf.seek(0)
 
     return send_file(
         buf,
-        download_name=f"{base}_normalized.xlsx",
+        download_name=f"{base}_normalized.csv",
         as_attachment=True,
-        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        mimetype="text/csv",
     )
 
 

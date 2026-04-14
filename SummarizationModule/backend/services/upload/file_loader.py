@@ -1,12 +1,16 @@
 import csv
 import io
+import logging
 import os
 import re
-import sqlite3
 import zipfile
 from typing import Any
 
 import pandas as pd
+
+from shared.duckdb_compat import DuckDBConnection
+
+logger = logging.getLogger(__name__)
 
 
 PREVIEW_POOL = 1000
@@ -66,28 +70,28 @@ def _dedupe_headers(headers: list[str]) -> list[str]:
     return out
 
 
-def _ensure_registry(conn: sqlite3.Connection):
+def _ensure_registry(conn: DuckDBConnection):
     conn.execute(
         "CREATE TABLE IF NOT EXISTS _table_registry "
-        "(table_key TEXT PRIMARY KEY, data_table TEXT, raw_table TEXT)"
+        "(table_key VARCHAR PRIMARY KEY, data_table VARCHAR, raw_table VARCHAR)"
     )
     conn.commit()
 
 
-def _register_table(conn: sqlite3.Connection, table_key: str, data_table: str, raw_table: str):
+def _register_table(conn: DuckDBConnection, table_key: str, data_table: str, raw_table: str):
     conn.execute(
         "INSERT OR REPLACE INTO _table_registry (table_key, data_table, raw_table) VALUES (?, ?, ?)",
         (table_key, data_table, raw_table),
     )
 
 
-def _get_registry(conn: sqlite3.Connection) -> list[dict[str, str]]:
+def _get_registry(conn: DuckDBConnection) -> list[dict[str, str]]:
     _ensure_registry(conn)
-    rows = conn.execute("SELECT table_key, data_table, raw_table FROM _table_registry ORDER BY rowid").fetchall()
+    rows = conn.execute("SELECT table_key, data_table, raw_table FROM _table_registry ORDER BY table_key").fetchall()
     return [{"table_key": r[0], "data_table": r[1], "raw_table": r[2]} for r in rows]
 
 
-def _unregister_table(conn: sqlite3.Connection, table_key: str):
+def _unregister_table(conn: DuckDBConnection, table_key: str):
     conn.execute("DELETE FROM _table_registry WHERE table_key = ?", (table_key,))
 
 
@@ -95,37 +99,35 @@ def _unregister_table(conn: sqlite3.Connection, table_key: str):
 # Parsing
 # ──────────────────────────────────────────────
 
-def _parse_csv_bytes(data: bytes, filename: str) -> tuple[list[list[Any]], list[str]]:
-    """Returns (raw_grid, header_names). raw_grid includes the header row."""
-    text = data.decode("utf-8", errors="replace")
-    if text.startswith("\ufeff"):
-        text = text[1:]
-    reader = csv.reader(io.StringIO(text))
-    raw_grid: list[list[Any]] = []
-    for row in reader:
-        raw_grid.append(row)
-    if not raw_grid:
-        return [], []
-    raw_headers = raw_grid[0]
+def _parse_csv_bytes(data: bytes, filename: str) -> tuple[pd.DataFrame | None, list[str]]:
+    """Returns (df, header_names). First row is kept in the DataFrame as raw data."""
+    try:
+        df = pd.read_csv(io.BytesIO(data), header=None, dtype=str,
+                         keep_default_na=False, encoding_errors="replace")
+    except Exception:
+        return None, []
+    if df.empty:
+        return None, []
+    raw_headers = [str(c) for c in df.iloc[0]]
     headers = _dedupe_headers([_clean_header(h) for h in raw_headers])
-    return raw_grid, headers
+    return df, headers
 
 
-def _parse_excel_bytes(data: bytes, filename: str) -> dict[str, tuple[list[list[Any]], list[str]]]:
-    """Returns {sheet_name: (raw_grid, header_names)}. Uses calamine (Rust) for speed."""
+def _parse_excel_bytes(data: bytes, filename: str) -> dict[str, tuple[pd.DataFrame, list[str]]]:
+    """Returns {sheet_name: (df, header_names)}. Uses calamine (Rust) for speed.
+
+    Returns DataFrames instead of Python grids for native DuckDB ingestion.
+    """
     excel_file = pd.ExcelFile(io.BytesIO(data), engine="calamine")
-    result: dict[str, tuple[list[list[Any]], list[str]]] = {}
+    result: dict[str, tuple[pd.DataFrame, list[str]]] = {}
     for sheet_name in excel_file.sheet_names:
         df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
         if df.empty:
             continue
-        raw_grid = []
-        for row in df.itertuples(index=False, name=None):
-            raw_grid.append([str(c) if not pd.isna(c) else "" for c in row])
-        raw_headers = raw_grid[0]
+        raw_headers = [str(c) if not pd.isna(c) else "" for c in df.iloc[0]]
         headers = _dedupe_headers([_clean_header(h) for h in raw_headers])
         if headers:
-            result[sheet_name] = (raw_grid, headers)
+            result[sheet_name] = (df, headers)
     excel_file.close()
     return result
 
@@ -134,63 +136,68 @@ def _parse_excel_bytes(data: bytes, filename: str) -> dict[str, tuple[list[list[
 # Storage: raw + data tables
 # ──────────────────────────────────────────────
 
-_BATCH_SIZE = 5000
+def _store_df_native(conn: DuckDBConnection, table_name: str, df: pd.DataFrame):
+    """Persist a DataFrame using DuckDB's zero-copy register path.
 
-
-def _store_raw_table(conn: sqlite3.Connection, table_name: str, raw_grid: list[list[Any]]):
-    """Store the raw grid as RAW_0, RAW_1, ... columns (all TEXT)."""
-    if not raw_grid:
+    All columns are cast to VARCHAR.
+    """
+    if df is None or df.empty:
+        conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
         return
-    max_cols = max(len(r) for r in raw_grid)
-    col_defs = ", ".join(f'"RAW_{i}" TEXT' for i in range(max_cols))
-    conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
-    conn.execute(f'CREATE TABLE "{table_name}" ({col_defs})')
-    placeholders = ", ".join("?" for _ in range(max_cols))
-    sql = f'INSERT INTO "{table_name}" VALUES ({placeholders})'
-    batch: list[tuple] = []
-    for row in raw_grid:
-        padded = list(row) + [""] * (max_cols - len(row))
-        batch.append(tuple(padded))
-        if len(batch) >= _BATCH_SIZE:
-            conn.executemany(sql, batch)
-            batch.clear()
-    if batch:
-        conn.executemany(sql, batch)
+
+    view_name = f"_tmp_df_{id(df)}"
+    raw_conn = conn._conn
+    raw_conn.register(view_name, df)
+    try:
+        conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+        cols = ", ".join(
+            f'CAST("{c}" AS VARCHAR) AS "{c}"' for c in df.columns
+        )
+        conn.execute(f'CREATE TABLE "{table_name}" AS SELECT {cols} FROM "{view_name}"')
+    finally:
+        raw_conn.unregister(view_name)
 
 
-def _store_data_table(conn: sqlite3.Connection, table_name: str, headers: list[str], data_rows: list[list[Any]]):
-    """Store parsed data with proper column names (all TEXT). Adds RECORD_ID."""
+def _store_raw_table(conn: DuckDBConnection, table_name: str, df: pd.DataFrame):
+    """Store the raw DataFrame as RAW_0, RAW_1, ... columns using native ingestion."""
+    if df is None or df.empty:
+        return
+    raw_df = df.copy()
+    raw_df.columns = [f"RAW_{i}" for i in range(len(raw_df.columns))]
+    _store_df_native(conn, table_name, raw_df)
+
+
+def _store_data_table_from_raw(conn: DuckDBConnection, data_table: str, raw_table: str, headers: list[str]):
+    """Build the data table from the raw table via SQL. Adds RECORD_ID.
+
+    Skips the header row (row 1) and empty rows. No Python iteration.
+    """
     if not headers:
         return
-    # Strip any existing RECORD_ID column to avoid duplicates (cross-module imports)
-    rid_indices = [i for i, h in enumerate(headers) if h == "RECORD_ID"]
-    if rid_indices:
-        headers = [h for i, h in enumerate(headers) if i not in rid_indices]
-        data_rows = [
-            [v for i, v in enumerate(row) if i not in rid_indices]
-            for row in data_rows
-        ]
-    all_headers = ["RECORD_ID"] + headers
-    col_defs = ", ".join(f'"{h}" TEXT' for h in all_headers)
-    conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
-    conn.execute(f'CREATE TABLE "{table_name}" ({col_defs})')
-    placeholders = ", ".join("?" for _ in all_headers)
-    sql = f'INSERT INTO "{table_name}" VALUES ({placeholders})'
-    num_headers = len(headers)
-    record_id = 0
-    batch: list[tuple] = []
-    for row in data_rows:
-        vals = [str(v).strip() if v is not None and str(v).strip() else "" for v in row]
-        if not any(v for v in vals):
-            continue
-        padded = vals + [""] * (num_headers - len(vals))
-        record_id += 1
-        batch.append(tuple([str(record_id)] + padded[:num_headers]))
-        if len(batch) >= _BATCH_SIZE:
-            conn.executemany(sql, batch)
-            batch.clear()
-    if batch:
-        conn.executemany(sql, batch)
+    # Strip RECORD_ID from headers AND corresponding raw columns in lockstep
+    keep_indices = [i for i, h in enumerate(headers) if h != "RECORD_ID"]
+    headers = [headers[i] for i in keep_indices]
+    raw_cols = [f"RAW_{i}" for i in keep_indices]
+    select_parts = ", ".join(
+        f'CAST("{rc}" AS VARCHAR) AS "{hdr}"'
+        for rc, hdr in zip(raw_cols, headers)
+    )
+    null_check = " AND ".join(
+        f'("{rc}" IS NULL OR TRIM(CAST("{rc}" AS VARCHAR)) = \'\')'
+        for rc in raw_cols
+    )
+    conn.execute(f'DROP TABLE IF EXISTS "{data_table}"')
+    conn.execute(
+        f'CREATE TABLE "{data_table}" AS '
+        f"SELECT "
+        f"  CAST(ROW_NUMBER() OVER () AS VARCHAR) AS \"RECORD_ID\", "
+        f"  {select_parts} "
+        f"FROM ("
+        f'  SELECT *, ROW_NUMBER() OVER () AS _rn FROM "{raw_table}"'
+        f") _sub "
+        f"WHERE _rn > 1 "
+        f"AND NOT ({null_check})"
+    )
 
 
 def _build_table_key(zip_path: str, sheet_name: str | None) -> str:
@@ -204,22 +211,11 @@ def _build_table_key(zip_path: str, sheet_name: str | None) -> str:
 # Load ZIP / single file
 # ──────────────────────────────────────────────
 
-def _set_bulk_pragmas(conn: sqlite3.Connection) -> None:
-    conn.execute("PRAGMA synchronous = OFF")
-    conn.execute("PRAGMA cache_size = -64000")
-    conn.execute("PRAGMA temp_store = MEMORY")
-
-
-def _restore_pragmas(conn: sqlite3.Connection) -> None:
-    conn.execute("PRAGMA synchronous = NORMAL")
-
-
 def load_zip_to_session(
-    conn: sqlite3.Connection, file_data: bytes
+    conn: DuckDBConnection, file_data: bytes
 ) -> tuple[list[str], list[dict[str, str]]]:
     """Extract ZIP, parse files, store raw + data tables. Returns (table_keys, warnings)."""
     _ensure_registry(conn)
-    _set_bulk_pragmas(conn)
     warnings: list[dict[str, str]] = []
     table_keys: list[str] = []
 
@@ -235,76 +231,73 @@ def load_zip_to_session(
             try:
                 raw = zf.read(entry)
                 if ext == ".csv":
-                    raw_grid, headers = _parse_csv_bytes(raw, basename)
-                    if not headers:
+                    df, headers = _parse_csv_bytes(raw, basename)
+                    if df is None or not headers:
                         continue
                     table_key = _build_table_key(entry, None)
                     safe = _safe_sql_name(os.path.splitext(basename)[0])
                     data_tbl = f"data__{safe}"
                     raw_tbl = f"raw__{safe}"
-                    _store_raw_table(conn, raw_tbl, raw_grid)
-                    _store_data_table(conn, data_tbl, headers, raw_grid[1:])
+                    _store_raw_table(conn, raw_tbl, df)
+                    _store_data_table_from_raw(conn, data_tbl, raw_tbl, headers)
                     _register_table(conn, table_key, data_tbl, raw_tbl)
                     table_keys.append(table_key)
 
                 elif ext in (".xlsx", ".xlsm", ".xltx", ".xltm"):
                     sheets = _parse_excel_bytes(raw, basename)
-                    for sheet_name, (raw_grid, headers) in sheets.items():
+                    for sheet_name, (df, headers) in sheets.items():
                         table_key = _build_table_key(entry, sheet_name)
                         safe = _safe_sql_name(f"{os.path.splitext(basename)[0]}__{sheet_name}")
                         data_tbl = f"data__{safe}"
                         raw_tbl = f"raw__{safe}"
-                        _store_raw_table(conn, raw_tbl, raw_grid)
-                        _store_data_table(conn, data_tbl, headers, raw_grid[1:])
+                        _store_raw_table(conn, raw_tbl, df)
+                        _store_data_table_from_raw(conn, data_tbl, raw_tbl, headers)
                         _register_table(conn, table_key, data_tbl, raw_tbl)
                         table_keys.append(table_key)
             except Exception as exc:
                 warnings.append({"file": basename, "message": str(exc)})
 
     conn.commit()
-    _restore_pragmas(conn)
     return table_keys, warnings
 
 
 def load_single_file(
-    conn: sqlite3.Connection, filename: str, file_data: bytes
+    conn: DuckDBConnection, filename: str, file_data: bytes
 ) -> tuple[list[str], list[dict[str, str]]]:
     """Parse a single CSV/Excel file. Returns (table_keys, warnings)."""
     _ensure_registry(conn)
-    _set_bulk_pragmas(conn)
     warnings: list[dict[str, str]] = []
     table_keys: list[str] = []
     ext = os.path.splitext(filename)[1].lower()
 
     try:
         if ext == ".csv":
-            raw_grid, headers = _parse_csv_bytes(file_data, filename)
-            if headers:
+            df, headers = _parse_csv_bytes(file_data, filename)
+            if df is not None and headers:
                 table_key = _build_table_key(filename, None)
                 safe = _safe_sql_name(os.path.splitext(filename)[0])
                 data_tbl = f"data__{safe}"
                 raw_tbl = f"raw__{safe}"
-                _store_raw_table(conn, raw_tbl, raw_grid)
-                _store_data_table(conn, data_tbl, headers, raw_grid[1:])
+                _store_raw_table(conn, raw_tbl, df)
+                _store_data_table_from_raw(conn, data_tbl, raw_tbl, headers)
                 _register_table(conn, table_key, data_tbl, raw_tbl)
                 table_keys.append(table_key)
 
         elif ext in (".xlsx", ".xlsm", ".xltx", ".xltm"):
             sheets = _parse_excel_bytes(file_data, filename)
-            for sheet_name, (raw_grid, headers) in sheets.items():
+            for sheet_name, (df, headers) in sheets.items():
                 table_key = _build_table_key(filename, sheet_name)
                 safe = _safe_sql_name(f"{os.path.splitext(filename)[0]}__{sheet_name}")
                 data_tbl = f"data__{safe}"
                 raw_tbl = f"raw__{safe}"
-                _store_raw_table(conn, raw_tbl, raw_grid)
-                _store_data_table(conn, data_tbl, headers, raw_grid[1:])
+                _store_raw_table(conn, raw_tbl, df)
+                _store_data_table_from_raw(conn, data_tbl, raw_tbl, headers)
                 _register_table(conn, table_key, data_tbl, raw_tbl)
                 table_keys.append(table_key)
     except Exception as exc:
         warnings.append({"file": filename, "message": str(exc)})
 
     conn.commit()
-    _restore_pragmas(conn)
     return table_keys, warnings
 
 
@@ -313,42 +306,106 @@ def load_single_file(
 # ──────────────────────────────────────────────
 
 def collect_column_info(
-    conn: sqlite3.Connection, table_keys: list[str]
+    conn: DuckDBConnection, table_keys: list[str]
 ) -> list[dict[str, Any]]:
-    """Gather column names and sample values across all session tables.
+    """Gather column names, sample values, and statistics across all session tables.
 
-    Returns [{"name": "COL", "sampleValues": [...]}].
-    No type detection or parsing — just raw string samples so the AI
-    can infer types from the values themselves.
+    Returns [{"name": "COL", "sampleValues": [...], "totalRows": int,
+              "nullCount": int, "nullRate": float, "distinctCount": int,
+              "inferredType": "numeric"|"datetime"|"string"}].
     """
     registry = _get_registry(conn)
     data_tables = [r["data_table"] for r in registry if r["table_key"] in table_keys]
+    if not data_tables:
+        return []
+
+    col_rows = conn.execute(
+        "SELECT table_name, column_name FROM information_schema.columns "
+        "WHERE table_name = ANY(?) AND column_name != 'RECORD_ID' "
+        "ORDER BY table_name, ordinal_position",
+        (data_tables,),
+    ).fetchall()
+
+    table_cols: dict[str, list[str]] = {}
+    for tname, cname in col_rows:
+        table_cols.setdefault(tname, []).append(cname)
 
     all_columns: dict[str, list[str]] = {}
-    for tname in data_tables:
-        try:
-            cursor = conn.execute(f'PRAGMA table_info("{tname}")')
-        except Exception:
-            continue
-        cols = [row[1] for row in cursor.fetchall()]
+    col_stats: dict[str, dict[str, int | float]] = {}
+
+    for tname, cols in table_cols.items():
         for col in cols:
-            if col == "RECORD_ID":
-                continue
             if col not in all_columns:
                 all_columns[col] = []
-            rows = conn.execute(
-                f'SELECT DISTINCT "{col}" FROM "{tname}" '
-                f'WHERE "{col}" IS NOT NULL AND TRIM("{col}") != "" '
-                f"LIMIT 50"
-            ).fetchall()
-            all_columns[col].extend(r[0] for r in rows)
+                col_stats[col] = {
+                    "totalRows": 0, "nullCount": 0,
+                    "distinctCount": 0, "numericCount": 0, "dateCount": 0,
+                }
+            try:
+                rows = conn.execute(
+                    f'SELECT DISTINCT "{col}" FROM "{tname}" '
+                    f'WHERE "{col}" IS NOT NULL AND TRIM("{col}") != \'\' '
+                    f"LIMIT 50"
+                ).fetchall()
+                all_columns[col].extend(r[0] for r in rows)
+            except Exception:
+                logger.warning("Failed to sample column %s from %s", col, tname)
+                continue
+
+            try:
+                stats_row = conn.execute(
+                    f'SELECT '
+                    f'  COUNT(*) AS total, '
+                    f'  SUM(CASE WHEN "{col}" IS NULL OR TRIM("{col}") = \'\' '
+                    f'       THEN 1 ELSE 0 END) AS nulls, '
+                    f'  COUNT(DISTINCT CASE WHEN "{col}" IS NOT NULL '
+                    f'       AND TRIM("{col}") != \'\' THEN "{col}" END) AS dist, '
+                    f'  SUM(CASE WHEN TRY_CAST("{col}" AS DOUBLE) IS NOT NULL '
+                    f'       AND TRIM("{col}") != \'\' THEN 1 ELSE 0 END) AS nums, '
+                    f'  SUM(CASE WHEN TRY_CAST("{col}" AS TIMESTAMP) IS NOT NULL '
+                    f'       AND TRIM("{col}") != \'\' THEN 1 ELSE 0 END) AS dates '
+                    f'FROM "{tname}"'
+                ).fetchone()
+                if stats_row:
+                    col_stats[col]["totalRows"] += int(stats_row[0] or 0)
+                    col_stats[col]["nullCount"] += int(stats_row[1] or 0)
+                    col_stats[col]["distinctCount"] = max(
+                        col_stats[col]["distinctCount"], int(stats_row[2] or 0)
+                    )
+                    col_stats[col]["numericCount"] += int(stats_row[3] or 0)
+                    col_stats[col]["dateCount"] += int(stats_row[4] or 0)
+            except Exception:
+                logger.warning("Failed to compute stats for column %s from %s", col, tname)
 
     results: list[dict[str, Any]] = []
     for col_name, values in all_columns.items():
         unique_vals = list(dict.fromkeys(values))[:50]
+        st = col_stats.get(col_name, {})
+        total = st.get("totalRows", 0)
+        null_count = st.get("nullCount", 0)
+        non_null = total - null_count
+        null_rate = round(null_count / total, 3) if total > 0 else 0.0
+        distinct = st.get("distinctCount", 0)
+
+        # Infer type: numeric if >80% of non-null values parse as numbers,
+        # datetime if >80% parse as dates (and not also numeric), else string
+        inferred = "string"
+        if non_null > 0:
+            num_ratio = st.get("numericCount", 0) / non_null
+            date_ratio = st.get("dateCount", 0) / non_null
+            if num_ratio > 0.8:
+                inferred = "numeric"
+            elif date_ratio > 0.8 and num_ratio < 0.5:
+                inferred = "datetime"
+
         results.append({
             "name": col_name,
             "sampleValues": unique_vals,
+            "totalRows": total,
+            "nullCount": null_count,
+            "nullRate": null_rate,
+            "distinctCount": distinct,
+            "inferredType": inferred,
         })
 
     return results
@@ -358,23 +415,45 @@ def collect_column_info(
 # Inventory & Preview (new format)
 # ──────────────────────────────────────────────
 
-def build_inventory(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Returns [{table_key, rows, cols}, ...]"""
+def build_inventory(conn: DuckDBConnection) -> list[dict[str, Any]]:
+    """Returns [{table_key, rows, cols}, ...]. Uses batched SQL queries."""
     registry = _get_registry(conn)
+    if not registry:
+        return []
+
+    data_tables = [e["data_table"] for e in registry]
+
+    # Batch: column counts (excluding RECORD_ID)
+    col_rows = conn.execute(
+        "SELECT table_name, COUNT(*) "
+        "FROM information_schema.columns "
+        "WHERE table_name = ANY(?) AND column_name != 'RECORD_ID' "
+        "GROUP BY table_name",
+        (data_tables,),
+    ).fetchall()
+    col_counts = {r[0]: r[1] for r in col_rows}
+
+    # Batch: row counts via UNION ALL
+    existing = [t for t in data_tables if t in col_counts]
+    row_counts: dict[str, int] = {}
+    if existing:
+        parts = [
+            f"SELECT '{t}' AS tbl, COUNT(*) AS cnt FROM \"{t}\""
+            for t in existing
+        ]
+        for r in conn.execute(" UNION ALL ".join(parts)).fetchall():
+            row_counts[r[0]] = r[1]
+
     inventory = []
     for entry in registry:
         tname = entry["data_table"]
-        try:
-            row_count = conn.execute(f'SELECT COUNT(*) FROM "{tname}"').fetchone()[0]
-            cols = conn.execute(f'PRAGMA table_info("{tname}")').fetchall()
-            col_names = [c[1] for c in cols if c[1] != "RECORD_ID"]
-            inventory.append({
-                "table_key": entry["table_key"],
-                "rows": row_count,
-                "cols": len(col_names),
-            })
-        except Exception:
-            pass
+        if tname not in col_counts:
+            continue
+        inventory.append({
+            "table_key": entry["table_key"],
+            "rows": row_counts.get(tname, 0),
+            "cols": col_counts[tname],
+        })
     return inventory
 
 
@@ -389,7 +468,7 @@ def _safe_value(v: Any) -> Any:
     return v
 
 
-def build_preview(conn: sqlite3.Connection, limit: int = 50) -> dict[str, dict[str, Any]]:
+def build_preview(conn: DuckDBConnection, limit: int = 50) -> dict[str, dict[str, Any]]:
     """Returns {table_key: {columns: [...], rows: [{...}, ...]}}"""
     registry = _get_registry(conn)
     previews: dict[str, dict[str, Any]] = {}
@@ -412,7 +491,7 @@ def build_preview(conn: sqlite3.Connection, limit: int = 50) -> dict[str, dict[s
     return previews
 
 
-def build_single_preview(conn: sqlite3.Connection, table_key: str, limit: int = 50) -> dict[str, Any] | None:
+def build_single_preview(conn: DuckDBConnection, table_key: str, limit: int = 50) -> dict[str, Any] | None:
     """Build a preview for a single table_key. Returns None if not found."""
     registry = _get_registry(conn)
     entry = next((r for r in registry if r["table_key"] == table_key), None)
@@ -439,7 +518,7 @@ def build_single_preview(conn: sqlite3.Connection, table_key: str, limit: int = 
 # Table operations (inventory management)
 # ──────────────────────────────────────────────
 
-def delete_table_from_session(conn: sqlite3.Connection, table_key: str):
+def delete_table_from_session(conn: DuckDBConnection, table_key: str):
     registry = _get_registry(conn)
     entry = next((r for r in registry if r["table_key"] == table_key), None)
     if not entry:
@@ -453,7 +532,7 @@ def delete_table_from_session(conn: sqlite3.Connection, table_key: str):
     conn.commit()
 
 
-def get_raw_preview(conn: sqlite3.Connection, table_key: str, limit: int = 50) -> list[list[Any]]:
+def get_raw_preview(conn: DuckDBConnection, table_key: str, limit: int = 50) -> list[list[Any]]:
     registry = _get_registry(conn)
     entry = next((r for r in registry if r["table_key"] == table_key), None)
     if not entry:
@@ -469,12 +548,16 @@ def get_raw_preview(conn: sqlite3.Connection, table_key: str, limit: int = 50) -
 
 
 def set_header_row_for_table(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_key: str,
     header_row_index: int,
     custom_names: dict[int, str] | None = None,
 ):
-    """Rebuild the data table using a different row from the raw table as headers."""
+    """Rebuild the data table using a different row from the raw table as headers.
+
+    Uses SQL with ROW_NUMBER() to avoid loading the entire table into Python.
+    Only the chosen header row is fetched to determine column names.
+    """
     registry = _get_registry(conn)
     entry = next((r for r in registry if r["table_key"] == table_key), None)
     if not entry:
@@ -483,14 +566,30 @@ def set_header_row_for_table(
     raw_tbl = entry["raw_table"]
     data_tbl = entry["data_table"]
 
-    cursor = conn.execute(f'SELECT * FROM "{raw_tbl}"')
-    all_rows = cursor.fetchall()
-    if header_row_index >= len(all_rows):
-        raise ValueError(f"Row index {header_row_index} out of range (table has {len(all_rows)} rows)")
+    total_rows = conn.execute(f'SELECT COUNT(*) FROM "{raw_tbl}"').fetchone()[0]
+    if header_row_index >= total_rows:
+        raise ValueError(f"Row index {header_row_index} out of range (table has {total_rows} rows)")
 
-    raw_header_row = list(all_rows[header_row_index])
+    # Fetch only the header row via SQL
+    raw_cols_info = conn.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = ? ORDER BY ordinal_position",
+        (raw_tbl,),
+    ).fetchall()
+    raw_cols = [r[0] for r in raw_cols_info]
+
+    col_list = ", ".join(f'"{c}"' for c in raw_cols)
+    header_row = conn.execute(
+        f"SELECT {col_list} FROM ("
+        f'  SELECT *, ROW_NUMBER() OVER () AS _rn FROM "{raw_tbl}"'
+        f") _sub WHERE _rn = ?",
+        (header_row_index + 1,),
+    ).fetchone()
+    if not header_row:
+        raise ValueError("Header row not found.")
+
     headers = []
-    for i, cell in enumerate(raw_header_row):
+    for i, cell in enumerate(list(header_row)):
         if custom_names and i in custom_names and custom_names[i].strip():
             headers.append(_clean_header(custom_names[i]))
         elif cell is not None and str(cell).strip():
@@ -499,14 +598,33 @@ def set_header_row_for_table(
             headers.append(f"COL_{i}")
     headers = _dedupe_headers(headers)
 
-    data_rows = [list(r) for idx, r in enumerate(all_rows) if idx != header_row_index]
-
-    _store_data_table(conn, data_tbl, headers, data_rows)
+    # Rebuild data table from raw via SQL, skipping the header row
+    select_parts = ", ".join(
+        f'CAST("{rc}" AS VARCHAR) AS "{hdr}"'
+        for rc, hdr in zip(raw_cols[:len(headers)], headers)
+    )
+    null_check = " AND ".join(
+        f'("{rc}" IS NULL OR TRIM(CAST("{rc}" AS VARCHAR)) = \'\')'
+        for rc in raw_cols[:len(headers)]
+    )
+    conn.execute(f'DROP TABLE IF EXISTS "{data_tbl}"')
+    conn.execute(
+        f'CREATE TABLE "{data_tbl}" AS '
+        f"SELECT "
+        f"  CAST(ROW_NUMBER() OVER () AS VARCHAR) AS \"RECORD_ID\", "
+        f"  {select_parts} "
+        f"FROM ("
+        f'  SELECT *, ROW_NUMBER() OVER () AS _rn FROM "{raw_tbl}"'
+        f") _sub "
+        f"WHERE _rn != ? "
+        f"AND NOT ({null_check})",
+        (header_row_index + 1,),
+    )
     conn.commit()
 
 
 def delete_rows_from_table(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_key: str,
     row_ids: list[str | int],
 ) -> int:

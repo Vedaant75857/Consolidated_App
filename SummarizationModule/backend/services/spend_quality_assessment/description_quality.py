@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import logging
 import random
-import sqlite3
 from typing import Any
 
 from shared.ai_client import call_ai_json
+from shared.duckdb_compat import DuckDBConnection
 from services.spend_quality_assessment.ai_prompts import DESCRIPTION_QUALITY_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ def _build_null_proxy_sql(qc: str) -> str:
 
 
 def _compute_description_column_stats(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     field_key: str,
     spend_col: str,
     total_rows: int,
@@ -79,11 +79,7 @@ def _compute_description_column_stats(
     nn_d = _nn(qd)
     null_proxy_cond = _build_null_proxy_sql(qd)
 
-    numeric_check = (
-        f"(typeof({qs}) IN ('real','integer') OR "
-        f" (typeof({qs}) = 'text' AND TRIM({qs}) GLOB '*[0-9]*' "
-        f"  AND TRIM({qs}) NOT GLOB '*[^0-9.eE+-]*'))"
-    )
+    numeric_check = f"(TRY_CAST({qs} AS DOUBLE) IS NOT NULL)"
     spend_expr = (
         f"SUM(CASE WHEN {numeric_check} THEN CAST({qs} AS REAL) ELSE 0 END)"
     )
@@ -167,7 +163,7 @@ def _compute_description_column_stats(
 
 
 def _sample_descriptions_for_ai(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     field_key: str,
     spend_col: str,
     sample_size: int = 100,
@@ -181,11 +177,7 @@ def _sample_descriptions_for_ai(
     qs = _quote_id(spend_col)
     nn_d = _nn(qd)
 
-    numeric_check = (
-        f"(typeof({qs}) IN ('real','integer') OR "
-        f" (typeof({qs}) = 'text' AND TRIM({qs}) GLOB '*[0-9]*' "
-        f"  AND TRIM({qs}) NOT GLOB '*[^0-9.eE+-]*'))"
-    )
+    numeric_check = f"(TRY_CAST({qs} AS DOUBLE) IS NOT NULL)"
     spend_expr = (
         f"SUM(CASE WHEN {numeric_check} THEN CAST({qs} AS REAL) ELSE 0 END)"
     )
@@ -222,7 +214,7 @@ def _sample_descriptions_for_ai(
 
 
 def _top_descriptions_by_frequency(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     field_key: str,
     spend_col: str,
     limit: int = 100,
@@ -243,11 +235,7 @@ def _top_descriptions_by_frequency(
     qs = _quote_id(spend_col)
     nn_d = _nn(qd)
 
-    numeric_check = (
-        f"(typeof({qs}) IN ('real','integer') OR "
-        f" (typeof({qs}) = 'text' AND TRIM({qs}) GLOB '*[0-9]*' "
-        f"  AND TRIM({qs}) NOT GLOB '*[^0-9.eE+-]*'))"
-    )
+    numeric_check = f"(TRY_CAST({qs} AS DOUBLE) IS NOT NULL)"
     spend_expr = (
         f"SUM(CASE WHEN {numeric_check} THEN CAST({qs} AS REAL) ELSE 0 END)"
     )
@@ -296,7 +284,7 @@ def _generate_description_insight(
 
 
 def run_description_quality_analysis(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     available_columns: set[str],
     api_key: str,
 ) -> list[dict[str, Any]]:

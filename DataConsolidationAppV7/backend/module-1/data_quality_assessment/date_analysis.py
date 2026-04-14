@@ -7,10 +7,9 @@ and generates AI insights on date quality and spend patterns.
 from __future__ import annotations
 
 import logging
-import sqlite3
 from typing import Any
 
-from shared.db import quote_id, read_table_columns
+from shared.db import DuckDBConnection, quote_id, read_table_columns
 
 from .ai_prompts import generate_date_insight
 from .metrics import (
@@ -92,8 +91,8 @@ def _pick_currency_code_column(
 def _numeric_spend_expr(qs: str) -> str:
     """SQL expression that safely casts a spend column to REAL."""
     return (
-        f"CASE WHEN TRIM({qs}) GLOB '*[0-9]*' "
-        f"AND TRIM({qs}) NOT GLOB '*[^0-9.eE+-]*' "
+        f"CASE WHEN regexp_matches(TRIM({qs}), '[0-9]') "
+        f"AND regexp_matches(TRIM({qs}), '^[0-9eE.+-]+$') "
         f"THEN CAST({qs} AS REAL) ELSE 0 END"
     )
 
@@ -109,48 +108,48 @@ def _build_date_extract_sql(
 
     if dominant_format == "YYYY-MM-DD":
         return (
-            f"CAST(SUBSTR({t}, 1, 4) AS INTEGER)",
-            f"CAST(SUBSTR({t}, 6, 2) AS INTEGER)",
+            f"TRY_CAST(SUBSTR({t}, 1, 4) AS INTEGER)",
+            f"TRY_CAST(SUBSTR({t}, 6, 2) AS INTEGER)",
         )
     if dominant_format == "YYYYMMDD":
         return (
-            f"CAST(SUBSTR({t}, 1, 4) AS INTEGER)",
-            f"CAST(SUBSTR({t}, 5, 2) AS INTEGER)",
+            f"TRY_CAST(SUBSTR({t}, 1, 4) AS INTEGER)",
+            f"TRY_CAST(SUBSTR({t}, 5, 2) AS INTEGER)",
         )
     if dominant_format == "YYYY":
-        return f"CAST({t} AS INTEGER)", "1"
+        return f"TRY_CAST({t} AS INTEGER)", "1"
     if dominant_format == "DD.MM.YYYY":
         return (
-            f"CAST(SUBSTR({t}, -4) AS INTEGER)",
-            f"CAST(SUBSTR({t}, INSTR({t},'.')+1, "
+            f"TRY_CAST(SUBSTR({t}, -4) AS INTEGER)",
+            f"TRY_CAST(SUBSTR({t}, INSTR({t},'.')+1, "
             f"INSTR(SUBSTR({t}, INSTR({t},'.')+1), '.')-1) AS INTEGER)",
         )
     if dominant_format == "DD/MM/YYYY":
         return (
-            f"CAST(SUBSTR({t}, -4) AS INTEGER)",
-            f"CAST(SUBSTR({t}, INSTR({t},'/')+1, "
+            f"TRY_CAST(SUBSTR({t}, -4) AS INTEGER)",
+            f"TRY_CAST(SUBSTR({t}, INSTR({t},'/')+1, "
             f"INSTR(SUBSTR({t}, INSTR({t},'/')+1), '/')-1) AS INTEGER)",
         )
     if dominant_format == "MM/DD/YYYY":
         return (
-            f"CAST(SUBSTR({t}, -4) AS INTEGER)",
-            f"CAST(SUBSTR({t}, 1, INSTR({t},'/')-1) AS INTEGER)",
+            f"TRY_CAST(SUBSTR({t}, -4) AS INTEGER)",
+            f"TRY_CAST(SUBSTR({t}, 1, INSTR({t},'/')-1) AS INTEGER)",
         )
     if dominant_format == "DD-MM-YYYY":
         return (
-            f"CAST(SUBSTR({t}, -4) AS INTEGER)",
-            f"CAST(SUBSTR({t}, INSTR({t},'-')+1, "
+            f"TRY_CAST(SUBSTR({t}, -4) AS INTEGER)",
+            f"TRY_CAST(SUBSTR({t}, INSTR({t},'-')+1, "
             f"INSTR(SUBSTR({t}, INSTR({t},'-')+1), '-')-1) AS INTEGER)",
         )
     if dominant_format == "MM-DD-YYYY":
         return (
-            f"CAST(SUBSTR({t}, -4) AS INTEGER)",
-            f"CAST(SUBSTR({t}, 1, INSTR({t},'-')-1) AS INTEGER)",
+            f"TRY_CAST(SUBSTR({t}, -4) AS INTEGER)",
+            f"TRY_CAST(SUBSTR({t}, 1, INSTR({t},'-')-1) AS INTEGER)",
         )
-    # Fallback: rely on SQLite native date parsing (ISO-ish dates)
+    # Fallback: cast to TIMESTAMP first since strftime requires a typed date
     return (
-        f"CAST(strftime('%Y', {qc}) AS INTEGER)",
-        f"CAST(strftime('%m', {qc}) AS INTEGER)",
+        f"TRY_CAST(strftime('%Y', TRY_CAST({qc} AS TIMESTAMP)) AS INTEGER)",
+        f"TRY_CAST(strftime('%m', TRY_CAST({qc} AS TIMESTAMP)) AS INTEGER)",
     )
 
 
@@ -160,7 +159,7 @@ def _build_date_extract_sql(
 
 
 def _build_format_table(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     date_column: str,
     has_file_name: bool,
@@ -274,7 +273,7 @@ def _build_format_table(
 
 
 def _build_reporting_pivot(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     date_column: str,
     spend_column: str,
@@ -326,7 +325,7 @@ def _build_reporting_pivot(
 
 
 def _build_currency_crosstab_pivot(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     date_column: str,
     spend_column: str,
@@ -408,7 +407,7 @@ def _build_currency_crosstab_pivot(
 
 
 def run_date_analysis(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     date_column: str | None,
     api_key: str,

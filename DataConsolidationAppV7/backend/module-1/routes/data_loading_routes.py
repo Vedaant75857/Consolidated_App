@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import random
 import time
 
@@ -22,9 +23,9 @@ from shared.db import (
 from data_loading.file_loader import (
     load_zip_to_session,
     array_to_objects,
-    clean_rows_sql,
     get_raw_array_from_table,
     rebuild_table_from_raw_table,
+    bulk_clean_table,
 )
 from data_loading.service import (
     build_inventory_from_db,
@@ -33,6 +34,8 @@ from data_loading.service import (
     build_single_preview,
     PREVIEW_ROWS,
 )
+
+logger = logging.getLogger(__name__)
 
 data_loading_bp = Blueprint("data_loading", __name__)
 
@@ -52,16 +55,24 @@ def upload():
         if not f:
             return jsonify({"error": "No file uploaded."}), 400
 
+        t0 = time.perf_counter()
         file_data = f.read()
+        logger.info("Upload: read %d bytes in %.1fs", len(file_data), time.perf_counter() - t0)
+
         session_id = str(int(time.time() * 1000)) + hex(random.getrandbits(32))[2:]
         conn = get_session_db(session_id)
 
+        t1 = time.perf_counter()
         _raw_arrays, warnings = load_zip_to_session(conn, file_data)
+        logger.info("Upload: parsed ZIP into SQLite in %.1fs", time.perf_counter() - t1)
 
+        t2 = time.perf_counter()
         inv = build_inventory_from_db(conn)
-        files_payload = build_files_payload_from_db(conn, skip_distinct=True)
         set_meta(conn, "inv", inv)
-        set_meta(conn, "filesPayload", files_payload)
+        logger.info("Upload: built inventory (%d tables) in %.1fs", len(inv), time.perf_counter() - t2)
+
+        # Defer the expensive filesPayload build — it's not needed for the
+        # upload response and will be computed on demand by later steps.
 
         return jsonify({
             "sessionId": session_id,
@@ -70,6 +81,7 @@ def upload():
             "warnings": warnings,
         })
     except Exception as exc:
+        logger.exception("Upload failed")
         return jsonify({"error": str(exc)}), 500
 
 
@@ -161,9 +173,9 @@ def set_header_row():
             if header_row_index < 0 or header_row_index >= len(raw_arr):
                 return jsonify({"error": f"headerRowIndex {header_row_index} is out of range."}), 400
             new_df_raw = array_to_objects(raw_arr, header_row_index, custom_map)
-            cleaned = clean_rows_sql(new_df_raw)
             tbl_name = safe_table_name("tbl", table_key)
-            store_table(conn, tbl_name, cleaned)
+            store_table(conn, tbl_name, new_df_raw)
+            bulk_clean_table(conn, tbl_name)
             register_table(conn, table_key, tbl_name)
 
         inv, files_payload, previews = _rebuild_meta(conn)

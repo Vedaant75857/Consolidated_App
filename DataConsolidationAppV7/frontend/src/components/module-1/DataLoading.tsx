@@ -1,11 +1,11 @@
-import React, { useState, useRef, useCallback } from "react";
+import React, { useState, useRef, useCallback, useEffect } from "react";
 import { Upload, Loader2, FileText, Database, ArrowRight, FolderOpen, X, KeyRound, ChevronDown, ChevronRight, Trash2, RowsIcon, Check, CheckCircle2, Zap } from "lucide-react";
 import { motion } from "motion/react";
 import JSZip from "jszip";
 import { SurfaceCard, EmptyState, PrimaryButton, SecondaryButton, itemVariants } from "../common/ui";
 import VirtualPreviewTable from "./VirtualPreviewTable";
 
-const ACCEPTED_EXTENSIONS = [".csv", ".xlsx", ".xlsm", ".xltx", ".xltm", ".zip"];
+const ACCEPTED_EXTENSIONS = [".csv", ".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm", ".zip"];
 
 function fileHasAcceptedExt(name: string) {
   const lower = name.toLowerCase();
@@ -37,6 +37,11 @@ async function readDirectoryEntries(dirEntry: FileSystemDirectoryEntry): Promise
 async function collectFilesFromEntry(entry: FileSystemEntry, path = ""): Promise<{ path: string; file: File }[]> {
   if (entry.isFile) {
     const file = await readEntryAsFile(entry as FileSystemFileEntry);
+    if (file.name.toLowerCase().endsWith(".zip")) {
+      const extracted = await extractZipEntries(file);
+      const prefix = path + file.name + "/";
+      return extracted.map(e => ({ path: prefix + e.path, file: e.file }));
+    }
     if (fileHasAcceptedExt(file.name)) {
       return [{ path: path + file.name, file }];
     }
@@ -298,6 +303,30 @@ export default function DataLoading({
   const folderInputRef = useRef<HTMLInputElement>(null);
   const accumulatedFilesRef = useRef<{ path: string; file: File }[]>([]);
 
+  // Re-hydrate accumulatedFilesRef from parent file prop on mount so
+  // previously uploaded files aren't lost when navigating away and back.
+  useEffect(() => {
+    if (!file || accumulatedFilesRef.current.length > 0) return;
+    if (!file.name?.toLowerCase().endsWith(".zip")) return;
+    let cancelled = false;
+    setZipping(true);
+    (async () => {
+      try {
+        const entries = await extractZipEntries(file);
+        if (cancelled || accumulatedFilesRef.current.length > 0) return;
+        if (entries.length > 0) {
+          accumulatedFilesRef.current = entries;
+          setFileList([...entries]);
+          setFileLabel(`${entries.length} file${entries.length !== 1 ? "s" : ""} ready for upload`);
+        }
+      } finally {
+        if (!cancelled) setZipping(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const rebuildFromAccumulated = useCallback(async () => {
     const all = accumulatedFilesRef.current;
     if (all.length === 0) return;
@@ -419,7 +448,11 @@ export default function DataLoading({
       const newFiles: { path: string; file: File }[] = [];
       for (let i = 0; i < fileList.length; i++) {
         const f = fileList[i];
-        if (fileHasAcceptedExt(f.name)) {
+        if (f.name.toLowerCase().endsWith(".zip")) {
+          const extracted = await extractZipEntries(f);
+          const prefix = ((f as any).webkitRelativePath || f.name).replace(/[^/]*$/, "");
+          newFiles.push(...extracted.map(e => ({ path: prefix + f.name + "/" + e.path, file: e.file })));
+        } else if (fileHasAcceptedExt(f.name)) {
           const path = (f as any).webkitRelativePath || f.name;
           newFiles.push({ path, file: f });
         }
@@ -481,7 +514,7 @@ export default function DataLoading({
                 type="file"
                 className="sr-only"
                 onChange={handleZipInputChange}
-                accept=".zip,.csv,.xlsx,.xlsm,.xltx,.xltm"
+                accept=".zip,.csv,.xlsx,.xlsm,.xlsb,.xltx,.xltm"
                 multiple
               />
               <input

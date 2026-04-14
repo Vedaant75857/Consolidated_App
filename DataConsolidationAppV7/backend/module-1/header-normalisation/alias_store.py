@@ -51,7 +51,15 @@ def _resolve_knowledge_base_dir() -> str:
             "header-normalisation", "knowledge_base",
         )
         if not os.path.exists(writable_kb) and os.path.exists(bundled_kb):
-            shutil.copytree(bundled_kb, writable_kb)
+            try:
+                shutil.copytree(bundled_kb, writable_kb)
+            except OSError as exc:
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "Could not copy bundled knowledge_base to %s (%s). "
+                    "Header normalisation will start with an empty alias store.",
+                    writable_kb, exc,
+                )
         return writable_kb
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "knowledge_base")
 
@@ -60,8 +68,17 @@ ALIASES_STORE_DIR = _resolve_knowledge_base_dir()
 LEARNED_ALIASES_FILE = os.path.join(ALIASES_STORE_DIR, "learned_aliases.json")
 SNAPSHOT_DIR = os.path.join(ALIASES_STORE_DIR, "snapshots")
 
-os.makedirs(ALIASES_STORE_DIR, exist_ok=True)
-os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+try:
+    os.makedirs(ALIASES_STORE_DIR, exist_ok=True)
+    os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+except OSError as exc:
+    import logging as _logging
+    _logging.getLogger(__name__).error(
+        "Cannot create knowledge_base folder at %s (%s). "
+        "Try moving the EXE to a writable location like your Desktop.",
+        ALIASES_STORE_DIR, exc,
+    )
+    raise
 
 _ALIAS_STORE_LOCK = threading.Lock()
 

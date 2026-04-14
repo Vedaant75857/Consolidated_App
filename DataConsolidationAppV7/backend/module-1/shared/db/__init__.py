@@ -1,5 +1,6 @@
-"""Shared database utilities for on-disk SQLite session management."""
+"""Shared database utilities for on-disk DuckDB session management."""
 
+from .duckdb_compat import DuckDBConnection, duckdb_connect
 from .session_db import (
     get_session_db,
     close_session_db,
@@ -17,6 +18,7 @@ from .meta_ops import get_meta, set_meta, delete_meta, get_all_meta_keys
 from .table_ops import (
     store_table,
     store_table_streaming,
+    store_df_native,
     read_table,
     read_table_columns,
     table_exists,
@@ -40,6 +42,8 @@ from .stats_ops import (
 )
 
 __all__ = [
+    "DuckDBConnection",
+    "duckdb_connect",
     "get_session_db",
     "close_session_db",
     "delete_session_db",
@@ -57,6 +61,7 @@ __all__ = [
     "get_all_meta_keys",
     "store_table",
     "store_table_streaming",
+    "store_df_native",
     "read_table",
     "read_table_columns",
     "table_exists",

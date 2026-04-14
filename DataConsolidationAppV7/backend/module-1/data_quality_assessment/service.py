@@ -8,10 +8,9 @@ appropriate analysis module.
 from __future__ import annotations
 
 import logging
-import sqlite3
 from typing import Any
 
-from shared.db import read_table_columns, table_exists, table_row_count
+from shared.db import DuckDBConnection, read_table_columns, table_exists, table_row_count
 
 from .currency_analysis import run_currency_analysis
 from .country_region_analysis import run_country_region_analysis
@@ -30,17 +29,26 @@ __all__ = [
 ]
 
 
-def _validate_table(conn: sqlite3.Connection, table_name: str) -> None:
-    """Raise ``ValueError`` if the table does not exist."""
-    if not table_exists(conn, table_name):
-        raise ValueError(f"Table '{table_name}' not found in session.")
+def _validate_table(conn: DuckDBConnection, table_name: str) -> str:
+    """Validate the table exists, falling back to 'final_merged' for versioned names.
+
+    Returns the resolved table name (may differ from input if fallback was used).
+    """
+    if table_exists(conn, table_name):
+        return table_name
+    if table_name.startswith("final_merged_v") and table_exists(conn, "final_merged"):
+        logger.warning(
+            "Table '%s' not found, falling back to 'final_merged'", table_name,
+        )
+        return "final_merged"
+    raise ValueError(f"Table '{table_name}' not found in session.")
 
 
 # ── Per-panel dispatchers ─────────────────────────────────────────────────
 
 
 def run_dqa_date(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     api_key: str,
     date_column: str | None = None,
@@ -56,12 +64,12 @@ def run_dqa_date(
     Returns:
         JSON-serialisable result dict.
     """
-    _validate_table(conn, table_name)
+    table_name = _validate_table(conn, table_name)
     return run_date_analysis(conn, table_name, date_column, api_key)
 
 
 def run_dqa_currency(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     api_key: str,
 ) -> dict[str, Any]:
@@ -75,12 +83,12 @@ def run_dqa_currency(
     Returns:
         JSON-serialisable result dict.
     """
-    _validate_table(conn, table_name)
+    table_name = _validate_table(conn, table_name)
     return run_currency_analysis(conn, table_name, api_key)
 
 
 def run_dqa_payment_terms(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     api_key: str,
 ) -> dict[str, Any]:
@@ -94,12 +102,12 @@ def run_dqa_payment_terms(
     Returns:
         JSON-serialisable result dict.
     """
-    _validate_table(conn, table_name)
+    table_name = _validate_table(conn, table_name)
     return run_payment_terms_analysis(conn, table_name, api_key)
 
 
 def run_dqa_country_region(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     api_key: str,
 ) -> dict[str, Any]:
@@ -113,12 +121,12 @@ def run_dqa_country_region(
     Returns:
         JSON-serialisable result dict.
     """
-    _validate_table(conn, table_name)
+    table_name = _validate_table(conn, table_name)
     return run_country_region_analysis(conn, table_name, api_key)
 
 
 def run_dqa_supplier(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_name: str,
     api_key: str,
 ) -> dict[str, Any]:
@@ -132,5 +140,5 @@ def run_dqa_supplier(
     Returns:
         JSON-serialisable result dict.
     """
-    _validate_table(conn, table_name)
+    table_name = _validate_table(conn, table_name)
     return run_supplier_analysis(conn, table_name, api_key)

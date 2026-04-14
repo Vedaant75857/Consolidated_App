@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import sqlite3
 from typing import Any, Mapping
 
 from shared.db import (
+    DuckDBConnection,
     column_stats,
     drop_table,
     get_meta,
@@ -38,7 +38,7 @@ def _work_name(table_key: str) -> str:
 
 
 def _rebuild_from_select(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     work: str,
     shadow: str,
     select_list_sql: str,
@@ -53,7 +53,7 @@ def _rebuild_from_select(
     conn.commit()
 
 
-def _delete_null_or_empty_rows(conn: sqlite3.Connection, table: str, columns: list[str]) -> None:
+def _delete_null_or_empty_rows(conn: DuckDBConnection, table: str, columns: list[str]) -> None:
     if not columns:
         return
     tbl = quote_id(table)
@@ -64,7 +64,7 @@ def _delete_null_or_empty_rows(conn: sqlite3.Connection, table: str, columns: li
 
 
 def _apply_case_and_trim(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table: str,
     columns: list[str],
     case_mode: str,
@@ -90,7 +90,7 @@ def _apply_case_and_trim(
 
 
 def _apply_column_types(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table: str,
     column_types: Mapping[str, Any],
     columns: list[str],
@@ -109,8 +109,8 @@ def _apply_column_types(
                 f"""UPDATE {tbl}
                 SET {qc} = CAST(CAST(TRIM({qc}) AS REAL) AS TEXT)
                 WHERE TRIM({qc}) != ''
-                  AND TRIM({qc}) GLOB '*[0-9]*'
-                  AND TRIM({qc}) NOT GLOB '*[^0-9.eE+-]*'"""
+                  AND regexp_matches(TRIM({qc}), '[0-9]')
+                  AND regexp_matches(TRIM({qc}), '^[0-9eE.+-]+$')"""
             )
             dirty = True
         elif target == "date":
@@ -124,7 +124,7 @@ def _apply_column_types(
         conn.commit()
 
 
-def _deduplicate_rows(conn: sqlite3.Connection, table: str, dedup_cols: list[str]) -> int:
+def _deduplicate_rows(conn: DuckDBConnection, table: str, dedup_cols: list[str]) -> int:
     cols = read_table_columns(conn, table)
     existing = [c for c in dedup_cols if c in cols]
     if not existing:
@@ -134,18 +134,28 @@ def _deduplicate_rows(conn: sqlite3.Connection, table: str, dedup_cols: list[str
         return 0
     tbl = quote_id(table)
     group_exprs = ", ".join(quote_id(c) for c in existing)
+    all_cols = read_table_columns(conn, table)
+    col_list = ", ".join(quote_id(c) for c in all_cols)
+    swap = safe_table_name("tmpdedup", table)
+    q_swap = quote_id(swap)
+    drop_table(conn, swap)
     conn.execute(
-        f"""DELETE FROM {tbl}
-        WHERE rowid NOT IN (
-            SELECT MIN(rowid) FROM {tbl} GROUP BY {group_exprs}
-        )"""
+        f"""CREATE TABLE {q_swap} AS
+        SELECT {col_list} FROM (
+            SELECT {col_list}, ROW_NUMBER() OVER (PARTITION BY {group_exprs} ORDER BY (SELECT NULL)) AS _rn
+            FROM {tbl}
+        ) sub
+        WHERE sub._rn = 1"""
     )
+    conn.commit()
+    drop_table(conn, table)
+    conn.execute(f"ALTER TABLE {q_swap} RENAME TO {tbl}")
     conn.commit()
     return before - table_row_count(conn, table)
 
 
 def dedup_preview_stats(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     group_id: str,
     dedup_columns: list[str],
 ) -> dict[str, Any]:
@@ -182,7 +192,7 @@ def dedup_preview_stats(
 
 
 def dedup_apply_group(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     group_id: str,
     dedup_columns: list[str],
 ) -> dict[str, Any]:
@@ -210,7 +220,7 @@ def dedup_apply_group(
 
 
 def delete_rows_sql(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_key: str,
     row_ids: list[int],
 ) -> dict[str, Any]:
@@ -230,9 +240,41 @@ def delete_rows_sql(
         if table_exists(conn, raw_sql) and "RECORD_ID" in read_table_columns(conn, raw_sql):
             conn.execute(f"DELETE FROM {quote_id(raw_sql)} WHERE RECORD_ID IN ({placeholders})", row_ids)
     else:
-        conn.execute(f"DELETE FROM {quote_id(tbl_sql)} WHERE rowid IN ({placeholders})", row_ids)
+        cols_tbl = read_table_columns(conn, tbl_sql)
+        col_sql_tbl = ", ".join(quote_id(c) for c in cols_tbl)
+        swap_tbl = safe_table_name("tmpdelrows", table_key)
+        q_swap_tbl = quote_id(swap_tbl)
+        q_tbl_sql = quote_id(tbl_sql)
+        drop_table(conn, swap_tbl)
+        conn.execute(
+            f"""CREATE TABLE {q_swap_tbl} AS
+            SELECT {col_sql_tbl} FROM (
+                SELECT {col_sql_tbl}, ROW_NUMBER() OVER() AS _rn FROM {q_tbl_sql}
+            ) sub WHERE sub._rn NOT IN ({placeholders})""",
+            row_ids,
+        )
+        conn.commit()
+        drop_table(conn, tbl_sql)
+        conn.execute(f"ALTER TABLE {q_swap_tbl} RENAME TO {q_tbl_sql}")
+        conn.commit()
         if table_exists(conn, raw_sql):
-            conn.execute(f"DELETE FROM {quote_id(raw_sql)} WHERE rowid IN ({placeholders})", row_ids)
+            cols_raw = read_table_columns(conn, raw_sql)
+            col_sql_raw = ", ".join(quote_id(c) for c in cols_raw)
+            swap_raw = safe_table_name("tmpdelrows_raw", table_key)
+            q_swap_raw = quote_id(swap_raw)
+            q_raw_sql = quote_id(raw_sql)
+            drop_table(conn, swap_raw)
+            conn.execute(
+                f"""CREATE TABLE {q_swap_raw} AS
+                SELECT {col_sql_raw} FROM (
+                    SELECT {col_sql_raw}, ROW_NUMBER() OVER() AS _rn FROM {q_raw_sql}
+                ) sub WHERE sub._rn NOT IN ({placeholders})""",
+                row_ids,
+            )
+            conn.commit()
+            drop_table(conn, raw_sql)
+            conn.execute(f"ALTER TABLE {q_swap_raw} RENAME TO {q_raw_sql}")
+            conn.commit()
     conn.commit()
 
     inv = build_inventory_from_db(conn)
@@ -252,7 +294,7 @@ def delete_rows_sql(
 
 
 def clean_table_sql(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     table_key: str,
     config: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -338,7 +380,7 @@ def clean_table_sql(
 
 
 def clean_group_sql(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     group_id: str,
     config: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -427,7 +469,7 @@ def clean_group_sql(
 # ---------------------------------------------------------------------------
 
 def analyze_column_format(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     group_id: str,
     columns: list[str],
 ) -> list[dict[str, Any]]:
@@ -453,9 +495,9 @@ def analyze_column_format(
         row = conn.execute(
             f"""SELECT
                 COUNT(*) AS total,
-                SUM(CASE WHEN TRIM({qc}) GLOB '0[0-9]*' THEN 1 ELSE 0 END) AS leading_zeros,
-                SUM(CASE WHEN TRIM({qc}) GLOB '[0-9]*'
-                          AND TRIM({qc}) NOT GLOB '*[^0-9]*' THEN 1 ELSE 0 END) AS all_numeric,
+                SUM(CASE WHEN regexp_matches(TRIM({qc}), '^0[0-9]*$') THEN 1 ELSE 0 END) AS leading_zeros,
+                SUM(CASE WHEN regexp_matches(TRIM({qc}), '^[0-9]')
+                          AND regexp_matches(TRIM({qc}), '^[0-9]+$') THEN 1 ELSE 0 END) AS all_numeric,
                 MIN(LENGTH(TRIM({qc}))) AS min_len,
                 MAX(LENGTH(TRIM({qc}))) AS max_len
             FROM {tbl}
@@ -526,7 +568,7 @@ def analyze_column_format(
 
 
 def apply_column_standardize(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     group_id: str,
     actions: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -556,8 +598,8 @@ def apply_column_standardize(
                 f"""UPDATE {tbl}
                     SET {qc} = CAST(CAST(TRIM({qc}) AS INTEGER) AS TEXT)
                     WHERE TRIM({qc}) != ''
-                      AND TRIM({qc}) GLOB '[0-9]*'
-                      AND TRIM({qc}) NOT GLOB '*[^0-9]*'"""
+                      AND regexp_matches(TRIM({qc}), '^[0-9]')
+                      AND regexp_matches(TRIM({qc}), '^[0-9]+$')"""
             )
             applied.append({"column": col, "operation": "strip"})
 
@@ -570,8 +612,8 @@ def apply_column_standardize(
                 f"""UPDATE {tbl}
                     SET {qc} = SUBSTR('{zeros}' || TRIM({qc}), -{pad_length})
                     WHERE TRIM({qc}) != ''
-                      AND TRIM({qc}) GLOB '[0-9]*'
-                      AND TRIM({qc}) NOT GLOB '*[^0-9]*'"""
+                      AND regexp_matches(TRIM({qc}), '^[0-9]')
+                      AND regexp_matches(TRIM({qc}), '^[0-9]+$')"""
             )
             applied.append({"column": col, "operation": "pad", "pad_length": str(pad_length)})
 
@@ -602,7 +644,7 @@ def apply_column_standardize(
 # ── Concatenation ─────────────────────────────────────────────────────
 
 def concat_columns_apply(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     group_id: str,
     columns: list[str],
 ) -> dict[str, Any]:
@@ -661,7 +703,7 @@ def concat_columns_apply(
 
 
 def delete_concat_column(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     group_id: str,
     column_name: str,
 ) -> dict[str, Any]:
@@ -726,7 +768,7 @@ def _colrem_backup_name(group_id: str) -> str:
 
 
 def remove_columns(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     group_id: str,
     columns: list[str],
 ) -> dict[str, Any]:
@@ -824,7 +866,7 @@ def remove_columns(
 
 
 def restore_columns(
-    conn: sqlite3.Connection,
+    conn: DuckDBConnection,
     group_id: str,
     columns: list[str],
 ) -> dict[str, Any]:
