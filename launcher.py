@@ -242,7 +242,7 @@ def main():
             input("Press Enter to exit...")
             sys.exit(1)
 
-    # Create & start each service in a daemon thread
+    # Create & start each service in a daemon thread ..
     for factory, port, label in SERVICES:
         try:
             app = factory()
