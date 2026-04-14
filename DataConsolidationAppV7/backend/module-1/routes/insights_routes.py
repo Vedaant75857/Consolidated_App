@@ -16,6 +16,7 @@ from shared.db import (
     all_registered_tables,
     delete_meta,
     drop_table,
+    get_all_meta_keys,
     get_meta,
     get_session_db,
     lookup_sql_name,
@@ -28,6 +29,7 @@ from shared.db import (
     PREVIEW_POOL,
     pick_best_rows,
 )
+from shared.db.stats_ops import column_stats as compute_column_stats
 from appending.service import run_append_execute, run_append_mapping, run_append_plan
 from data_loading.service import (
     build_files_payload_from_db,
@@ -114,7 +116,6 @@ def _table_artifact_rows_cols(conn, table_name: str) -> dict[str, int]:
 def _build_merge_result_from_table(conn, table_name: str = "final_merged") -> dict[str, Any] | None:
     if not table_exists(conn, table_name):
         return None
-    from shared.db.stats_ops import column_stats as compute_column_stats
     rows_count = int(table_row_count(conn, table_name) or 0)
     columns_list = read_table_columns(conn, table_name)
     preview = pick_best_rows(read_table(conn, table_name, PREVIEW_POOL), 50)
@@ -684,9 +685,6 @@ def invalidate_downstream():
         conn = get_session_db(str(session_id))
 
         if from_step == 0:
-            # Full session wipe (re-upload scenario)
-            from shared.db import get_all_meta_keys
-
             for key in get_all_meta_keys(conn):
                 delete_meta(conn, key)
             for reg in all_registered_tables(conn):

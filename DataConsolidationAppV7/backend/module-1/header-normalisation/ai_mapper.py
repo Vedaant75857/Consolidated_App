@@ -36,6 +36,11 @@ AI_CONFIDENCE_THRESHOLD = _engine_mod.AI_CONFIDENCE_THRESHOLD
 SYSTEM_PROMPT_PROCUREMENT_MAPPING = _prompts_mod.SYSTEM_PROMPT_PROCUREMENT_MAPPING
 SYSTEM_PROMPT_HEADER_NORM_COLUMN = _prompts_mod.SYSTEM_PROMPT_HEADER_NORM_COLUMN
 
+try:
+    from shared.ai import call_ai_json as _shared_ai_call
+except Exception:
+    _shared_ai_call = None
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -79,11 +84,11 @@ def _call_ai_json(system_prompt: str, user_content: str, api_key: str | None) ->
     Tries shared.ai.call_ai_json first (uses the app's configured AI client),
     falls back to direct Portkey call.
     """
-    try:
-        from shared.ai import call_ai_json as _shared_call
-        return _shared_call(system_prompt, user_content, api_key)
-    except Exception:
-        pass
+    if _shared_ai_call is not None:
+        try:
+            return _shared_ai_call(system_prompt, user_content, api_key)
+        except Exception:
+            pass
 
     from portkey_ai import Portkey
     client = Portkey(api_key=api_key, base_url=PORTKEY_BASE_URL)

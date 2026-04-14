@@ -6,7 +6,7 @@ import json
 import sqlite3
 from typing import Any, TypeVar
 
-from shared.utils import json_default, json_safe
+from shared.utils.json_helpers import json_default, json_safe
 
 T = TypeVar("T")
 

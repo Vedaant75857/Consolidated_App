@@ -88,6 +88,73 @@ LOCAL_PACKAGE_NAMES = frozenset([
     "merging", "appending", "inventory", "summary", "ai-core", "ai_core",
 ])
 
+# Maps normalised backend directory paths to their module alias so the
+# import-redirect hook can resolve bare local package names at runtime.
+_BACKEND_DIR_TO_ALIAS: dict[str, str] = {}
+
+
+class _ModuleRedirectFinder:
+    """``sys.meta_path`` finder that intercepts bare local-package imports
+    (e.g. ``shared.db``) and redirects them to the correct module-specific
+    alias (e.g. ``_m1_app.shared.db``) by inspecting the caller's file path.
+
+    Without this, any lazy ``from shared.db import X`` executed after all
+    modules are loaded would resolve to whichever module's backend dir
+    happens to be first on ``sys.path`` — usually Module 3, which has a
+    completely different ``shared.db``.
+    """
+
+    def find_module(self, fullname, path=None):
+        top = fullname.split(".")[0]
+        if top not in LOCAL_PACKAGE_NAMES:
+            return None
+        alias = self._caller_alias()
+        if alias is None:
+            return None
+        aliased = f"{alias}.{fullname}"
+        if aliased in sys.modules:
+            return self
+        return None
+
+    def load_module(self, fullname):
+        if fullname in sys.modules:
+            return sys.modules[fullname]
+        alias = self._caller_alias()
+        if alias is None:
+            raise ImportError(fullname)
+        aliased = f"{alias}.{fullname}"
+        mod = sys.modules.get(aliased)
+        if mod is None:
+            raise ImportError(fullname)
+        sys.modules[fullname] = mod
+        return mod
+
+    @staticmethod
+    def _caller_alias() -> str | None:
+        """Walk the call stack to find which module backend the caller lives
+        in, then return the corresponding alias (e.g. ``_m1_app``)."""
+        import inspect
+        frame = inspect.currentframe()
+        try:
+            f = frame
+            for _ in range(15):
+                f = getattr(f, "f_back", None)
+                if f is None:
+                    break
+                fname = (f.f_globals.get("__file__") or "")
+                if not fname or "importlib" in fname:
+                    continue
+                norm = os.path.normcase(os.path.normpath(fname))
+                for dir_prefix, alias in _BACKEND_DIR_TO_ALIAS.items():
+                    if norm.startswith(dir_prefix):
+                        return alias
+        finally:
+            del frame
+        return None
+
+
+_redirect_finder = _ModuleRedirectFinder()
+
 
 def _import_module_app(backend_dir: str, module_alias: str):
     """Import a module's ``app.py`` in isolation.
@@ -100,6 +167,7 @@ def _import_module_app(backend_dir: str, module_alias: str):
       3. Load the module's app.py under a unique alias.
       4. Rename all local packages in sys.modules to ``<alias>.<pkg>`` so they
          don't collide with the next module.
+      5. Register the backend dir for the runtime import-redirect hook.
     """
     import importlib, importlib.util
 
@@ -131,7 +199,40 @@ def _import_module_app(backend_dir: str, module_alias: str):
             renames[f"{module_alias}.{name}"] = sys.modules.pop(name)
     sys.modules.update(renames)
 
+    # Step 5 — register for runtime redirect hook
+    norm_dir = os.path.normcase(os.path.normpath(backend_dir)) + os.sep
+    _BACKEND_DIR_TO_ALIAS[norm_dir] = module_alias
+
     return mod
+
+
+def _post_load_cleanup():
+    """Final cleanup after all modules are loaded.
+
+    Evicts any remaining bare local package names from ``sys.modules`` and
+    removes module backend dirs from ``sys.path`` so that stale lazy imports
+    cannot silently resolve to the wrong module.  The ``_ModuleRedirectFinder``
+    on ``sys.meta_path`` handles any future lazy imports by routing them to
+    the correct aliased version.
+    """
+    to_delete = [
+        name for name in sys.modules
+        if name.split(".")[0] in LOCAL_PACKAGE_NAMES
+    ]
+    for name in to_delete:
+        del sys.modules[name]
+
+    dirs_to_remove = {
+        os.path.normcase(os.path.normpath(d.rstrip(os.sep)))
+        for d in _BACKEND_DIR_TO_ALIAS
+    }
+    sys.path[:] = [
+        p for p in sys.path
+        if os.path.normcase(os.path.normpath(p)) not in dirs_to_remove
+    ]
+
+    if _redirect_finder not in sys.meta_path:
+        sys.meta_path.insert(0, _redirect_finder)
 
 
 def _create_module1_app():
@@ -242,7 +343,8 @@ def main():
             input("Press Enter to exit...")
             sys.exit(1)
 
-    # Create & start each service in a daemon thread ..
+    # Create all apps first (sequentially, so module isolation works)
+    apps: list[tuple] = []
     for factory, port, label in SERVICES:
         try:
             app = factory()
@@ -250,7 +352,14 @@ def main():
             log.exception("Failed to initialise %s", label)
             input("Press Enter to exit...")
             sys.exit(1)
+        apps.append((app, port, label))
 
+    # All modules loaded — seal the import environment so stale bare
+    # package names can't accidentally resolve to the wrong module.
+    _post_load_cleanup()
+
+    # Start each service in a daemon thread
+    for app, port, label in apps:
         t = threading.Thread(target=_run_server, args=(app, port, label), daemon=True)
         t.start()
 

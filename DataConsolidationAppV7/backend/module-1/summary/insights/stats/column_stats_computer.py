@@ -13,6 +13,7 @@ from shared.db import (
     table_exists,
     table_row_count,
 )
+from shared.db.stats_ops import column_distinct_count, compute_overlap
 
 
 def _numeric_predicate(qc: str) -> str:
@@ -203,8 +204,6 @@ def analyze_cross_group_sql(
     group_sql_names: dict[str, str],
 ) -> dict[str, Any]:
     """Schema and value overlap between groups (SQL only)."""
-    from shared.db.stats_ops import column_distinct_count, compute_overlap
-
     total_groups = len(group_profiles)
     total_rows = sum(int(g.get("totalRows", 0)) for g in group_profiles)
     schema_overlap: dict[str, dict[str, Any]] = {g["groupId"]: {} for g in group_profiles}

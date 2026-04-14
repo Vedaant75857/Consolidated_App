@@ -34,6 +34,7 @@ logging.basicConfig(
 if not getattr(_sys, "frozen", False):
     load_dotenv(os.path.join(os.path.dirname(__file__), ".env.local"))
 
+from shared.db import delete_session, session_exists
 from routes.upload_routes import upload_bp
 from routes.mapping_routes import mapping_bp
 from routes.views_routes import views_bp
@@ -60,7 +61,6 @@ def health():
 def cleanup_session():
     """Delete the session SQLite file. Called on tab/browser close."""
     from flask import request, jsonify
-    from shared.db import delete_session, session_exists
 
     body = request.get_json(force=True, silent=True) or {}
     session_id = (body.get("sessionId") or "").strip()

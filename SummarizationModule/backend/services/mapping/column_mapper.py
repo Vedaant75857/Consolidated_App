@@ -9,6 +9,7 @@ import pandas as pd
 
 from shared.ai_client import call_ai_json
 from shared.db import set_meta
+from services.upload.file_loader import _get_registry
 
 logger = logging.getLogger(__name__)
 
@@ -748,8 +749,6 @@ def build_typed_table(
     Returns:
         Cast report with per-field stats.
     """
-    from services.upload.file_loader import _get_registry
-
     registry = _get_registry(conn)
     data_tables = [r["data_table"] for r in registry]
 

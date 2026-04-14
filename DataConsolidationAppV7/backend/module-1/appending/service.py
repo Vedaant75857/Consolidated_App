@@ -28,6 +28,7 @@ from shared.db import (
     table_row_count,
 )
 from shared.utils import chunk_list
+from data_loading.service import build_files_payload_from_db
 
 from appending.ai.prompts import SYSTEM_PROMPT_APPEND_ONLY, SYSTEM_PROMPT_HEADER_MAPPING
 
@@ -64,8 +65,6 @@ def _trim_payload(
 
 
 def run_append_plan(conn: sqlite3.Connection, api_key: str | None) -> dict[str, Any]:
-    from data_loading.service import build_files_payload_from_db
-
     files_payload = build_files_payload_from_db(conn)
     set_meta(conn, "filesPayload", files_payload)
 

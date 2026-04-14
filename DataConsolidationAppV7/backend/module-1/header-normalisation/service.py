@@ -38,6 +38,7 @@ from shared.db import (
     PREVIEW_POOL,
     pick_best_rows,
 )
+from data_loading.service import build_inventory_from_db, build_files_payload_from_db
 
 
 def _load_mod(name: str, path: str):
@@ -376,7 +377,6 @@ def _resolve_tbl(conn: sqlite3.Connection, table_key: str) -> str | None:
 
 def _rebuild_meta(conn: sqlite3.Connection) -> None:
     """Rebuild inv and filesPayload meta to reflect current table state."""
-    from data_loading.service import build_inventory_from_db, build_files_payload_from_db
     set_meta(conn, "inv", build_inventory_from_db(conn))
     set_meta(conn, "filesPayload", build_files_payload_from_db(conn))
 

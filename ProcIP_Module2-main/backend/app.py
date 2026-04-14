@@ -68,7 +68,10 @@ from agents.normalization import (
     payment_terms_agent,
     normalize_region_agent,
     normalize_plant_agent,
-    normalize_spend_agent
+    normalize_spend_agent,
+    assess_supplier_country,
+    assess_region,
+    assess_currency_conversion,
 )
 
 import sys as _sys
@@ -803,7 +806,6 @@ def assess_supplier_country_api():
     kwargs = data.get('kwargs', {})
 
     try:
-        from agents.normalization import assess_supplier_country
         result = assess_supplier_country(df, **kwargs)
         return jsonify(result)
     except Exception as e:
@@ -829,7 +831,6 @@ def assess_region_api():
     kwargs = data.get('kwargs', {})
 
     try:
-        from agents.normalization import assess_region
         result = assess_region(df, **kwargs)
         return jsonify(result)
     except Exception as e:
@@ -855,7 +856,6 @@ def assess_currency_conversion_api():
     kwargs = data.get('kwargs', {})
 
     try:
-        from agents.normalization import assess_currency_conversion
         result = assess_currency_conversion(df, **kwargs)
         return jsonify(result)
     except Exception as e:

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, time
 from dataclasses import dataclass, field
 import json
-import math
 import sqlite3
 from typing import Any
+
+from .json_helpers import json_default, json_safe
 
 
 def chunk_list(items: list, chunk_size: int) -> list[list]:
@@ -27,6 +27,7 @@ class StepSpec:
 
 def resolve_input_table(conn: sqlite3.Connection, table_ref: str) -> str | None:
     """Resolve table references across table_key/sql_name and simple aliases."""
+    # Lazy import to avoid circular dependency with shared.db at module-load time
     from shared.db import all_registered_tables, lookup_sql_name, table_exists
 
     ref = str(table_ref or "").strip()
@@ -75,30 +76,6 @@ def validate_step_inputs(conn: sqlite3.Connection, spec: StepSpec) -> tuple[bool
         elif isinstance(val, bool) and not val:
             missing.append(f"meta:{k}")
     return (len(missing) == 0, missing)
-
-
-def json_default(value: Any) -> Any:
-    """Convert common non-JSON-native Python values into JSON-safe forms."""
-    if isinstance(value, (datetime, date, time)):
-        return value.isoformat()
-    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
-
-
-def json_safe(value: Any) -> Any:
-    """Recursively convert nested values into JSON-safe primitives."""
-    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
-        return None
-    if isinstance(value, dict):
-        return {str(k): json_safe(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [json_safe(v) for v in value]
-    if isinstance(value, tuple):
-        return [json_safe(v) for v in value]
-    if isinstance(value, set):
-        return [json_safe(v) for v in value]
-    if isinstance(value, (datetime, date, time)):
-        return value.isoformat()
-    return value
 
 
 def make_unique(columns: list[str | None]) -> list[str]:
