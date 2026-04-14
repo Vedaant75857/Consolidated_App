@@ -129,7 +129,37 @@ def get_all_meta_keys(conn: DuckDBConnection) -> list[str]:
 
 
 def delete_session(session_id: str):
+    """Close the connection and delete all session files (DB + WAL)."""
     close_session_db(session_id)
     path = _db_path(session_id)
-    if os.path.isfile(path):
-        os.remove(path)
+    for suffix in ("", ".wal"):
+        try:
+            os.unlink(path + suffix)
+        except OSError:
+            pass
+
+
+def cleanup_all_sessions() -> int:
+    """Close every cached connection and delete all files in the sessions dir."""
+    cleaned = 0
+    with _db_lock:
+        for sid, conn in list(_db_cache.items()):
+            try:
+                conn.close()
+            except Exception:
+                pass
+        _db_cache.clear()
+
+    try:
+        for f in os.listdir(SESSIONS_DIR):
+            fpath = os.path.join(SESSIONS_DIR, f)
+            if not os.path.isfile(fpath):
+                continue
+            try:
+                os.unlink(fpath)
+                cleaned += 1
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return cleaned

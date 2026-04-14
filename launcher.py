@@ -8,6 +8,7 @@ then opens the user's default browser.  Designed to run both in development
 
 import logging
 import os
+import shutil
 import socket
 import sys
 import threading
@@ -432,6 +433,36 @@ def main():
                 srv.close()
             except Exception:
                 pass
+
+        for alias, label in [
+            ("_m1_app", "Module 1"),
+            ("_m2_app", "Module 2"),
+            ("_m3_app", "Module 3"),
+        ]:
+            mod = sys.modules.get(alias)
+            if mod is None:
+                continue
+            fn = getattr(mod, "cleanup_all_sessions", None)
+            if fn:
+                try:
+                    fn()
+                    log.info("  %s sessions cleaned.", label)
+                except Exception:
+                    log.warning("  %s session cleanup failed.", label)
+
+        for backend_dir in [
+            _resolve("DataConsolidationAppV7", "backend"),
+            _resolve("ProcIP_Module2-main", "backend"),
+            _resolve("SummarizationModule", "backend"),
+        ]:
+            for root, dirs, _ in os.walk(backend_dir):
+                for d in dirs:
+                    if d == "__pycache__":
+                        try:
+                            shutil.rmtree(os.path.join(root, d))
+                        except OSError:
+                            pass
+        log.info("Cache and session cleanup complete.")
 
 
 if __name__ == "__main__":

@@ -59,8 +59,16 @@ _CURRENCY_CODE_FOR_SPEND: dict[str, str] = {
 
 
 def _find_available_date_columns(available: set[str]) -> list[str]:
-    """Return the subset of standard date columns present in the table."""
-    return [c for c in DATE_COLUMNS if c in available]
+    """Return date columns present in the table.
+
+    Priority: exact (case-insensitive) matches against the standard DATE_COLUMNS
+    come first, then any other column whose name contains 'date'.
+    """
+    available_lower = {c.lower(): c for c in available}
+    known = [available_lower[c.lower()] for c in DATE_COLUMNS if c.lower() in available_lower]
+    known_set = set(known)
+    extra = [c for c in sorted(available) if "date" in c.lower() and c not in known_set]
+    return known + extra
 
 
 def _pick_spend_column(available: set[str]) -> tuple[str | None, bool]:

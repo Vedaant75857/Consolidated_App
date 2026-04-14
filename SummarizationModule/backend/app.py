@@ -1,3 +1,4 @@
+import atexit
 import json
 import logging
 import math
@@ -34,7 +35,7 @@ logging.basicConfig(
 if not getattr(_sys, "frozen", False):
     load_dotenv(os.path.join(os.path.dirname(__file__), ".env.local"))
 
-from shared.db import delete_session, session_exists
+from shared.db import delete_session, session_exists, cleanup_all_sessions
 from routes.upload_routes import upload_bp
 from routes.mapping_routes import mapping_bp
 from routes.views_routes import views_bp
@@ -50,6 +51,20 @@ app.register_blueprint(mapping_bp, url_prefix="/api")
 app.register_blueprint(views_bp, url_prefix="/api")
 app.register_blueprint(export_bp, url_prefix="/api")
 app.register_blueprint(email_bp, url_prefix="/api")
+
+logger = logging.getLogger("module3")
+
+_startup_cleaned = cleanup_all_sessions()
+if _startup_cleaned:
+    logger.info("[Module-3] Startup: cleared %d leftover session(s).", _startup_cleaned)
+
+
+def _on_exit():
+    cleaned = cleanup_all_sessions()
+    logger.info("[Module-3] Shutdown: deleted %d session(s).", cleaned)
+
+
+atexit.register(_on_exit)
 
 
 @app.route("/api/health")

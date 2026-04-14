@@ -183,7 +183,7 @@ def cleanup_stale_sessions(max_age_ms: int = 24 * 60 * 60 * 1000) -> int:
 
 
 def cleanup_all_sessions() -> int:
-    """Close every cached connection and delete all session DuckDB files."""
+    """Close every cached connection and delete all files in the sessions dir."""
     cleaned = 0
     with _db_lock:
         for sid, conn in list(_db_cache.items()):
@@ -195,12 +195,12 @@ def cleanup_all_sessions() -> int:
 
     try:
         for f in os.listdir(_DB_DIR):
-            if not f.endswith((".duckdb", ".duckdb.wal")):
+            fpath = os.path.join(_DB_DIR, f)
+            if not os.path.isfile(fpath):
                 continue
             try:
-                os.unlink(os.path.join(_DB_DIR, f))
-                if f.endswith(".duckdb"):
-                    cleaned += 1
+                os.unlink(fpath)
+                cleaned += 1
             except OSError:
                 pass
     except OSError:
