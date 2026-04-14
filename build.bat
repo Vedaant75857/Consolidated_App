@@ -57,11 +57,15 @@ cd ..
 
 :: -------------------------------------------------------------------
 :: Step 3 — Build Module frontends
+::          (same env vars so cross-module links resolve correctly)
 :: -------------------------------------------------------------------
 echo.
 echo [3/5] Building Module 1 (Data Stitcher) frontend ...
 cd DataConsolidationAppV7\frontend
 call npm install
+set VITE_STITCHER_FE=http://localhost:3001
+set VITE_NORMALIZER_FE=http://localhost:5000
+set VITE_ANALYZER_FE=http://localhost:3005
 call npx vite build
 if %errorlevel% neq 0 (
     echo ERROR: Module 1 frontend build failed.
@@ -74,6 +78,9 @@ echo.
 echo [4/5] Building Module 2 (Data Normalizer) frontend ...
 cd ProcIP_Module2-main\frontend
 call npm install
+set VITE_STITCHER_FE=http://localhost:3001
+set VITE_NORMALIZER_FE=http://localhost:5000
+set VITE_ANALYZER_FE=http://localhost:3005
 call npx vite build
 if %errorlevel% neq 0 (
     echo ERROR: Module 2 frontend build failed.
@@ -83,9 +90,12 @@ if %errorlevel% neq 0 (
 cd ..\..
 
 echo.
-echo [4/5] Building Module 3 (Spend Summarizer) frontend ...
+echo [5/6] Building Module 3 (Spend Summarizer) frontend ...
 cd SummarizationModule\frontend
 call npm install
+set VITE_STITCHER_FE=http://localhost:3001
+set VITE_NORMALIZER_FE=http://localhost:5000
+set VITE_ANALYZER_FE=http://localhost:3005
 call npx vite build
 if %errorlevel% neq 0 (
     echo ERROR: Module 3 frontend build failed.
@@ -95,10 +105,10 @@ if %errorlevel% neq 0 (
 cd ..\..
 
 :: -------------------------------------------------------------------
-:: Step 5 — Run PyInstaller
+:: Step 6 — Run PyInstaller
 :: -------------------------------------------------------------------
 echo.
-echo [5/5] Packaging with PyInstaller (this may take several minutes) ...
+echo [6/6] Packaging with PyInstaller (this may take several minutes) ...
 pyinstaller --clean --noconfirm DataScopingTool.spec
 if %errorlevel% neq 0 (
     echo ERROR: PyInstaller build failed.

@@ -273,23 +273,6 @@ export default function App() {
   );
 
   const STORAGE_KEY = "datastitcher_session";
-  const APIKEY_STORAGE_KEY = "datastitcher_apikey";
-
-  // Persist apiKey separately in localStorage so it survives across sessions
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(APIKEY_STORAGE_KEY);
-      if (saved) setApiKey(saved);
-    } catch { /* ignore */ }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    try {
-      if (apiKey) localStorage.setItem(APIKEY_STORAGE_KEY, apiKey);
-      else localStorage.removeItem(APIKEY_STORAGE_KEY);
-    } catch { /* ignore */ }
-  }, [apiKey]);
 
   // Hydrate lightweight state from sessionStorage, then recover full state from backend
   useEffect(() => {

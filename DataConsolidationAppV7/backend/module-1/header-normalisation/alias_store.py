@@ -45,7 +45,11 @@ def _resolve_knowledge_base_dir() -> str:
         import shutil
         app_data = os.path.dirname(sys.executable)
         writable_kb = os.path.join(app_data, "knowledge_base")
-        bundled_kb = os.path.join(sys._MEIPASS, "knowledge_base")  # type: ignore[attr-defined]
+        bundled_kb = os.path.join(  # type: ignore[attr-defined]
+            sys._MEIPASS,
+            "DataConsolidationAppV7", "backend", "module-1",
+            "header-normalisation", "knowledge_base",
+        )
         if not os.path.exists(writable_kb) and os.path.exists(bundled_kb):
             shutil.copytree(bundled_kb, writable_kb)
         return writable_kb

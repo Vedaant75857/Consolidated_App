@@ -122,8 +122,7 @@ export default function MergeOutputsPanel({
       if (!analyzerSessionId || typeof analyzerSessionId !== "string") {
         throw new Error("Transfer succeeded but no session ID was returned by the Analyzer.");
       }
-      localStorage.setItem("summarizer_api_key", apiKey);
-      const url = `${ANALYZER_FE}?sessionId=${encodeURIComponent(analyzerSessionId)}&source=stitcher`;
+      const url = `${ANALYZER_FE}?sessionId=${encodeURIComponent(analyzerSessionId)}&source=stitcher&apiKey=${encodeURIComponent(apiKey)}`;
       window.open(url, "_blank");
       setSendResult({ ok: true, message: "Opened Spend Summarizer in a new tab" });
       setSelectionTarget(null);
@@ -152,8 +151,7 @@ export default function MergeOutputsPanel({
       if (!res.ok || !data.ok) throw new Error(data.error || "Transfer failed");
 
       const normalizerSessionId: string = data.normalizerSessionId || "";
-      localStorage.setItem("datastitcher_apikey", apiKey);
-      const url = `${NORMALIZER_FE}?imported=true&source=stitcher${normalizerSessionId ? `&sessionId=${encodeURIComponent(normalizerSessionId)}` : ""}`;
+      const url = `${NORMALIZER_FE}?imported=true&source=stitcher&apiKey=${encodeURIComponent(apiKey)}${normalizerSessionId ? `&sessionId=${encodeURIComponent(normalizerSessionId)}` : ""}`;
       window.open(url, "_blank");
       setSendResult({ ok: true, message: "Opened Data Normalizer in a new tab" });
       setSelectionTarget(null);

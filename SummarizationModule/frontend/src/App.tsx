@@ -80,7 +80,6 @@ const pageVariants = {
 };
 
 const LS_SESSION_KEY = "summarizer_session_id";
-const LS_API_KEY = "summarizer_api_key";
 
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
@@ -104,7 +103,7 @@ export default function App() {
   const [error, setError] = useState("");
 
   const [file, setFile] = useState<File | null>(null);
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem(LS_API_KEY) || "");
+  const [apiKey, setApiKey] = useState("");
 
   const [columns, setColumns] = useState<ColumnInfo[]>([]);
   const [inventory, setInventory] = useState<FileInventoryItem[]>([]);
@@ -136,10 +135,7 @@ export default function App() {
     prevStepRef.current = step;
   }, [step, maxStepReached]);
 
-  useEffect(() => {
-    if (apiKey) localStorage.setItem(LS_API_KEY, apiKey);
-    else localStorage.removeItem(LS_API_KEY);
-  }, [apiKey]);
+  
 
   // ── Step-aware cache invalidation ──────────────────────────────────
   const [pendingInvalidation, setPendingInvalidation] = useState<{
@@ -210,7 +206,6 @@ export default function App() {
 
     if (urlApiKey) {
       setApiKey(urlApiKey);
-      localStorage.setItem(LS_API_KEY, urlApiKey);
     }
     if (urlSource) {
       setImportSource(urlSource);

@@ -71,8 +71,10 @@ from agents.normalization import (
     normalize_spend_agent
 )
 
+import sys as _sys
 warnings.filterwarnings('ignore')
-load_dotenv()
+if not getattr(_sys, "frozen", False):
+    load_dotenv()
 
 app = Flask(__name__)
 app.json = SafeJSONProvider(app)

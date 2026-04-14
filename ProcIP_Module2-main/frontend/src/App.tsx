@@ -67,18 +67,7 @@ export default function App() {
     ]);
   }, []);
 
-  /* ── Persist / restore API key ── */
-  useEffect(() => {
-    const saved = localStorage.getItem("datastitcher_apikey");
-    if (saved) {
-      setApiKey(saved);
-      addLog("SYSTEM", "info", "Restored API key from storage.");
-    }
-  }, [addLog]);
-
-  useEffect(() => {
-    if (apiKey) localStorage.setItem("datastitcher_apikey", apiKey);
-  }, [apiKey]);
+  
 
   /* ── Handle cross-module import via URL params ── */
   useEffect(() => {
@@ -91,10 +80,8 @@ export default function App() {
     if (imported === "true") {
       window.history.replaceState({}, "", window.location.pathname);
 
-      const effectiveApiKey = urlApiKey || localStorage.getItem("datastitcher_apikey") || "";
-      if (effectiveApiKey) {
-        setApiKey(effectiveApiKey);
-        localStorage.setItem("datastitcher_apikey", effectiveApiKey);
+      if (urlApiKey) {
+        setApiKey(urlApiKey);
       }
       if (urlSessionId) {
         setImportSessionId(urlSessionId);

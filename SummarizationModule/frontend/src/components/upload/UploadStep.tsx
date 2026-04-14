@@ -25,7 +25,7 @@ async function buildZipFromFiles(files: AccumulatedFile[]): Promise<File> {
 
 export default function UploadStep({ onUpload, loading }: Props) {
   const [files, setFiles] = useState<AccumulatedFile[]>([]);
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem("summarizer_api_key") || "");
+  const [apiKey, setApiKey] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [zipping, setZipping] = useState(false);
   const [error, setError] = useState("");
@@ -85,7 +85,6 @@ export default function UploadStep({ onUpload, loading }: Props) {
       setError("Portkey API key is required.");
       return;
     }
-    localStorage.setItem("summarizer_api_key", apiKey);
     setZipping(true);
     try {
       const zipFile = await buildZipFromFiles(files);

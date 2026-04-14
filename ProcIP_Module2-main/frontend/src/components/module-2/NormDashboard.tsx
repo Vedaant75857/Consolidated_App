@@ -19,13 +19,13 @@ import type { LogEntry } from "../module-1/StatusLog";
 const ANALYZER_FE = import.meta.env.VITE_ANALYZER_FE ?? "http://localhost:3004";
 
 const OPERATIONS = [
-  { id: "supplier_name", label: "Supplier Names", icon: Building2, desc: "Clean & deduplicate supplier names" },
-  { id: "supplier_country", label: "Supplier Country", icon: Globe, desc: "Standardize country names" },
-  { id: "date", label: "Dates", icon: Calendar, desc: "Normalize date formats" },
-  { id: "currency_conversion", label: "Currency Conversion", icon: DollarSign, desc: "Convert local spend to USD" },
-  { id: "payment_terms", label: "Payment Terms", icon: ClipboardList, desc: "Extract numeric payment terms" },
-  { id: "region", label: "Regions", icon: MapPin, desc: "Classify into NA/EMEA/APAC/LATAM" },
-  { id: "plant", label: "Plant/Site", icon: Building2, desc: "Standardize plant codes & names" },
+  { id: "supplier_name", label: "Supplier Names", icon: Building2, desc: "Clean & deduplicate supplier names", loadingMsg: "Cleaning & deduplicating supplier names…" },
+  { id: "supplier_country", label: "Supplier Country", icon: Globe, desc: "Standardize country names", loadingMsg: "Standardizing country names…" },
+  { id: "date", label: "Dates", icon: Calendar, desc: "Normalize date formats", loadingMsg: "Normalizing date formats…" },
+  { id: "currency_conversion", label: "Currency Conversion", icon: DollarSign, desc: "Convert local spend to USD", loadingMsg: "Converting currencies to USD…" },
+  { id: "payment_terms", label: "Payment Terms", icon: ClipboardList, desc: "Extract numeric payment terms", loadingMsg: "Extracting payment terms…" },
+  { id: "region", label: "Regions", icon: MapPin, desc: "Classify into NA/EMEA/APAC/LATAM", loadingMsg: "Classifying regions…" },
+  { id: "plant", label: "Plant/Site", icon: Building2, desc: "Standardize plant codes & names", loadingMsg: "Standardizing plant codes & names…" },
 ];
 
 interface PopulationInfo {
@@ -246,9 +246,10 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       }
     }
     setActiveOp(agentId);
-    const opLabel = OPERATIONS.find(o => o.id === agentId)?.label || agentId;
-    setLoadingMessage?.("Running " + opLabel + "…");
-    log("info", "Running " + opLabel + "…");
+    const op = OPERATIONS.find(o => o.id === agentId);
+    const opLabel = op?.label || agentId;
+    setLoadingMessage?.(op?.loadingMsg || "Running " + opLabel + "…");
+    log("info", op?.loadingMsg || "Running " + opLabel + "…");
 
     const controller = new AbortController();
     normControllerRef.current = controller;
@@ -532,8 +533,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       if (!analyzerSessionId || typeof analyzerSessionId !== "string") {
         throw new Error("Transfer succeeded but no session ID was returned by the Summarizer.");
       }
-      localStorage.setItem("summarizer_api_key", apiKey);
-      const url = `${ANALYZER_FE}?sessionId=${encodeURIComponent(analyzerSessionId)}&source=normalizer`;
+      const url = `${ANALYZER_FE}?sessionId=${encodeURIComponent(analyzerSessionId)}&source=normalizer&apiKey=${encodeURIComponent(apiKey)}`;
       window.open(url, "_blank");
       setAnalyzerSendResult({ ok: true, message: "Opened Spend Summarizer in a new tab" });
       log("success", "Data sent to Spend Summarizer successfully.");

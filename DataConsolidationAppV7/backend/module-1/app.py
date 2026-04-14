@@ -15,8 +15,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("module1")
 
+import sys as _sys
 from dotenv import load_dotenv
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env.local"))
+if not getattr(_sys, "frozen", False):
+    load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env.local"))
 
 from flask import Flask, g, request
 from flask_cors import CORS

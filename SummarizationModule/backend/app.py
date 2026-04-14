@@ -6,6 +6,7 @@ import os
 from flask import Flask
 from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS
+import sys as _sys
 from dotenv import load_dotenv
 
 
@@ -30,7 +31,8 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
 )
 
-load_dotenv(os.path.join(os.path.dirname(__file__), ".env.local"))
+if not getattr(_sys, "frozen", False):
+    load_dotenv(os.path.join(os.path.dirname(__file__), ".env.local"))
 
 from routes.upload_routes import upload_bp
 from routes.mapping_routes import mapping_bp
