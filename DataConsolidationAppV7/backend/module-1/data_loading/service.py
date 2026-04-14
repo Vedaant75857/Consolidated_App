@@ -12,6 +12,8 @@ from shared.db import (
     read_table_columns,
     table_row_count,
     table_exists,
+    PREVIEW_POOL,
+    pick_best_rows,
 )
 from shared.db.stats_ops import distinct_values_by_column_sql
 
@@ -141,7 +143,7 @@ def build_previews_from_db(conn: sqlite3.Connection) -> dict[str, dict]:
         else:
             previews[table_key] = {
                 "columns": cols,
-                "rows": read_table(conn, sql_name, PREVIEW_ROWS),
+                "rows": pick_best_rows(read_table(conn, sql_name, PREVIEW_POOL), PREVIEW_ROWS),
             }
     return previews
 
@@ -158,5 +160,5 @@ def build_single_preview(conn: sqlite3.Connection, table_key: str) -> dict | Non
         return {"columns": [], "rows": []}
     return {
         "columns": cols,
-        "rows": read_table(conn, sql_name, PREVIEW_ROWS),
+        "rows": pick_best_rows(read_table(conn, sql_name, PREVIEW_POOL), PREVIEW_ROWS),
     }

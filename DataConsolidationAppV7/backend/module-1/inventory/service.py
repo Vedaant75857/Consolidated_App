@@ -18,6 +18,8 @@ from shared.db import (
     set_meta,
     table_exists,
     table_row_count,
+    PREVIEW_POOL,
+    pick_best_rows,
 )
 
 from data_loading.service import (
@@ -239,7 +241,7 @@ def delete_rows_sql(
     set_meta(conn, "filesPayload", files_payload)
 
     out_cols = read_table_columns(conn, tbl_sql)
-    preview_rows = read_table(conn, tbl_sql, PREVIEW_ROWS)
+    preview_rows = pick_best_rows(read_table(conn, tbl_sql, PREVIEW_POOL), PREVIEW_ROWS)
     inv_row = next((r for r in inv if r["table_key"] == table_key), None)
 
     return {
@@ -325,7 +327,7 @@ def clean_table_sql(
     set_meta(conn, "filesPayload", files_payload)
 
     out_cols = read_table_columns(conn, tbl_name)
-    preview_rows = read_table(conn, tbl_name, PREVIEW_ROWS)
+    preview_rows = pick_best_rows(read_table(conn, tbl_name, PREVIEW_POOL), PREVIEW_ROWS)
     inv_row = next((r for r in inv if r["table_key"] == table_key), None)
 
     return {
@@ -401,7 +403,7 @@ def clean_group_sql(
 
     out_cols = read_table_columns(conn, source_sql)
     n_rows = table_row_count(conn, source_sql)
-    preview_rows = read_table(conn, source_sql, PREVIEW_ROWS)
+    preview_rows = pick_best_rows(read_table(conn, source_sql, PREVIEW_POOL), PREVIEW_ROWS)
 
     group_schema = get_meta(conn, "groupSchemaTableRows") or []
     for gs in group_schema:
@@ -588,7 +590,7 @@ def apply_column_standardize(
             break
     set_meta(conn, "groupSchemaTableRows", group_schema)
 
-    preview_rows = read_table(conn, sql_name, PREVIEW_ROWS)
+    preview_rows = pick_best_rows(read_table(conn, sql_name, PREVIEW_POOL), PREVIEW_ROWS)
 
     return {
         "applied": applied,

@@ -25,6 +25,9 @@ from .table_ops import (
     iterate_table,
     quote_id,
     normalize_for_match,
+    PREVIEW_POOL,
+    pick_best_rows,
+    pick_best_raw_rows,
 )
 from .stats_ops import (
     column_stats,
@@ -69,4 +72,7 @@ __all__ = [
     "compute_overlap",
     "distinct_values_by_column_sql",
     "get_overlap_sql",
+    "PREVIEW_POOL",
+    "pick_best_rows",
+    "pick_best_raw_rows",
 ]

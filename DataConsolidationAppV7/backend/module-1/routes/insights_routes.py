@@ -25,6 +25,8 @@ from shared.db import (
     table_exists,
     table_row_count,
     unregister_table,
+    PREVIEW_POOL,
+    pick_best_rows,
 )
 from appending.service import run_append_execute, run_append_mapping, run_append_plan
 from data_loading.service import (
@@ -115,7 +117,7 @@ def _build_merge_result_from_table(conn, table_name: str = "final_merged") -> di
     from shared.db.stats_ops import column_stats as compute_column_stats
     rows_count = int(table_row_count(conn, table_name) or 0)
     columns_list = read_table_columns(conn, table_name)
-    preview = read_table(conn, table_name, 50)
+    preview = pick_best_rows(read_table(conn, table_name, PREVIEW_POOL), 50)
     col_stats = compute_column_stats(conn, table_name)
 
     merge_history = get_meta(conn, "merge_history") or []

@@ -30,6 +30,8 @@ from shared.db import (
     table_exists,
     table_row_count,
     quote_id,
+    PREVIEW_POOL,
+    pick_best_rows,
 )
 
 from merging.guided_merge_service import (
@@ -103,8 +105,8 @@ def common_columns():
             "source_group_id": source_group_id,
         }
         if include_preview:
-            base_rows = read_table(conn, base_sql, 50)
-            source_rows = read_table(conn, source_sql, 50)
+            base_rows = pick_best_rows(read_table(conn, base_sql, PREVIEW_POOL), 50)
+            source_rows = pick_best_rows(read_table(conn, source_sql, PREVIEW_POOL), 50)
             result["base_preview"] = {"columns": base_cols, "rows": base_rows, "total_rows": table_row_count(conn, base_sql)}
             result["source_preview"] = {"columns": source_cols, "rows": source_rows, "total_rows": table_row_count(conn, source_sql)}
         return jsonify(result)
@@ -660,7 +662,7 @@ def table_preview():
             return jsonify({"error": f"Table not found for group {group_id}"}), 404
 
         columns = read_table_columns(conn, sql_name)
-        rows = read_table(conn, sql_name, limit)
+        rows = pick_best_rows(read_table(conn, sql_name, PREVIEW_POOL), limit)
         total = table_row_count(conn, sql_name)
 
         return jsonify({
@@ -692,7 +694,7 @@ def group_preview_route():
             if not sql_name or not table_exists(conn, sql_name):
                 continue
             columns = read_table_columns(conn, sql_name)
-            rows = read_table(conn, sql_name, 50)
+            rows = pick_best_rows(read_table(conn, sql_name, PREVIEW_POOL), 50)
             total = table_row_count(conn, sql_name)
             result[gid] = {"columns": columns, "rows": rows, "total_rows": total}
         return jsonify(result)

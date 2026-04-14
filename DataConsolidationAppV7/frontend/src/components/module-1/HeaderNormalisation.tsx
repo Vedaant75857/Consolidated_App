@@ -100,7 +100,7 @@ function NormTable({
   const stdFieldNameSet = useMemo(() => new Set(stdFieldNames), [stdFieldNames]);
 
   return (
-    <div className="border border-neutral-300 dark:border-neutral-700 rounded-lg overflow-hidden">
+    <div className="border border-neutral-300 dark:border-neutral-700 rounded-lg overflow-auto">
       <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
         <table className="min-w-full border-collapse text-[11px] font-mono">
           {/* Row 1: Action dropdowns */}

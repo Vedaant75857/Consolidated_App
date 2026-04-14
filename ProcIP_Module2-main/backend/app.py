@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 
 from db import (
     get_session_db,
+    get_session_lock,
     delete_session_db,
     safe_table_name,
     register_table,
@@ -35,7 +36,7 @@ from db import (
     get_meta,
     DB_DIR,
 )
-from db.bridge import sqlite_to_df, df_to_sqlite
+from db.bridge import sqlite_to_df, df_to_sqlite, PREVIEW_POOL, pick_best_df_rows
 
 
 def _nan_to_none(obj):
@@ -381,31 +382,42 @@ def upload_file():
     filename = file.filename.lower()
     buffer = file.read()
 
-    conn = get_session_db(session_id)
-    # Clear any previous data for this session
-    for entry in all_registered_tables(conn):
-        drop_table(conn, entry["sql_name"], commit=False)
-        unregister_table(conn, entry["table_key"], commit=False)
-    drop_table(conn, "active", commit=False)
-    conn.commit()
+    with get_session_lock(session_id):
+        conn = get_session_db(session_id)
+        for entry in all_registered_tables(conn):
+            drop_table(conn, entry["sql_name"], commit=False)
+            unregister_table(conn, entry["table_key"], commit=False)
+        drop_table(conn, "active", commit=False)
+        conn.commit()
 
-    inventory = []
+        inventory = []
 
-    try:
-        if filename.endswith('.zip') or file.content_type in ['application/zip', 'application/x-zip-compressed']:
-            with zipfile.ZipFile(io.BytesIO(buffer)) as zf:
-                for entry in zf.infolist():
-                    if entry.is_dir():
-                        continue
-                    name = entry.filename
-                    lower = name.lower()
-                    try:
-                        if lower.endswith(('.xlsx', '.xlsm', '.xltx')):
-                            data = zf.read(name)
-                            excel_file = pd.ExcelFile(io.BytesIO(data), engine='calamine')
-                            for sheet in excel_file.sheet_names:
-                                key = f"{name}::{sheet}"
-                                df = pd.read_excel(excel_file, sheet_name=sheet, header=None)
+        try:
+            if filename.endswith('.zip') or file.content_type in ['application/zip', 'application/x-zip-compressed']:
+                with zipfile.ZipFile(io.BytesIO(buffer)) as zf:
+                    for entry in zf.infolist():
+                        if entry.is_dir():
+                            continue
+                        name = entry.filename
+                        lower = name.lower()
+                        try:
+                            if lower.endswith(('.xlsx', '.xlsm', '.xltx')):
+                                data = zf.read(name)
+                                excel_file = pd.ExcelFile(io.BytesIO(data), engine='calamine')
+                                for sheet in excel_file.sheet_names:
+                                    key = f"{name}::{sheet}"
+                                    df = pd.read_excel(excel_file, sheet_name=sheet, header=None)
+                                    if not df.empty:
+                                        raw_sql = safe_table_name("raw", key)
+                                        data_sql = safe_table_name("data", key)
+                                        df_to_sqlite(conn, raw_sql, df, commit=False)
+                                        df_to_sqlite(conn, data_sql, df, commit=False)
+                                        register_table(conn, key, data_sql, commit=False)
+                                        inventory.append({"table_key": key, "rows": len(df), "cols": len(df.columns)})
+                            elif lower.endswith('.csv'):
+                                data = zf.read(name)
+                                key = f"{name}::"
+                                df = pd.read_csv(io.BytesIO(data), header=None)
                                 if not df.empty:
                                     raw_sql = safe_table_name("raw", key)
                                     data_sql = safe_table_name("data", key)
@@ -413,10 +425,15 @@ def upload_file():
                                     df_to_sqlite(conn, data_sql, df, commit=False)
                                     register_table(conn, key, data_sql, commit=False)
                                     inventory.append({"table_key": key, "rows": len(df), "cols": len(df.columns)})
-                        elif lower.endswith('.csv'):
-                            data = zf.read(name)
-                            key = f"{name}::"
-                            df = pd.read_csv(io.BytesIO(data), header=None)
+                        except Exception as e:
+                            logger.error("Failed parsing %s: %s", name, e, exc_info=True)
+            else:
+                try:
+                    if filename.endswith(('.xlsx', '.xlsm', '.xltx')):
+                        excel_file = pd.ExcelFile(io.BytesIO(buffer), engine='calamine')
+                        for sheet in excel_file.sheet_names:
+                            key = f"{file.filename}::{sheet}"
+                            df = pd.read_excel(excel_file, sheet_name=sheet, header=None)
                             if not df.empty:
                                 raw_sql = safe_table_name("raw", key)
                                 data_sql = safe_table_name("data", key)
@@ -424,15 +441,9 @@ def upload_file():
                                 df_to_sqlite(conn, data_sql, df, commit=False)
                                 register_table(conn, key, data_sql, commit=False)
                                 inventory.append({"table_key": key, "rows": len(df), "cols": len(df.columns)})
-                    except Exception as e:
-                        logger.error("Failed parsing %s: %s", name, e, exc_info=True)
-        else:
-            try:
-                if filename.endswith(('.xlsx', '.xlsm', '.xltx')):
-                    excel_file = pd.ExcelFile(io.BytesIO(buffer), engine='calamine')
-                    for sheet in excel_file.sheet_names:
-                        key = f"{file.filename}::{sheet}"
-                        df = pd.read_excel(excel_file, sheet_name=sheet, header=None)
+                    elif filename.endswith('.csv'):
+                        key = f"{file.filename}::"
+                        df = pd.read_csv(io.BytesIO(buffer), header=None)
                         if not df.empty:
                             raw_sql = safe_table_name("raw", key)
                             data_sql = safe_table_name("data", key)
@@ -440,31 +451,21 @@ def upload_file():
                             df_to_sqlite(conn, data_sql, df, commit=False)
                             register_table(conn, key, data_sql, commit=False)
                             inventory.append({"table_key": key, "rows": len(df), "cols": len(df.columns)})
-                elif filename.endswith('.csv'):
-                    key = f"{file.filename}::"
-                    df = pd.read_csv(io.BytesIO(buffer), header=None)
-                    if not df.empty:
-                        raw_sql = safe_table_name("raw", key)
-                        data_sql = safe_table_name("data", key)
-                        df_to_sqlite(conn, raw_sql, df, commit=False)
-                        df_to_sqlite(conn, data_sql, df, commit=False)
-                        register_table(conn, key, data_sql, commit=False)
-                        inventory.append({"table_key": key, "rows": len(df), "cols": len(df.columns)})
-            except Exception as e:
-                logger.error("Failed parsing directly uploaded file %s: %s", file.filename, e, exc_info=True)
+                except Exception as e:
+                    logger.error("Failed parsing directly uploaded file %s: %s", file.filename, e, exc_info=True)
 
-        conn.commit()
+            conn.commit()
 
-        if not inventory:
-            return jsonify({"error": "No valid raw data tables found. Ensure files have valid columns and rows."}), 400
+            if not inventory:
+                return jsonify({"error": "No valid raw data tables found. Ensure files have valid columns and rows."}), 400
 
-        return jsonify({
-            "message": "Files extracted successfully",
-            "inventory": inventory
-        })
-    except Exception as e:
-        logger.error("Failed to ingest package: %s", e, exc_info=True)
-        return jsonify({"error": f"Failed to ingest package: {str(e)}"}), 500
+            return jsonify({
+                "message": "Files extracted successfully",
+                "inventory": inventory
+            })
+        except Exception as e:
+            logger.error("Failed to ingest package: %s", e, exc_info=True)
+            return jsonify({"error": f"Failed to ingest package: {str(e)}"}), 500
 
 
 # ── Preview routes ─────────────────────────────────────────────────────────────
@@ -479,16 +480,18 @@ def get_raw_preview():
     data = request.get_json(silent=True) or {}
     table_key = data.get('tableKey') or request.args.get('tableKey')
 
-    conn = get_session_db(session_id)
-    raw_sql = safe_table_name("raw", table_key)
+    with get_session_lock(session_id):
+        conn = get_session_db(session_id)
+        raw_sql = safe_table_name("raw", table_key)
 
-    if not table_exists(conn, raw_sql):
-        return jsonify({"error": "Table not found"}), 404
+        if not table_exists(conn, raw_sql):
+            return jsonify({"error": "Table not found"}), 404
 
-    df = sqlite_to_df(conn, raw_sql, limit=50)
-    if df is None:
-        return jsonify({"error": "Table not found"}), 404
+        df = sqlite_to_df(conn, raw_sql, limit=PREVIEW_POOL)
+        if df is None:
+            return jsonify({"error": "Table not found"}), 404
 
+    df = pick_best_df_rows(df, 50)
     preview_df = df.fillna("").astype(str).replace(_PREVIEW_CLEAN_VALUES, "")
     raw_list = preview_df.values.tolist()
     return jsonify({"rawPreview": raw_list})
@@ -502,16 +505,19 @@ def get_preview():
         return jsonify({"error": str(e)}), 400
 
     table_key = request.args.get('tableKey')
-    conn = get_session_db(session_id)
-    data_sql = lookup_sql_name(conn, table_key)
 
-    if not data_sql or not table_exists(conn, data_sql):
-        return jsonify({"error": "Table not found"}), 404
+    with get_session_lock(session_id):
+        conn = get_session_db(session_id)
+        data_sql = lookup_sql_name(conn, table_key)
 
-    df = sqlite_to_df(conn, data_sql, limit=50)
-    if df is None:
-        return jsonify({"error": "Table not found"}), 404
+        if not data_sql or not table_exists(conn, data_sql):
+            return jsonify({"error": "Table not found"}), 404
 
+        df = sqlite_to_df(conn, data_sql, limit=PREVIEW_POOL)
+        if df is None:
+            return jsonify({"error": "Table not found"}), 404
+
+    df = pick_best_df_rows(df, 50)
     preview_df = df.fillna("").astype(str).replace(_PREVIEW_CLEAN_VALUES, "")
     return jsonify({
         "columns": [str(c) for c in df.columns],
@@ -526,12 +532,15 @@ def get_current_preview():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    conn = get_session_db(session_id)
-    if not table_exists(conn, "active"):
-        return jsonify({"error": "No active dataset loaded"}), 400
+    with get_session_lock(session_id):
+        conn = get_session_db(session_id)
+        if not table_exists(conn, "active"):
+            return jsonify({"error": "No active dataset loaded"}), 400
 
-    df = sqlite_to_df(conn, "active", limit=50)
-    columns = read_table_columns(conn, "active")
+        df = sqlite_to_df(conn, "active", limit=PREVIEW_POOL)
+        columns = read_table_columns(conn, "active")
+
+    df = pick_best_df_rows(df, 50)
     preview_df = df.fillna("").astype(str).replace(_PREVIEW_CLEAN_VALUES, "")
     return jsonify({
         "columns": columns,
@@ -546,10 +555,12 @@ def suggest_columns():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    conn = get_session_db(session_id)
-    df = sqlite_to_df(conn, "active")
-    if df is None:
-        return jsonify({"error": "No active dataset loaded"}), 400
+    with get_session_lock(session_id):
+        conn = get_session_db(session_id)
+        df = sqlite_to_df(conn, "active")
+        if df is None:
+            return jsonify({"error": "No active dataset loaded"}), 400
+
     try:
         result = _suggest_columns(df, sample_size=100)
         return jsonify(result)
@@ -566,13 +577,15 @@ def current_inventory():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    conn = get_session_db(session_id)
-    entries = all_registered_tables(conn)
-    inventory = []
-    for entry in entries:
-        rows = table_row_count(conn, entry["sql_name"])
-        cols_list = read_table_columns(conn, entry["sql_name"])
-        inventory.append({"table_key": entry["table_key"], "rows": rows, "cols": len(cols_list)})
+    with get_session_lock(session_id):
+        conn = get_session_db(session_id)
+        entries = all_registered_tables(conn)
+        inventory = []
+        for entry in entries:
+            rows = table_row_count(conn, entry["sql_name"])
+            cols_list = read_table_columns(conn, entry["sql_name"])
+            inventory.append({"table_key": entry["table_key"], "rows": rows, "cols": len(cols_list)})
+
     return jsonify({"inventory": inventory})
 
 
@@ -590,49 +603,49 @@ def set_header_row():
     row_index = data.get('rowIndex')
     custom_names = data.get('customNames', {})
 
-    conn = get_session_db(session_id)
-    raw_sql = safe_table_name("raw", table_key)
+    with get_session_lock(session_id):
+        conn = get_session_db(session_id)
+        raw_sql = safe_table_name("raw", table_key)
 
-    raw_df = sqlite_to_df(conn, raw_sql)
-    if raw_df is None:
-        return jsonify({"error": "Table not found"}), 404
+        raw_df = sqlite_to_df(conn, raw_sql)
+        if raw_df is None:
+            return jsonify({"error": "Table not found"}), 404
 
-    if row_index is None or not (0 <= row_index < len(raw_df)):
-        return jsonify({"error": "Invalid row index"}), 400
+        if row_index is None or not (0 <= row_index < len(raw_df)):
+            return jsonify({"error": "Invalid row index"}), 400
 
-    new_headers = raw_df.iloc[row_index].fillna("").astype(str).tolist()
-    for col_idx_str, custom_name in custom_names.items():
-        try:
-            col_idx = int(col_idx_str)
-            if 0 <= col_idx < len(new_headers) and custom_name.strip():
-                new_headers[col_idx] = custom_name.strip()
-        except (ValueError, IndexError):
-            pass
+        new_headers = raw_df.iloc[row_index].fillna("").astype(str).tolist()
+        for col_idx_str, custom_name in custom_names.items():
+            try:
+                col_idx = int(col_idx_str)
+                if 0 <= col_idx < len(new_headers) and custom_name.strip():
+                    new_headers[col_idx] = custom_name.strip()
+            except (ValueError, IndexError):
+                pass
 
-    # Deduplicate and fill blanks
-    final_headers = []
-    seen = set()
-    for i, h in enumerate(new_headers):
-        h = h.strip()
-        if not h:
-            h = f"Unnamed_{i}"
-        original = h
-        counter = 1
-        while h in seen:
-            h = f"{original}_{counter}"
-            counter += 1
-        seen.add(h)
-        final_headers.append(h)
+        final_headers = []
+        seen = set()
+        for i, h in enumerate(new_headers):
+            h = h.strip()
+            if not h:
+                h = f"Unnamed_{i}"
+            original = h
+            counter = 1
+            while h in seen:
+                h = f"{original}_{counter}"
+                counter += 1
+            seen.add(h)
+            final_headers.append(h)
 
-    processed = raw_df.iloc[row_index + 1:].copy().reset_index(drop=True)
-    processed.columns = final_headers
+        processed = raw_df.iloc[row_index + 1:].copy().reset_index(drop=True)
+        processed.columns = final_headers
 
-    data_sql = lookup_sql_name(conn, table_key)
-    if not data_sql:
-        data_sql = safe_table_name("data", table_key)
-        register_table(conn, table_key, data_sql, commit=False)
+        data_sql = lookup_sql_name(conn, table_key)
+        if not data_sql:
+            data_sql = safe_table_name("data", table_key)
+            register_table(conn, table_key, data_sql, commit=False)
 
-    df_to_sqlite(conn, data_sql, processed)
+        df_to_sqlite(conn, data_sql, processed)
 
     return jsonify({"message": "Header row updated successfully", "rows": len(processed), "columns": final_headers})
 
@@ -648,15 +661,16 @@ def delete_rows():
     table_key = data.get('tableKey')
     row_ids = data.get('rowIds', [])
 
-    conn = get_session_db(session_id)
-    data_sql = lookup_sql_name(conn, table_key)
-    if not data_sql or not table_exists(conn, data_sql):
-        return jsonify({"error": "Table not found"}), 404
+    with get_session_lock(session_id):
+        conn = get_session_db(session_id)
+        data_sql = lookup_sql_name(conn, table_key)
+        if not data_sql or not table_exists(conn, data_sql):
+            return jsonify({"error": "Table not found"}), 404
 
-    df = sqlite_to_df(conn, data_sql)
-    indices_to_drop = [int(i) for i in row_ids if int(i) in df.index]
-    df = df.drop(indices_to_drop).reset_index(drop=True)
-    df_to_sqlite(conn, data_sql, df)
+        df = sqlite_to_df(conn, data_sql)
+        indices_to_drop = [int(i) for i in row_ids if int(i) in df.index]
+        df = df.drop(indices_to_drop).reset_index(drop=True)
+        df_to_sqlite(conn, data_sql, df)
 
     return jsonify({"message": f"Deleted {len(row_ids)} rows successfully", "rows": len(df)})
 
@@ -669,15 +683,17 @@ def delete_table():
         return jsonify({"error": str(e)}), 400
 
     table_key = request.json.get('tableKey')
-    conn = get_session_db(session_id)
 
-    data_sql = lookup_sql_name(conn, table_key)
-    if data_sql:
-        drop_table(conn, data_sql, commit=False)
-    raw_sql = safe_table_name("raw", table_key)
-    drop_table(conn, raw_sql, commit=False)
-    unregister_table(conn, table_key, commit=False)
-    conn.commit()
+    with get_session_lock(session_id):
+        conn = get_session_db(session_id)
+
+        data_sql = lookup_sql_name(conn, table_key)
+        if data_sql:
+            drop_table(conn, data_sql, commit=False)
+        raw_sql = safe_table_name("raw", table_key)
+        drop_table(conn, raw_sql, commit=False)
+        unregister_table(conn, table_key, commit=False)
+        conn.commit()
 
     return jsonify({"message": "Table deleted"})
 
@@ -690,21 +706,23 @@ def select_table():
         return jsonify({"error": str(e)}), 400
 
     table_key = request.json.get('tableKey')
-    conn = get_session_db(session_id)
-    data_sql = lookup_sql_name(conn, table_key)
 
-    if not data_sql or not table_exists(conn, data_sql):
-        return jsonify({"error": "Table not found"}), 404
+    with get_session_lock(session_id):
+        conn = get_session_db(session_id)
+        data_sql = lookup_sql_name(conn, table_key)
 
-    df = sqlite_to_df(conn, data_sql)
-    df_to_sqlite(conn, "active", df)
-    set_meta(conn, "active_table_key", table_key)
-    fname = table_key.split('::')[0]
-    set_meta(conn, "filename", fname)
+        if not data_sql or not table_exists(conn, data_sql):
+            return jsonify({"error": "Table not found"}), 404
 
-    _trigger_xlsx_cache(conn, session_id)
+        df = sqlite_to_df(conn, data_sql)
+        df_to_sqlite(conn, "active", df)
+        set_meta(conn, "active_table_key", table_key)
+        fname = table_key.split('::')[0]
+        set_meta(conn, "filename", fname)
 
-    preview_df = df.head(10).fillna("").astype(str)
+        _trigger_xlsx_cache(conn, session_id)
+
+    preview_df = pick_best_df_rows(df, 10).fillna("").astype(str)
     return jsonify({
         "columns": [str(c) for c in df.columns],
         "rows": len(df),
@@ -721,26 +739,26 @@ def reset_normalization():
         return jsonify({"error": str(e)}), 400
 
     try:
-        conn = get_session_db(session_id)
-        body = request.get_json(silent=True) or {}
-        table_key = body.get('tableKey') or get_meta(conn, "active_table_key")
+        with get_session_lock(session_id):
+            conn = get_session_db(session_id)
+            body = request.get_json(silent=True) or {}
+            table_key = body.get('tableKey') or get_meta(conn, "active_table_key")
 
-        if table_key:
-            data_sql = lookup_sql_name(conn, table_key)
-            if data_sql and table_exists(conn, data_sql):
-                df = sqlite_to_df(conn, data_sql)
+            if table_key:
+                data_sql = lookup_sql_name(conn, table_key)
+                if data_sql and table_exists(conn, data_sql):
+                    df = sqlite_to_df(conn, data_sql)
+                    df_to_sqlite(conn, "active", df)
+                    _trigger_xlsx_cache(conn, session_id)
+                    return jsonify({"ok": True, "rows": len(df) if df is not None else 0})
+
+            entries = all_registered_tables(conn)
+            if entries:
+                first_sql = entries[0]["sql_name"]
+                df = sqlite_to_df(conn, first_sql)
                 df_to_sqlite(conn, "active", df)
                 _trigger_xlsx_cache(conn, session_id)
                 return jsonify({"ok": True, "rows": len(df) if df is not None else 0})
-
-        # Fallback: use first registered table
-        entries = all_registered_tables(conn)
-        if entries:
-            first_sql = entries[0]["sql_name"]
-            df = sqlite_to_df(conn, first_sql)
-            df_to_sqlite(conn, "active", df)
-            _trigger_xlsx_cache(conn, session_id)
-            return jsonify({"ok": True, "rows": len(df) if df is not None else 0})
 
         return jsonify({"ok": True, "rows": 0})
     except Exception as e:
@@ -773,10 +791,11 @@ def assess_supplier_country_api():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    conn = get_session_db(session_id)
-    df = sqlite_to_df(conn, "active")
-    if df is None:
-        return jsonify({"error": "No file loaded"}), 400
+    with get_session_lock(session_id):
+        conn = get_session_db(session_id)
+        df = sqlite_to_df(conn, "active")
+        if df is None:
+            return jsonify({"error": "No file loaded"}), 400
 
     data = request.json
     kwargs = data.get('kwargs', {})
@@ -798,10 +817,11 @@ def assess_region_api():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    conn = get_session_db(session_id)
-    df = sqlite_to_df(conn, "active")
-    if df is None:
-        return jsonify({"error": "No file loaded"}), 400
+    with get_session_lock(session_id):
+        conn = get_session_db(session_id)
+        df = sqlite_to_df(conn, "active")
+        if df is None:
+            return jsonify({"error": "No file loaded"}), 400
 
     data = request.json
     kwargs = data.get('kwargs', {})
@@ -823,10 +843,11 @@ def assess_currency_conversion_api():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    conn = get_session_db(session_id)
-    df = sqlite_to_df(conn, "active")
-    if df is None:
-        return jsonify({"error": "No file loaded"}), 400
+    with get_session_lock(session_id):
+        conn = get_session_db(session_id)
+        df = sqlite_to_df(conn, "active")
+        if df is None:
+            return jsonify({"error": "No file loaded"}), 400
 
     data = request.json
     kwargs = data.get('kwargs', {})
@@ -848,11 +869,6 @@ def run_normalization():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    conn = get_session_db(session_id)
-    df = sqlite_to_df(conn, "active")
-    if df is None:
-        return jsonify({"error": "No file loaded"}), 400
-
     data = request.json
     agent_id = data.get('agent_id')
 
@@ -863,28 +879,34 @@ def run_normalization():
     api_key = get_api_key()
     kwargs = data.get('kwargs', {})
 
-    try:
-        result = agent_func(df, api_key=api_key, **kwargs)
+    with get_session_lock(session_id):
+        conn = get_session_db(session_id)
+        df = sqlite_to_df(conn, "active")
+        if df is None:
+            return jsonify({"error": "No file loaded"}), 400
 
-        if isinstance(result, tuple) and len(result) >= 2:
-            modified_df, message = result[0], result[1]
-            df_to_sqlite(conn, "active", modified_df)
-            _trigger_xlsx_cache(conn, session_id)
-            columns = [str(c) for c in modified_df.columns]
-            response = {"message": message, "columns": columns}
-            if len(result) >= 4 and result[3] is not None:
-                if agent_id == "currency_conversion":
-                    response["conversion_metrics"] = result[3]
-                elif agent_id == "supplier_country":
-                    response["country_norm_metrics"] = result[3]
-                elif agent_id == "region":
-                    response["region_norm_metrics"] = result[3]
-            return jsonify(response)
-        else:
-            return jsonify({"error": "Unexpected return format from agent"}), 500
+        try:
+            result = agent_func(df, api_key=api_key, **kwargs)
 
-    except Exception as e:
-         return jsonify({"error": str(e)}), 500
+            if isinstance(result, tuple) and len(result) >= 2:
+                modified_df, message = result[0], result[1]
+                df_to_sqlite(conn, "active", modified_df)
+                _trigger_xlsx_cache(conn, session_id)
+                columns = [str(c) for c in modified_df.columns]
+                response = {"message": message, "columns": columns}
+                if len(result) >= 4 and result[3] is not None:
+                    if agent_id == "currency_conversion":
+                        response["conversion_metrics"] = result[3]
+                    elif agent_id == "supplier_country":
+                        response["country_norm_metrics"] = result[3]
+                    elif agent_id == "region":
+                        response["region_norm_metrics"] = result[3]
+                return jsonify(response)
+            else:
+                return jsonify({"error": "Unexpected return format from agent"}), 500
+
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
 
 
 # ── Import from DataStitcher ──────────────────────────────────────────────────
@@ -903,32 +925,31 @@ def import_from_stitcher():
     fname = file.filename or "imported.csv"
 
     import_id = str(uuid.uuid4())
-    # Use the import_id as the session ID for this import
     session_id = import_id
 
-    conn = get_session_db(session_id)
-    # Clear any prior tables in this session
-    for entry in all_registered_tables(conn):
-        drop_table(conn, entry["sql_name"], commit=False)
-        unregister_table(conn, entry["table_key"], commit=False)
-    conn.commit()
+    with get_session_lock(session_id):
+        conn = get_session_db(session_id)
+        for entry in all_registered_tables(conn):
+            drop_table(conn, entry["sql_name"], commit=False)
+            unregister_table(conn, entry["table_key"], commit=False)
+        conn.commit()
 
-    try:
-        key = f"{fname}::"
-        df = pd.read_csv(io.BytesIO(buffer))
-        if df.empty:
-            return jsonify({"error": "Imported file contains no data"}), 400
+        try:
+            key = f"{fname}::"
+            df = pd.read_csv(io.BytesIO(buffer))
+            if df.empty:
+                return jsonify({"error": "Imported file contains no data"}), 400
 
-        data_sql = safe_table_name("data", key)
-        df_to_sqlite(conn, data_sql, df)
-        register_table(conn, key, data_sql)
-        set_meta(conn, "import_id", import_id)
+            data_sql = safe_table_name("data", key)
+            df_to_sqlite(conn, data_sql, df)
+            register_table(conn, key, data_sql)
+            set_meta(conn, "import_id", import_id)
 
-        inventory = [{"table_key": key, "rows": len(df), "cols": len(df.columns)}]
-        return jsonify({"inventory": inventory, "imported": True, "sessionId": import_id})
-    except Exception as e:
-        logger.error("Failed to import data: %s", e, exc_info=True)
-        return jsonify({"error": f"Failed to import data: {str(e)}"}), 500
+            inventory = [{"table_key": key, "rows": len(df), "cols": len(df.columns)}]
+            return jsonify({"inventory": inventory, "imported": True, "sessionId": import_id})
+        except Exception as e:
+            logger.error("Failed to import data: %s", e, exc_info=True)
+            return jsonify({"error": f"Failed to import data: {str(e)}"}), 500
 
 
 # ── Download / Transfer ────────────────────────────────────────────────────────
@@ -941,15 +962,16 @@ def transfer_to_analyzer():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    conn = get_session_db(session_id)
-    df = sqlite_to_df(conn, "active")
-    if df is None:
-        return jsonify({"ok": False, "error": "No active dataset to transfer"}), 400
+    with get_session_lock(session_id):
+        conn = get_session_db(session_id)
+        df = sqlite_to_df(conn, "active")
+        if df is None:
+            return jsonify({"ok": False, "error": "No active dataset to transfer"}), 400
+        filename = get_meta(conn, "filename") or "normalized_data"
 
     try:
         csv_str = df.to_csv(index=False, na_rep="")
         csv_bytes = csv_str.encode("utf-8")
-        filename = get_meta(conn, "filename") or "normalized_data"
         fname = (filename.rsplit('.', 1)[0] + "_normalized.csv") if filename else "normalized_data.csv"
 
         resp = _requests.post(
@@ -978,14 +1000,15 @@ def download():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    conn = get_session_db(session_id)
-    if not table_exists(conn, "active"):
-        return jsonify({"error": "No file loaded"}), 400
+    with get_session_lock(session_id):
+        conn = get_session_db(session_id)
+        if not table_exists(conn, "active"):
+            return jsonify({"error": "No file loaded"}), 400
 
-    filename = get_meta(conn, "filename") or "normalized_data"
-    base = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        filename = get_meta(conn, "filename") or "normalized_data"
+        base = filename.rsplit('.', 1)[0] if '.' in filename else filename
 
-    buf = _get_xlsx_bytes(conn, session_id)
+        buf = _get_xlsx_bytes(conn, session_id)
 
     return send_file(
         buf,

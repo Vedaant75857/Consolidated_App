@@ -38,7 +38,7 @@ The DataStitcher helps users combine multiple data files into one clean, merged 
 | 9 | Select rows | Use checkboxes in the preview table to select individual rows. |
 | 10 | Delete selected rows | Click "Delete Selected Rows" to remove the checked rows (asks for confirmation first). |
 | 11 | Clear row selection | Click "Clear" to uncheck all selected rows. |
-| 12 | Data preview grid | Scroll through a preview of the table's data (shows the first 50 rows). Previews load on-demand when you expand a table, so the upload step finishes faster. For tables with many columns (30+), columns are virtualized so the browser stays responsive. |
+| 12 | Data preview grid | Scroll through a preview of up to 50 rows of the table's data — the app picks the rows with the most filled-in columns so you see the most useful data, not just the first rows. Previews load on-demand when you expand a table, so the upload step finishes faster. For tables with many columns (30+), columns are virtualized so the browser stays responsive. |
 | 13 | Single table flow | If only one table was uploaded, a "Single Table Flow" option appears that skips the Append Strategy and Merge steps. |
 | 14 | Proceed to Append | Click "Proceed to Append Strategy" to move to the next step. |
 
@@ -160,7 +160,7 @@ The DataStitcher helps users combine multiple data files into one clean, merged 
 | 11 | Merge summary | After merging, see a summary with row/column counts and version label. |
 | 12 | Merge details | See which keys were used, how many columns were pulled, and validation results. |
 | 13 | Column quality table | Scroll a table showing fill rate bars, null counts, and distinct-value counts for each column in the merged result. |
-| 14 | Merged data preview | Preview the first 50 rows of the merged table. |
+| 14 | Merged data preview | Preview up to 50 rows of the merged table — the app picks the rows with the most filled-in columns so you see the most useful data. |
 | 15 | Redo merge | Click "Redo Merge" to go back and try different settings. |
 | 16 | Merge another pair | Click "Perform Another Merge" to join a different pair of tables. |
 | 17 | Go to data quality | Click "Run Data Quality Assessment" to move on to the quality step. |
@@ -249,7 +249,7 @@ The Normalizer takes a single data table (uploaded directly or received from the
 | 7 | Confirm/cancel header | Click "Confirm" to apply or "Cancel" to discard. |
 | 8 | Delete table | Click trash, then confirm, to remove a table from the session. |
 | 9 | Select and delete rows | Use checkboxes to select rows, then click "Delete Selected Rows" (with confirmation). Click "Clear" to uncheck all. |
-| 10 | Data preview grid | Scroll through a preview of the data (up to 50 rows). For tables with many columns (30+), columns are virtualized so the browser stays responsive. |
+| 10 | Data preview grid | Scroll through a preview of up to 50 rows of the data — the app picks the rows with the most filled-in columns so you see the most useful data. For tables with many columns (30+), columns are virtualized so the browser stays responsive. |
 | 11 | Proceed with table | Click "Proceed with this Table" to lock in one table and advance to Normalization. |
 
 ### Normalization — Supplier Names
@@ -406,7 +406,7 @@ The Spend Summarizer takes a procurement dataset and produces charts, quality as
 | 8 | Confirm/cancel header | Apply the new header or cancel without changes. |
 | 9 | Delete table | Click trash then confirm to remove a table. |
 | 10 | Select and delete rows | Use checkboxes, then "Delete Selected Rows" (with confirmation). "Clear" unchecks all. |
-| 11 | Data preview grid | Scroll through up to 50 rows of preview data. Previews load on-demand when you expand a table, so the upload step finishes faster. For tables with many columns (30+), columns are virtualized so the browser stays responsive. |
+| 11 | Data preview grid | Scroll through up to 50 rows of preview data — the app picks the rows with the most filled-in columns so you see the most useful data. Previews load on-demand when you expand a table, so the upload step finishes faster. For tables with many columns (30+), columns are virtualized so the browser stays responsive. |
 | 12 | Proceed to Map Columns | Click "Proceed to Map Columns" to continue. |
 
 ### Map Columns

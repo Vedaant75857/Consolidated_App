@@ -162,6 +162,42 @@ def table_row_count(conn: sqlite3.Connection, table_name: str) -> int:
     return row["cnt"] if row else 0
 
 
+PREVIEW_POOL = 1000
+
+
+def pick_best_rows(rows: list[dict], limit: int) -> list[dict]:
+    """Return up to *limit* rows ranked by number of populated columns.
+
+    Selects the rows that have the most non-null, non-empty values so that
+    data previews show the most informative rows instead of whatever
+    happened to be first in insertion order.
+    """
+    if len(rows) <= limit:
+        return rows
+
+    def _score(row: dict) -> int:
+        return sum(
+            1 for v in row.values()
+            if v is not None and str(v).strip() != ""
+        )
+
+    return sorted(rows, key=_score, reverse=True)[:limit]
+
+
+def pick_best_raw_rows(rows: list[list], limit: int) -> list[list]:
+    """Same as pick_best_rows but for list-of-lists (raw preview) format."""
+    if len(rows) <= limit:
+        return rows
+
+    def _score(row: list) -> int:
+        return sum(
+            1 for v in row
+            if v is not None and str(v).strip() != ""
+        )
+
+    return sorted(rows, key=_score, reverse=True)[:limit]
+
+
 def iterate_table(conn: sqlite3.Connection, table_name: str) -> Iterator[dict]:
     """Iterate rows without loading them all into memory."""
     cursor = conn.execute(f"SELECT * FROM {quote_id(table_name)}")

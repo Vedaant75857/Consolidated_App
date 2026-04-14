@@ -40,6 +40,8 @@ A complete list of every Python function in the app, organised by module and ste
 | `get_preview` | `routes/data_loading_routes.py` | Returns the first 50 rows of a single table as a preview. Called on-demand when the user expands a table card. |
 | `get_raw_preview` | `routes/data_loading_routes.py` | Sends back the raw grid of a table (before any header is chosen) so the user can pick the right header row. |
 | `get_raw_array_from_table` | `data_loading/file_loader.py` | Reads a chunk of raw rows from the database for the preview screen. |
+| `pick_best_rows` | `shared/db/table_ops.py` | Takes a list of row dicts and returns the ones with the most filled-in columns, so previews show the most informative data instead of sparse rows. |
+| `pick_best_raw_rows` | `shared/db/table_ops.py` | Same as pick_best_rows but works on raw list-of-lists data (used for the raw grid preview before headers are chosen). |
 
 ### Append Strategy
 
@@ -349,6 +351,8 @@ A complete list of every Python function in the app, organised by module and ste
 | `delete_table` | `app.py` | Removes a table from the session entirely. |
 | `select_table` | `app.py` | Locks in one table as the active working table and prepares it for normalization. |
 | `current_inventory` | `app.py` | Returns the list of all tables in the session with their row and column counts. |
+| `pick_best_rows` | `db/bridge.py` | Takes a list of row dicts and returns the ones with the most filled-in columns, so previews show the most informative data. |
+| `pick_best_df_rows` | `db/bridge.py` | Takes a DataFrame and returns the rows with the most filled-in columns, so previews show the most informative data. |
 
 ### Normalization — Supplier Names
 
@@ -443,8 +447,9 @@ A complete list of every Python function in the app, organised by module and ste
 | `reset_state` | `app.py` | Deletes the entire session database for a completely fresh start. |
 | `download` | `app.py` | Sends the normalised dataset to the browser as an Excel download. |
 | `get_session_db` | `db/session_db.py` | Opens (or retrieves from cache) the SQLite database connection for a session. |
+| `get_session_lock` | `db/session_db.py` | Returns a per-session lock that route handlers grab before touching the database, so two requests for the same session don't collide. |
 | `close_session_db` | `db/session_db.py` | Closes the database connection for a session and removes it from cache. |
-| `delete_session_db` | `db/session_db.py` | Deletes the session's database file from disk entirely. |
+| `delete_session_db` | `db/session_db.py` | Deletes the session's database file and its lock from memory. |
 | `safe_table_name` | `db/session_db.py` | Creates a safe database table name from user-provided text. |
 | `register_table` | `db/session_db.py` | Records that a logical table name maps to a specific database table. |
 | `unregister_table` | `db/session_db.py` | Removes the mapping for a logical table name. |
@@ -518,6 +523,8 @@ A complete list of every Python function in the app, organised by module and ste
 | `delete_rows_from_table` | `services/upload/file_loader.py` | Deletes rows from a table by their row IDs and returns how many were removed. |
 | `collect_column_info` | `services/upload/file_loader.py` | Gathers column metadata (names, types, sample values) across all tables for the mapping step. |
 | `build_inventory` | `services/upload/file_loader.py` | Returns the list of all tables with their keys, row counts, and sheet names. |
+| `pick_best_rows` | `services/upload/file_loader.py` | Takes a list of row dicts and returns the ones with the most filled-in columns, so previews show the most informative data. |
+| `pick_best_raw_rows` | `services/upload/file_loader.py` | Same as pick_best_rows but works on raw list-of-lists data (used for the raw grid preview). |
 
 ### Map Columns
 

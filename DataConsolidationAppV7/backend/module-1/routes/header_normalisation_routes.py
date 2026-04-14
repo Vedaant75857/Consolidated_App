@@ -9,7 +9,7 @@ import sys
 
 from flask import Blueprint, jsonify, request, send_file
 
-from shared.db import get_session_db, lookup_sql_name, read_table, read_table_columns, table_exists, table_row_count
+from shared.db import get_session_db, lookup_sql_name, read_table, read_table_columns, table_exists, table_row_count, PREVIEW_POOL, pick_best_rows
 from routes.insights_routes import execute_operation_kernel, _session_lock
 
 
@@ -121,7 +121,7 @@ def header_norm_group_preview():
                     previews.append({"group_id": gid, "columns": [], "rows": [], "total_rows": 0})
                     continue
                 cols = read_table_columns(conn, sql)
-                rows = read_table(conn, sql, limit)
+                rows = pick_best_rows(read_table(conn, sql, PREVIEW_POOL), limit)
                 previews.append({"group_id": gid, "columns": cols, "rows": rows, "total_rows": table_row_count(conn, sql)})
         return jsonify({"previews": previews})
     except Exception as exc:
@@ -153,7 +153,7 @@ def header_norm_download_excel():
                 return jsonify({"error": f"Table not found for group: {group_id}"}), 404
 
             cols = read_table_columns(conn, sql)
-            rows = read_table(conn, sql, 50)
+            rows = pick_best_rows(read_table(conn, sql, PREVIEW_POOL), 50)
 
         decisions_map = {str(d.get("source_col", "")): d for d in decisions}
 

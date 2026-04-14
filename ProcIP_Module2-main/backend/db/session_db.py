@@ -31,7 +31,24 @@ _db_cache: "OrderedDict[str, sqlite3.Connection]" = OrderedDict()
 _db_lock = threading.Lock()
 _MAX_CACHE = max(1, int(os.getenv("SESSION_DB_MAX_CACHE", "50")))
 
+_session_locks: dict[str, threading.RLock] = {}
+
 _SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def get_session_lock(session_id: str) -> threading.RLock:
+    """Return a per-session reentrant lock, creating one if needed.
+
+    All route handlers should acquire this lock before using the session's
+    SQLite connection so that concurrent requests for the same session are
+    serialised and cannot cause "database table is locked" errors.
+    """
+    with _db_lock:
+        lock = _session_locks.get(session_id)
+        if lock is None:
+            lock = threading.RLock()
+            _session_locks[session_id] = lock
+        return lock
 
 
 def get_session_db(session_id: str) -> sqlite3.Connection:
@@ -94,6 +111,8 @@ def close_session_db(session_id: str) -> None:
 def delete_session_db(session_id: str) -> None:
     """Close the connection and delete all SQLite files for a session."""
     close_session_db(session_id)
+    with _db_lock:
+        _session_locks.pop(session_id, None)
     db_path = os.path.join(_DB_DIR, f"{session_id}.sqlite")
     for suffix in ("", "-wal", "-shm"):
         try:
@@ -171,6 +190,7 @@ def cleanup_all_sessions() -> int:
             except Exception:
                 pass
         _db_cache.clear()
+        _session_locks.clear()
 
     try:
         for f in os.listdir(_DB_DIR):

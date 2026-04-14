@@ -13,6 +13,36 @@ import pandas as pd
 from .table_ops import quote_id, table_exists, store_table_streaming, drop_table
 
 
+PREVIEW_POOL = 1000
+
+
+def pick_best_rows(rows: list[dict], limit: int) -> list[dict]:
+    """Return up to *limit* rows ranked by number of populated columns."""
+    if len(rows) <= limit:
+        return rows
+
+    def _score(row: dict) -> int:
+        return sum(
+            1 for v in row.values()
+            if v is not None and str(v).strip() != ""
+        )
+
+    return sorted(rows, key=_score, reverse=True)[:limit]
+
+
+def pick_best_df_rows(df: pd.DataFrame, limit: int) -> pd.DataFrame:
+    """Return the *limit* rows with the most non-null, non-empty values."""
+    if df is None or len(df) <= limit:
+        return df
+    scores = df.apply(
+        lambda row: sum(
+            1 for v in row
+            if pd.notna(v) and str(v).strip() != ""
+        ), axis=1,
+    )
+    return df.loc[scores.nlargest(limit).index].reset_index(drop=True)
+
+
 def sqlite_to_df(conn: sqlite3.Connection, table_name: str, limit: int | None = None) -> pd.DataFrame | None:
     """Load a SQLite table into a pandas DataFrame.
 

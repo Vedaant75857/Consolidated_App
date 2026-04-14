@@ -22,6 +22,8 @@ from shared.db import (
     table_row_count,
     drop_table,
     column_stats,
+    PREVIEW_POOL,
+    pick_best_rows,
 )
 from shared.db.stats_ops import column_distinct_values
 
@@ -102,7 +104,7 @@ def recommend_base_file(
             continue
         cols = read_table_columns(conn, sql_name)
         rows = table_row_count(conn, sql_name)
-        sample = read_table(conn, sql_name, 5)
+        sample = pick_best_rows(read_table(conn, sql_name, PREVIEW_POOL), 5)
         tables_meta.append({
             "group_id": gid, "group_name": g.get("group_name", gid),
             "rows": rows, "columns": cols, "column_count": len(cols),
@@ -604,7 +606,7 @@ def generate_validation_report(
     result_rows = table_row_count(conn, result_table)
 
     col_stats_list = column_stats(conn, result_table)
-    preview = read_table(conn, result_table, 50)
+    preview = pick_best_rows(read_table(conn, result_table, PREVIEW_POOL), 50)
 
     key_pairs = merge_log.get("key_pairs", [])
     bt = quote_id(base_sql)
@@ -742,7 +744,7 @@ def finalize_merge(
 
     final_rows = table_row_count(conn, "final_merged")
     final_cols = read_table_columns(conn, "final_merged")
-    preview = read_table(conn, "final_merged", 50)
+    preview = pick_best_rows(read_table(conn, "final_merged", PREVIEW_POOL), 50)
     col_stats = column_stats(conn, "final_merged")
 
     # Build auto-name label from group names
@@ -815,7 +817,7 @@ def skip_merge(conn: sqlite3.Connection, session_id: str, base_group_id: str) ->
 
     rows = table_row_count(conn, "final_merged")
     cols = read_table_columns(conn, "final_merged")
-    preview = read_table(conn, "final_merged", 50)
+    preview = pick_best_rows(read_table(conn, "final_merged", PREVIEW_POOL), 50)
     col_stats = column_stats(conn, "final_merged")
 
     schema = get_meta(conn, "groupSchemaTableRows") or []
@@ -902,7 +904,7 @@ def persist_merge_output(
 
     rows = table_row_count(conn, versioned_table)
     cols_list = read_table_columns(conn, versioned_table)
-    preview = read_table(conn, versioned_table, 50)
+    preview = pick_best_rows(read_table(conn, versioned_table, PREVIEW_POOL), 50)
     col_stats = column_stats(conn, versioned_table)
 
     schema = get_meta(conn, "groupSchemaTableRows") or []

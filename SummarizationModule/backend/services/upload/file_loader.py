@@ -9,6 +9,37 @@ from typing import Any
 import pandas as pd
 
 
+PREVIEW_POOL = 1000
+
+
+def pick_best_rows(rows: list[dict], limit: int) -> list[dict]:
+    """Return up to *limit* rows ranked by number of populated columns."""
+    if len(rows) <= limit:
+        return rows
+
+    def _score(row: dict) -> int:
+        return sum(
+            1 for v in row.values()
+            if v is not None and str(v).strip() != ""
+        )
+
+    return sorted(rows, key=_score, reverse=True)[:limit]
+
+
+def pick_best_raw_rows(rows: list[list], limit: int) -> list[list]:
+    """Same as pick_best_rows but for list-of-lists (raw preview) format."""
+    if len(rows) <= limit:
+        return rows
+
+    def _score(row: list) -> int:
+        return sum(
+            1 for v in row
+            if v is not None and str(v).strip() != ""
+        )
+
+    return sorted(rows, key=_score, reverse=True)[:limit]
+
+
 # ──────────────────────────────────────────────
 # Internal helpers
 # ──────────────────────────────────────────────
@@ -365,15 +396,16 @@ def build_preview(conn: sqlite3.Connection, limit: int = 50) -> dict[str, dict[s
     for entry in registry:
         tname = entry["data_table"]
         try:
-            cursor = conn.execute(f'SELECT * FROM "{tname}" LIMIT {limit}')
+            cursor = conn.execute(f'SELECT * FROM "{tname}" LIMIT {PREVIEW_POOL}')
             col_names = [desc[0] for desc in cursor.description]
             rows = cursor.fetchall()
+            all_rows = [
+                {c: _safe_value(v) for c, v in zip(col_names, row)}
+                for row in rows
+            ]
             previews[entry["table_key"]] = {
                 "columns": col_names,
-                "rows": [
-                    {c: _safe_value(v) for c, v in zip(col_names, row)}
-                    for row in rows
-                ],
+                "rows": pick_best_rows(all_rows, limit),
             }
         except Exception:
             pass
@@ -388,15 +420,16 @@ def build_single_preview(conn: sqlite3.Connection, table_key: str, limit: int = 
         return None
     tname = entry["data_table"]
     try:
-        cursor = conn.execute(f'SELECT * FROM "{tname}" LIMIT {limit}')
+        cursor = conn.execute(f'SELECT * FROM "{tname}" LIMIT {PREVIEW_POOL}')
         col_names = [desc[0] for desc in cursor.description]
         rows = cursor.fetchall()
+        all_rows = [
+            {c: _safe_value(v) for c, v in zip(col_names, row)}
+            for row in rows
+        ]
         return {
             "columns": col_names,
-            "rows": [
-                {c: _safe_value(v) for c, v in zip(col_names, row)}
-                for row in rows
-            ],
+            "rows": pick_best_rows(all_rows, limit),
         }
     except Exception:
         return None
@@ -427,9 +460,10 @@ def get_raw_preview(conn: sqlite3.Connection, table_key: str, limit: int = 50) -
         return []
     raw_tbl = entry["raw_table"]
     try:
-        cursor = conn.execute(f'SELECT * FROM "{raw_tbl}" LIMIT {limit}')
+        cursor = conn.execute(f'SELECT * FROM "{raw_tbl}" LIMIT {PREVIEW_POOL}')
         rows = cursor.fetchall()
-        return [list(r) for r in rows]
+        all_rows = [list(r) for r in rows]
+        return pick_best_raw_rows(all_rows, limit)
     except Exception:
         return []
 

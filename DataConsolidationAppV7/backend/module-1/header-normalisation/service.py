@@ -35,6 +35,8 @@ from shared.db import (
     table_exists,
     table_row_count,
     drop_table,
+    PREVIEW_POOL,
+    pick_best_rows,
 )
 
 
@@ -217,7 +219,7 @@ def run_header_norm(
 def _get_data_rows(conn: sqlite3.Connection, sql_name: str, limit: int = 50) -> list[list]:
     """Read rows as list-of-lists for AI sample extraction."""
     cols = read_table_columns(conn, sql_name)
-    rows = read_table(conn, sql_name, limit)
+    rows = pick_best_rows(read_table(conn, sql_name, PREVIEW_POOL), limit)
     result: list[list] = []
     for row in rows:
         if isinstance(row, dict):
@@ -394,7 +396,7 @@ def get_table_preview(
         raise ValueError(f"Table not found for key: {table_key}")
 
     cols = read_table_columns(conn, sql_name)
-    rows = read_table(conn, sql_name, limit)
+    rows = pick_best_rows(read_table(conn, sql_name, PREVIEW_POOL), limit)
     total = table_row_count(conn, sql_name)
 
     return {

@@ -2,6 +2,7 @@
 
 from .session_db import (
     get_session_db,
+    get_session_lock,
     close_session_db,
     delete_session_db,
     safe_table_name,
@@ -25,10 +26,11 @@ from .table_ops import (
     iterate_table,
     quote_id,
 )
-from .bridge import sqlite_to_df, df_to_sqlite
+from .bridge import sqlite_to_df, df_to_sqlite, PREVIEW_POOL, pick_best_rows, pick_best_df_rows
 
 __all__ = [
     "get_session_db",
+    "get_session_lock",
     "close_session_db",
     "delete_session_db",
     "safe_table_name",
@@ -54,4 +56,7 @@ __all__ = [
     "quote_id",
     "sqlite_to_df",
     "df_to_sqlite",
+    "PREVIEW_POOL",
+    "pick_best_rows",
+    "pick_best_df_rows",
 ]

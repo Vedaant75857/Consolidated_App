@@ -187,6 +187,7 @@ def set_header_row():
 
 @data_loading_bp.route("/get-raw-preview", methods=["POST"])
 def get_raw_preview():
+    """Return raw rows in original file order for the header-row picker."""
     try:
         body = request.get_json(force=True)
         session_id = body.get("sessionId")
