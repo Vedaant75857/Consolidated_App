@@ -44,13 +44,50 @@ def _validate_table(conn: DuckDBConnection, table_name: str) -> str:
     Raises:
         TableMissingError: If the table doesn't exist in the session DB.
     """
+    # Try the requested table first
     if table_exists(conn, table_name):
         return table_name
+
+    # For versioned names, fall back to the canonical 'final_merged' table
     if table_name.startswith("final_merged_v") and table_exists(conn, "final_merged"):
         logger.warning(
             "Table '%s' not found, falling back to 'final_merged'", table_name,
         )
         return "final_merged"
+
+    # Force a checkpoint + fresh read to handle WAL visibility issues
+    try:
+        conn.execute("CHECKPOINT")
+        conn.commit()
+    except Exception:
+        pass
+
+    # Re-check after checkpoint
+    if table_exists(conn, table_name):
+        logger.info("Table '%s' found after CHECKPOINT", table_name)
+        return table_name
+    if table_name.startswith("final_merged_v") and table_exists(conn, "final_merged"):
+        logger.info("Table 'final_merged' found after CHECKPOINT (was looking for '%s')", table_name)
+        return "final_merged"
+
+    # Last resort: discover any final_merged_v* table or final_merged
+    try:
+        all_tables = conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_name LIKE 'final_merged%' ORDER BY table_name DESC"
+        ).fetchall()
+        table_names = [r["table_name"] for r in all_tables]
+        logger.warning(
+            "Table '%s' not found. All final_merged* tables in DB: %s",
+            table_name, table_names,
+        )
+        if table_names:
+            found = table_names[0]
+            logger.warning("Using discovered fallback table '%s'", found)
+            return found
+    except Exception as exc:
+        logger.error("Error discovering tables: %s", exc)
+
     raise TableMissingError(f"Table '{table_name}' not found. Please re-run the Merge step.")
 
 

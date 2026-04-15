@@ -5,6 +5,7 @@ Each user session gets its own on-disk .duckdb file in the .sessions/ directory.
 Connections are cached for reuse within the same process.
 """
 
+import logging
 import os
 import re
 import sys
@@ -13,6 +14,8 @@ import threading
 from collections import OrderedDict
 
 from .duckdb_compat import DuckDBConnection, duckdb_connect
+
+_logger = logging.getLogger(__name__)
 
 
 def _resolve_sessions_dir() -> str:
@@ -29,8 +32,7 @@ _DB_DIR = _resolve_sessions_dir()
 try:
     os.makedirs(_DB_DIR, exist_ok=True)
 except OSError as exc:
-    import logging as _logging
-    _logging.getLogger(__name__).error(
+    _logger.error(
         "Cannot create session folder at %s (%s). "
         "Try moving the EXE to a writable location like your Desktop.",
         _DB_DIR, exc,
@@ -43,9 +45,38 @@ _MAX_CACHE = max(1, int(os.getenv("SESSION_DB_MAX_CACHE", "50")))
 
 _SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
+# Per-session locks to prevent concurrent DuckDB access on the same connection
+_SESSION_LOCK_GUARD = threading.Lock()
+_SESSION_LOCKS: dict[str, threading.RLock] = {}
+
+
+def get_session_lock(session_id: str) -> threading.RLock:
+    """Return a reentrant lock for the given session (created on first use)."""
+    with _SESSION_LOCK_GUARD:
+        lock = _SESSION_LOCKS.get(session_id)
+        if lock is None:
+            lock = threading.RLock()
+            _SESSION_LOCKS[session_id] = lock
+        return lock
+
+
+def _open_connection(db_path: str) -> DuckDBConnection:
+    """Open a new DuckDB connection and ensure the schema tables exist."""
+    conn = duckdb_connect(db_path)
+    conn.execute("CREATE TABLE IF NOT EXISTS meta (key VARCHAR PRIMARY KEY, value VARCHAR)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS table_registry (
+        table_key VARCHAR PRIMARY KEY,
+        sql_name  VARCHAR NOT NULL
+    )""")
+    conn.commit()
+    return conn
+
 
 def get_session_db(session_id: str) -> DuckDBConnection:
     """Return a cached DuckDB connection for the given session, creating one if needed.
+
+    If the cached connection is broken (closed or stale), a fresh connection
+    is transparently created.
 
     Args:
         session_id: Alphanumeric session identifier.
@@ -58,39 +89,37 @@ def get_session_db(session_id: str) -> DuckDBConnection:
     """
     if not _SESSION_ID_RE.match(session_id):
         raise ValueError("Invalid session ID format.")
+
+    db_path = os.path.join(_DB_DIR, f"{session_id}.duckdb")
+
     with _db_lock:
         if session_id in _db_cache:
             conn = _db_cache[session_id]
             try:
                 conn.execute("SELECT 1").fetchone()
             except Exception:
+                _logger.warning("Cached connection for session %s is stale; reopening", session_id)
                 try:
                     conn.close()
                 except Exception:
                     pass
                 _db_cache.pop(session_id, None)
+                # Fall through to create a new connection below
             else:
                 _db_cache.move_to_end(session_id, last=True)
                 return conn
 
-        db_path = os.path.join(_DB_DIR, f"{session_id}.duckdb")
-        conn = duckdb_connect(db_path)
-
-        conn.execute("CREATE TABLE IF NOT EXISTS meta (key VARCHAR PRIMARY KEY, value VARCHAR)")
-        conn.execute("""CREATE TABLE IF NOT EXISTS table_registry (
-            table_key VARCHAR PRIMARY KEY,
-            sql_name  VARCHAR NOT NULL
-        )""")
-        conn.commit()
+        conn = _open_connection(db_path)
 
         _db_cache[session_id] = conn
         _db_cache.move_to_end(session_id, last=True)
+        # Evict oldest entries but do NOT close them — they may still be in
+        # use by a streaming response or long-running operation in another
+        # thread.  The Python GC will close the underlying DuckDB handle
+        # once all references are dropped.
         while len(_db_cache) > _MAX_CACHE:
-            evict_id, evict_conn = _db_cache.popitem(last=False)
-            try:
-                evict_conn.close()
-            except Exception:
-                pass
+            evict_id, _evict_conn = _db_cache.popitem(last=False)
+            _logger.debug("Evicted session %s from connection cache (not closed)", evict_id)
         return conn
 
 

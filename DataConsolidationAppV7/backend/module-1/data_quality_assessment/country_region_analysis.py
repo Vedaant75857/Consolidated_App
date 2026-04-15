@@ -16,7 +16,15 @@ from .metrics import _non_null_condition, find_column
 
 logger = logging.getLogger(__name__)
 
-COUNTRY_COLUMNS: list[str] = ["Country Code", "Country"]
+COUNTRY_COLUMNS: list[str] = [
+    "Country Code",
+    "Country",
+    "Supplier Country",
+    "Supplier_Country",
+    "Vendor Country",
+    "Vendor_Country",
+    "Country of Origin",
+]
 REGION_COLUMN = "Region"
 
 

@@ -101,6 +101,7 @@ def test_key():
             messages=[{"role": "user", "content": "Say OK"}],
             model=model,
             max_tokens=5,
+            timeout=15,
         )
         text = resp.choices[0].message.content if resp.choices else ""
         return jsonify({"status": "ok", "response": text, "model": model})
@@ -110,4 +111,5 @@ def test_key():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "3005"))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    debug = os.getenv("FLASK_DEBUG", "0").lower() in ("1", "true")
+    app.run(host="0.0.0.0", port=port, debug=debug)

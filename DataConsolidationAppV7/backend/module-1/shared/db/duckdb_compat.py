@@ -225,9 +225,11 @@ class DuckDBConnection:
         """
         try:
             self._conn.commit()
-        except duckdb.InvalidInputException:
-            # No active transaction — safe to ignore
-            pass
+        except duckdb.InvalidInputException as exc:
+            # "No active transaction" is benign; anything else should propagate
+            msg = str(exc).lower()
+            if "no active transaction" not in msg and "no transaction" not in msg:
+                raise
 
     def close(self) -> None:
         """Close the underlying DuckDB connection."""

@@ -3,6 +3,7 @@
 from .duckdb_compat import DuckDBConnection, duckdb_connect
 from .session_db import (
     get_session_db,
+    get_session_lock,
     close_session_db,
     delete_session_db,
     safe_table_name,
@@ -45,6 +46,7 @@ __all__ = [
     "DuckDBConnection",
     "duckdb_connect",
     "get_session_db",
+    "get_session_lock",
     "close_session_db",
     "delete_session_db",
     "safe_table_name",

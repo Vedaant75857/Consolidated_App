@@ -525,6 +525,15 @@ export default function App() {
           );
           summaryViews.forEach((v: ViewResult) => {
             generateSummary(sessionId, v.viewId, apiKey)
+              .catch((err) => {
+                // Retry once after 2s on 404 (race with compute-views write)
+                if (err.message?.includes("not found")) {
+                  return new Promise<void>((r) => setTimeout(r, 2000)).then(() =>
+                    generateSummary(sessionId, v.viewId, apiKey)
+                  );
+                }
+                throw err;
+              })
               .then(({ viewId, summary }: { viewId: string; summary: string }) => {
                 setViewResults((prev) =>
                   prev.map((vr) =>

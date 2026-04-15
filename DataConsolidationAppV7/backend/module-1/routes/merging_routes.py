@@ -22,6 +22,7 @@ from shared.db import (
     drop_table,
     get_meta,
     get_session_db,
+    get_session_lock,
     lookup_sql_name,
     read_table,
     read_table_columns,
@@ -59,8 +60,9 @@ def recommend_base():
         api_key = body.get("apiKey")
         if not session_id:
             return jsonify({"error": "Missing sessionId"}), 400
-        conn = get_session_db(session_id)
-        result = recommend_base_file(conn, session_id, api_key)
+        with get_session_lock(session_id):
+            conn = get_session_db(session_id)
+            result = recommend_base_file(conn, session_id, api_key)
         return jsonify(result)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -80,35 +82,36 @@ def common_columns():
         if not session_id or not base_group_id or not source_group_id:
             return jsonify({"error": "Missing sessionId, baseGroupId, or sourceGroupId"}), 400
 
-        conn = get_session_db(session_id)
-        base_sql = lookup_sql_name(conn, base_group_id)
-        source_sql = lookup_sql_name(conn, source_group_id)
-        if not base_sql or not source_sql:
-            return jsonify({"error": "Invalid group ID(s)"}), 400
+        with get_session_lock(session_id):
+            conn = get_session_db(session_id)
+            base_sql = lookup_sql_name(conn, base_group_id)
+            source_sql = lookup_sql_name(conn, source_group_id)
+            if not base_sql or not source_sql:
+                return jsonify({"error": "Invalid group ID(s)"}), 400
 
-        # Column lists + instant classification (no DB, runs in <1ms)
-        base_cols = read_table_columns(conn, base_sql)
-        source_cols = read_table_columns(conn, source_sql)
-        base_col_classes = classify_all_columns(base_cols)
-        source_col_classes = classify_all_columns(source_cols)
+            # Column lists + instant classification (no DB, runs in <1ms)
+            base_cols = read_table_columns(conn, base_sql)
+            source_cols = read_table_columns(conn, source_sql)
+            base_col_classes = classify_all_columns(base_cols)
+            source_col_classes = classify_all_columns(source_cols)
 
-        common = find_common_columns(conn, base_sql, source_sql)
-        classified = classify_columns(conn, session_id, api_key, common, base_sql_name=base_sql)
+            common = find_common_columns(conn, base_sql, source_sql)
+            classified = classify_columns(conn, session_id, api_key, common, base_sql_name=base_sql)
 
-        result: dict[str, Any] = {
-            "common_columns": classified,
-            "base_columns": base_cols,
-            "source_columns": source_cols,
-            "base_column_classes": base_col_classes,
-            "source_column_classes": source_col_classes,
-            "base_group_id": base_group_id,
-            "source_group_id": source_group_id,
-        }
-        if include_preview:
-            base_rows = pick_best_rows(read_table(conn, base_sql, PREVIEW_POOL), 50)
-            source_rows = pick_best_rows(read_table(conn, source_sql, PREVIEW_POOL), 50)
-            result["base_preview"] = {"columns": base_cols, "rows": base_rows, "total_rows": table_row_count(conn, base_sql)}
-            result["source_preview"] = {"columns": source_cols, "rows": source_rows, "total_rows": table_row_count(conn, source_sql)}
+            result: dict[str, Any] = {
+                "common_columns": classified,
+                "base_columns": base_cols,
+                "source_columns": source_cols,
+                "base_column_classes": base_col_classes,
+                "source_column_classes": source_col_classes,
+                "base_group_id": base_group_id,
+                "source_group_id": source_group_id,
+            }
+            if include_preview:
+                base_rows = pick_best_rows(read_table(conn, base_sql, PREVIEW_POOL), 50)
+                source_rows = pick_best_rows(read_table(conn, source_sql, PREVIEW_POOL), 50)
+                result["base_preview"] = {"columns": base_cols, "rows": base_rows, "total_rows": table_row_count(conn, base_sql)}
+                result["source_preview"] = {"columns": source_cols, "rows": source_rows, "total_rows": table_row_count(conn, source_sql)}
         return jsonify(result)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -129,14 +132,15 @@ def simulate():
         if not key_pairs:
             return jsonify({"error": "At least one key pair required"}), 400
 
-        conn = get_session_db(session_id)
-        base_sql = lookup_sql_name(conn, base_group_id)
-        source_sql = lookup_sql_name(conn, source_group_id)
-        if not base_sql or not source_sql:
-            return jsonify({"error": "Invalid group ID(s)"}), 400
+        with get_session_lock(session_id):
+            conn = get_session_db(session_id)
+            base_sql = lookup_sql_name(conn, base_group_id)
+            source_sql = lookup_sql_name(conn, source_group_id)
+            if not base_sql or not source_sql:
+                return jsonify({"error": "Invalid group ID(s)"}), 400
 
-        pull_columns = body.get("pullColumns", [])
-        result = simulate_join(conn, base_sql, source_sql, key_pairs, pull_columns=pull_columns)
+            pull_columns = body.get("pullColumns", [])
+            result = simulate_join(conn, base_sql, source_sql, key_pairs, pull_columns=pull_columns)
         return jsonify(result)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -165,39 +169,42 @@ def execute():
         def _sse(payload: dict) -> str:
             return f"data: {json.dumps(payload)}\n\n"
 
+        lock = get_session_lock(session_id)
+
         def _stream():
-            try:
-                yield _sse({"stage": "dedup", "progress": 15, "message": "Deduplicating source & executing join..."})
+            with lock:
+                try:
+                    yield _sse({"stage": "dedup", "progress": 15, "message": "Deduplicating source & executing join..."})
 
-                merge_log = execute_merge(
-                    conn, session_id, base_sql, source_sql, key_pairs, pull_columns, source_group_id
-                )
+                    merge_log = execute_merge(
+                        conn, session_id, base_sql, source_sql, key_pairs, pull_columns, source_group_id
+                    )
 
-                conn.commit()
+                    conn.commit()
 
-                yield _sse({"stage": "stats", "progress": 55, "message": "Computing column statistics..."})
+                    yield _sse({"stage": "stats", "progress": 55, "message": "Computing column statistics..."})
 
-                report = generate_validation_report(
-                    conn, base_sql, source_sql, merge_log["result_table"], merge_log
-                )
+                    report = generate_validation_report(
+                        conn, base_sql, source_sql, merge_log["result_table"], merge_log
+                    )
 
-                yield _sse({"stage": "persist", "progress": 80, "message": "Saving versioned output..."})
+                    yield _sse({"stage": "persist", "progress": 80, "message": "Saving versioned output..."})
 
-                persist_result = persist_merge_output(
-                    conn, session_id, merge_log["result_table"],
-                    base_group_id, source_group_id, key_pairs, pull_columns,
-                )
+                    persist_result = persist_merge_output(
+                        conn, session_id, merge_log["result_table"],
+                        base_group_id, source_group_id, key_pairs, pull_columns,
+                    )
 
-                yield _sse({
-                    "stage": "done", "progress": 100, "message": "Merge complete!",
-                    "result": {
-                        "merge_log": merge_log,
-                        "validation_report": report,
-                        "persist": persist_result,
-                    },
-                })
-            except Exception as exc:
-                yield _sse({"stage": "error", "progress": 0, "message": str(exc)})
+                    yield _sse({
+                        "stage": "done", "progress": 100, "message": "Merge complete!",
+                        "result": {
+                            "merge_log": merge_log,
+                            "validation_report": report,
+                            "persist": persist_result,
+                        },
+                    })
+                except Exception as exc:
+                    yield _sse({"stage": "error", "progress": 0, "message": str(exc)})
 
         return Response(
             stream_with_context(_stream()),
@@ -225,8 +232,9 @@ def finalize():
         if not approved_merges:
             return jsonify({"error": "No approved merges provided"}), 400
 
-        conn = get_session_db(session_id)
-        result = finalize_merge(conn, session_id, approved_merges)
+        with get_session_lock(session_id):
+            conn = get_session_db(session_id)
+            result = finalize_merge(conn, session_id, approved_merges)
         return jsonify(result)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -242,8 +250,9 @@ def skip():
         base_group_id = body.get("baseGroupId")
         if not session_id or not base_group_id:
             return jsonify({"error": "Missing sessionId or baseGroupId"}), 400
-        conn = get_session_db(session_id)
-        result = skip_merge(conn, session_id, base_group_id)
+        with get_session_lock(session_id):
+            conn = get_session_db(session_id)
+            result = skip_merge(conn, session_id, base_group_id)
         return jsonify(result)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -260,20 +269,21 @@ def redo_clear_cache():
         if not session_id:
             return jsonify({"error": "Missing sessionId"}), 400
 
-        conn = get_session_db(session_id)
-        merge_history = get_meta(conn, "merge_history") or []
+        with get_session_lock(session_id):
+            conn = get_session_db(session_id)
+            merge_history = get_meta(conn, "merge_history") or []
 
-        if merge_history:
-            latest = merge_history.pop()
-            versioned_table = latest.get("table_name", "")
-            if versioned_table and table_exists(conn, versioned_table):
-                drop_table(conn, versioned_table)
-            set_meta(conn, "merge_history", merge_history)
+            if merge_history:
+                latest = merge_history.pop()
+                versioned_table = latest.get("table_name", "")
+                if versioned_table and table_exists(conn, versioned_table):
+                    drop_table(conn, versioned_table)
+                set_meta(conn, "merge_history", merge_history)
 
-        if table_exists(conn, "final_merged"):
-            drop_table(conn, "final_merged")
+            if table_exists(conn, "final_merged"):
+                drop_table(conn, "final_merged")
 
-        set_meta(conn, "mergeApprovedSources", [])
+            set_meta(conn, "mergeApprovedSources", [])
 
         return jsonify({"cleared": True})
     except Exception as exc:
@@ -290,8 +300,9 @@ def delete_output():
         if not session_id or version is None:
             return jsonify({"error": "Missing sessionId or version"}), 400
 
-        conn = get_session_db(session_id)
-        result = delete_merge_output(conn, session_id, int(version))
+        with get_session_lock(session_id):
+            conn = get_session_db(session_id)
+            result = delete_merge_output(conn, session_id, int(version))
         return jsonify(result)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -309,29 +320,30 @@ def register_merged_group():
         if not session_id:
             return jsonify({"error": "Missing sessionId"}), 400
 
-        conn = get_session_db(session_id)
-        if not table_exists(conn, "final_merged"):
-            return jsonify({"error": "No merged data found"}), 404
+        with get_session_lock(session_id):
+            conn = get_session_db(session_id)
+            if not table_exists(conn, "final_merged"):
+                return jsonify({"error": "No merged data found"}), 404
 
-        group_id = f"merged_{int(time.time() * 1000)}"
-        sql_name = f"merged_output_{int(time.time())}"
+            group_id = f"merged_{int(time.time() * 1000)}"
+            sql_name = f"merged_output_{int(time.time())}"
 
-        conn.execute(f"CREATE TABLE {quote_id(sql_name)} AS SELECT * FROM {quote_id('final_merged')}")
-        conn.commit()
-        register_table(conn, group_id, sql_name)
+            conn.execute(f"CREATE TABLE {quote_id(sql_name)} AS SELECT * FROM {quote_id('final_merged')}")
+            conn.commit()
+            register_table(conn, group_id, sql_name)
 
-        columns = read_table_columns(conn, sql_name)
-        rows = table_row_count(conn, sql_name)
-        new_group_row = {
-            "group_id": group_id,
-            "group_name": group_name,
-            "rows": rows,
-            "columns": columns,
-        }
+            columns = read_table_columns(conn, sql_name)
+            rows = table_row_count(conn, sql_name)
+            new_group_row = {
+                "group_id": group_id,
+                "group_name": group_name,
+                "rows": rows,
+                "columns": columns,
+            }
 
-        schema = get_meta(conn, "groupSchemaTableRows") or []
-        schema.append(new_group_row)
-        set_meta(conn, "groupSchemaTableRows", schema)
+            schema = get_meta(conn, "groupSchemaTableRows") or []
+            schema.append(new_group_row)
+            set_meta(conn, "groupSchemaTableRows", schema)
 
         return jsonify({
             "group_id": group_id,

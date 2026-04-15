@@ -8,8 +8,11 @@ from datetime import datetime
 from typing import Any
 
 from shared.ai import call_ai_json
+import logging
+
 from shared.db import (
     DuckDBConnection,
+    all_registered_tables,
     get_meta,
     lookup_sql_name,
     quote_id,
@@ -25,6 +28,8 @@ from shared.db import (
     PREVIEW_POOL,
     pick_best_rows,
 )
+
+logger = logging.getLogger(__name__)
 from shared.db.stats_ops import column_distinct_values
 
 from merging.ai.prompts import (
@@ -78,6 +83,51 @@ def _parse_explain_plan(plan_rows: list) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Recovery: rebuild groupSchemaTableRows from registered tables
+# ---------------------------------------------------------------------------
+
+def _rebuild_group_schema(conn: DuckDBConnection) -> list[dict[str, Any]]:
+    """Attempt to rebuild groupSchemaTableRows from the table_registry.
+
+    Looks for tables registered with appended__ or hn__ prefixes and
+    reconstructs the schema metadata.  Returns the rebuilt list (may be empty).
+    """
+    registry = all_registered_tables(conn)
+    rebuilt: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+
+    for entry in registry:
+        sql_name = entry.get("sql_name", "")
+        table_key = entry.get("table_key", "")
+        if not sql_name or not table_key:
+            continue
+        # Only consider appended or header-normalised group tables
+        if not (sql_name.startswith("appended__") or sql_name.startswith("hn__")):
+            continue
+        if table_key in seen_keys:
+            continue
+        if not table_exists(conn, sql_name):
+            continue
+        seen_keys.add(table_key)
+        cols = read_table_columns(conn, sql_name)
+        rows = table_row_count(conn, sql_name)
+        rebuilt.append({
+            "group_id": table_key,
+            "group_name": table_key,
+            "rows": rows,
+            "cols": len(cols),
+            "columns_preview": ", ".join(cols[:60]) + (" ..." if len(cols) > 60 else ""),
+            "columns": cols,
+        })
+
+    if rebuilt:
+        rebuilt.sort(key=lambda x: x.get("rows", 0), reverse=True)
+        set_meta(conn, "groupSchemaTableRows", rebuilt)
+        logger.info("Recovered groupSchemaTableRows with %d group(s) from table_registry", len(rebuilt))
+    return rebuilt
+
+
+# ---------------------------------------------------------------------------
 # Step 0: Recommend Base File
 # ---------------------------------------------------------------------------
 
@@ -91,6 +141,9 @@ def recommend_base_file(
     wiped the session DB), returns a structured error instead of raising.
     """
     schema = get_meta(conn, "groupSchemaTableRows") or []
+    if not schema:
+        logger.warning("groupSchemaTableRows metadata is missing; attempting recovery")
+        schema = _rebuild_group_schema(conn)
     if not schema:
         return {
             "recommended": None,
@@ -751,6 +804,15 @@ def finalize_merge(
     conn.execute(f"CREATE TABLE final_merged AS SELECT * FROM {quote_id(versioned_table)}")
     conn.commit()
 
+    # Register the versioned table so DQA and other steps can discover it
+    register_table(conn, f"merged_v{version}", versioned_table)
+
+    # Flush WAL to disk so other connections see the tables immediately
+    try:
+        conn.execute("CHECKPOINT")
+    except Exception:
+        pass
+
     set_meta(conn, "mergeBaseGroupId", base_group_id)
     set_meta(conn, "mergeApprovedSources", approved_merges)
 
@@ -823,6 +885,12 @@ def skip_merge(conn: DuckDBConnection, session_id: str, base_group_id: str) -> d
     drop_table(conn, "final_merged")
     conn.execute(f"CREATE TABLE final_merged AS SELECT * FROM {quote_id(versioned_table)}")
     conn.commit()
+
+    # Flush WAL to disk so other connections see the tables immediately
+    try:
+        conn.execute("CHECKPOINT")
+    except Exception:
+        pass
 
     set_meta(conn, "mergeBaseGroupId", base_group_id)
     set_meta(conn, "mergeApprovedSources", [])
@@ -913,6 +981,12 @@ def persist_merge_output(
         f"CREATE TABLE final_merged AS SELECT * FROM {quote_id(versioned_table)}"
     )
     conn.commit()
+
+    # Flush WAL to disk so other connections see the tables immediately
+    try:
+        conn.execute("CHECKPOINT")
+    except Exception:
+        pass
 
     rows = table_row_count(conn, versioned_table)
     cols_list = read_table_columns(conn, versioned_table)

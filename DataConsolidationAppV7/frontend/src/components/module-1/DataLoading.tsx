@@ -113,11 +113,13 @@ function HeaderRowEditor({
   onCancel: () => void;
 }) {
   const [rawPreview, setRawPreview] = useState<any[][] | null>(null);
-  const [loadingRaw, setLoadingRaw] = useState(false);
+  const [loadingRaw, setLoadingRaw] = useState(true);
+  const [rawError, setRawError] = useState<string | null>(null);
   const [selectedRow, setSelectedRow] = useState<number | null>(null);
   const [customNames, setCustomNames] = useState<Record<number, string>>({});
 
   const fetchRaw = async () => {
+    setRawError(null);
     setLoadingRaw(true);
     try {
       const res = await fetch("/api/get-raw-preview", {
@@ -129,7 +131,7 @@ function HeaderRowEditor({
       const data = await res.json();
       setRawPreview(data.rawPreview || []);
     } catch {
-      setRawPreview([]);
+      setRawError("Failed to load raw data. Click Retry to try again.");
     } finally {
       setLoadingRaw(false);
     }
@@ -149,6 +151,21 @@ function HeaderRowEditor({
     return (
       <div className="px-6 pb-4 flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
         <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading raw data...
+      </div>
+    );
+  }
+
+  if (rawError) {
+    return (
+      <div className="px-6 pb-4 flex items-center gap-2 text-xs text-red-500 dark:text-red-400">
+        <span>{rawError}</span>
+        <button
+          type="button"
+          onClick={fetchRaw}
+          className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-lg border border-red-200 dark:border-red-800 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
+        >
+          Retry
+        </button>
       </div>
     );
   }

@@ -10,7 +10,7 @@ import threading
 
 from flask import Blueprint, jsonify, request
 
-from shared.db import get_session_db, lookup_sql_name
+from shared.db import get_session_db, get_session_lock, lookup_sql_name
 
 from data_quality_assessment.service import (
     TableMissingError,
@@ -23,18 +23,9 @@ from data_quality_assessment.service import (
 
 data_quality_bp = Blueprint("data_quality_bp", __name__)
 
-_SESSION_LOCK_GUARD = threading.Lock()
-_SESSION_LOCKS: dict[str, threading.RLock] = {}
-
-
-def _session_lock(session_id: str) -> threading.RLock:
-    """Per-session reentrant lock to serialise requests."""
-    with _SESSION_LOCK_GUARD:
-        lock = _SESSION_LOCKS.get(session_id)
-        if lock is None:
-            lock = threading.RLock()
-            _SESSION_LOCKS[session_id] = lock
-        return lock
+def _session_lock(session_id: str) -> "threading.RLock":
+    """Per-session reentrant lock — delegates to the centralized lock in session_db."""
+    return get_session_lock(session_id)
 
 
 def _parse_common_body() -> tuple[str, str, str]:

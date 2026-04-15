@@ -12,6 +12,18 @@ logger = logging.getLogger(__name__)
 
 views_bp = Blueprint("views", __name__)
 
+_VIEW_LOCK_GUARD = threading.Lock()
+_VIEW_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _view_lock(session_id: str) -> threading.RLock:
+    with _VIEW_LOCK_GUARD:
+        lock = _VIEW_LOCKS.get(session_id)
+        if lock is None:
+            lock = threading.RLock()
+            _VIEW_LOCKS[session_id] = lock
+        return lock
+
 
 @views_bp.route("/available-views", methods=["POST"])
 def available_views():
@@ -83,16 +95,18 @@ def recompute_view():
         if not mapping:
             return jsonify({"error": "No mapping confirmed yet."}), 400
 
-        results = compute_views(conn, [view_id], config, mapping)
-        if not results:
-            return jsonify({"error": f"View {view_id} not found or could not be computed"}), 404
+        lock = _view_lock(session_id)
+        with lock:
+            results = compute_views(conn, [view_id], config, mapping)
+            if not results:
+                return jsonify({"error": f"View {view_id} not found or could not be computed"}), 404
 
-        view_results = get_meta(conn, "view_results") or []
-        new_view = results[0]
-        view_results = [new_view if v.get("viewId") == view_id else v for v in view_results]
-        if not any(v.get("viewId") == view_id for v in view_results):
-            view_results.append(new_view)
-        set_meta(conn, "view_results", view_results)
+            view_results = get_meta(conn, "view_results") or []
+            new_view = results[0]
+            view_results = [new_view if v.get("viewId") == view_id else v for v in view_results]
+            if not any(v.get("viewId") == view_id for v in view_results):
+                view_results.append(new_view)
+            set_meta(conn, "view_results", view_results)
 
         return jsonify({"view": new_view})
     except Exception as exc:
@@ -117,18 +131,25 @@ def generate_summary():
             return jsonify({"error": "apiKey required"}), 400
 
         conn = get_session_db(session_id)
-        view_results = get_meta(conn, "view_results") or []
-        view = next((v for v in view_results if v.get("viewId") == view_id), None)
-        if not view:
-            return jsonify({"error": f"View {view_id} not found"}), 404
+        lock = _view_lock(session_id)
 
+        with lock:
+            view_results = get_meta(conn, "view_results") or []
+            view = next((v for v in view_results if v.get("viewId") == view_id), None)
+            if not view:
+                return jsonify({"error": f"View {view_id} not found"}), 404
+
+        # AI call runs outside the lock (slow operation)
         summary = generate_summary_for_view(view, api_key.strip())
 
-        for v in view_results:
-            if v.get("viewId") == view_id:
-                v["aiSummary"] = summary
-                break
-        set_meta(conn, "view_results", view_results)
+        with lock:
+            # Re-read fresh state, then update
+            view_results = get_meta(conn, "view_results") or []
+            for v in view_results:
+                if v.get("viewId") == view_id:
+                    v["aiSummary"] = summary
+                    break
+            set_meta(conn, "view_results", view_results)
 
         return jsonify({"viewId": view_id, "summary": summary})
     except Exception as exc:

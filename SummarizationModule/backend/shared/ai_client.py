@@ -31,7 +31,7 @@ def get_client(api_key: str | None = None) -> Portkey:
         "Creating Portkey client (base_url=%s, model=%s, key_len=%d, key_prefix=%s…)",
         base_url, get_model(), len(key), key[:8],
     )
-    return Portkey(api_key=key, base_url=base_url)
+    return Portkey(api_key=key, base_url=base_url, timeout=60)
 
 
 def _cache_key(model: str, system: str, user: str) -> str:
@@ -84,6 +84,7 @@ def call_ai_json(
                 ],
                 model=mdl,
                 response_format={"type": "json_object"},
+                timeout=60,
             )
             raw = resp.choices[0].message.content
             logger.debug("AI response received (%d chars)", len(raw) if raw else 0)
