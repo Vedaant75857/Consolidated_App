@@ -243,9 +243,26 @@ export interface DescriptionQualityItem {
   aiInsight: string;
 }
 
+export interface SpendBifurcationCurrency {
+  code: string;
+  positiveSpend: number;
+  negativeSpend: number;
+}
+
+export interface SpendBifurcationReporting {
+  positiveSpend: number;
+  negativeSpend: number;
+}
+
+export interface SpendBifurcationResult {
+  reporting: SpendBifurcationReporting | null;
+  local: SpendBifurcationCurrency[] | SpendBifurcationReporting | null;
+}
+
 export interface ExecutiveSummaryResult {
   totalRows: number;
   datePivot: DatePivotResult;
+  spendBifurcation: SpendBifurcationResult;
   paretoAnalysis: ParetoAnalysisResult;
   descriptionQuality: DescriptionQualityItem[];
 }

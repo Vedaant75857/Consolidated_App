@@ -22,7 +22,7 @@ const OPERATIONS = [
   { id: "supplier_name", label: "Supplier Names", icon: Building2, desc: "Clean & deduplicate supplier names", loadingMsg: "Cleaning & deduplicating supplier names…" },
   { id: "supplier_country", label: "Supplier Country", icon: Globe, desc: "Standardize country names", loadingMsg: "Standardizing country names…" },
   { id: "date", label: "Dates", icon: Calendar, desc: "Normalize date formats", loadingMsg: "Normalizing date formats…" },
-  { id: "currency_conversion", label: "Currency Conversion", icon: DollarSign, desc: "Convert local spend to USD", loadingMsg: "Converting currencies to USD…" },
+  { id: "currency_conversion", label: "Currency Conversion", icon: DollarSign, desc: "Convert local spend to target currency", loadingMsg: "Converting currencies…" },
   { id: "payment_terms", label: "Payment Terms", icon: ClipboardList, desc: "Extract numeric payment terms", loadingMsg: "Extracting payment terms…" },
   { id: "region", label: "Regions", icon: MapPin, desc: "Classify into NA/EMEA/APAC/LATAM", loadingMsg: "Classifying regions…" },
   { id: "plant", label: "Plant/Site", icon: Building2, desc: "Standardize plant codes & names", loadingMsg: "Standardizing plant codes & names…" },
@@ -121,6 +121,20 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
   const [fxOverridesMonthly, setFxOverridesMonthly] = useState<MonthlyOverrides>({});
   const [showFxValidation, setShowFxValidation] = useState(false);
   const [conversionMetrics, setConversionMetrics] = useState<ConversionMetrics | null>(null);
+  const [targetCurrency, setTargetCurrency] = useState("USD");
+  const [supportedCurrencies, setSupportedCurrencies] = useState<string[]>(["USD"]);
+
+  // Fetch supported currencies from FX table on mount
+  useEffect(() => {
+    fetch("/api/supported-currencies")
+      .then((r) => r.json())
+      .then((d) => {
+        if (Array.isArray(d.currencies) && d.currencies.length > 0) {
+          setSupportedCurrencies(d.currencies);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Smart column auto-selection: call backend scoring endpoint when columns load.
   // Uses functional state updates so the effect only depends on operationPreview.columns,
@@ -277,7 +291,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       agentKwargs.currency_col = currencyCodeColumn;
       agentKwargs.date_col = currencyDateColumn;
       agentKwargs.scope_year = scopeYear;
-      agentKwargs.target_currency = "USD";
+      agentKwargs.target_currency = targetCurrency;
       if (fxOverrideMode === "yearly") {
         const parsed: Record<string, Record<string, number>> = {};
         for (const [ccy, years] of Object.entries(fxOverridesYearly) as [string, Record<string, string>][]) {
@@ -685,7 +699,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
           case "plant":
             return col.startsWith("Norm_Plant_");
           case "currency_conversion":
-            return col.includes("FX_rate_used_") || col.includes("_converted_inUSD") || col.includes("_conversion_status");
+            return col.includes("FX_rate_used_") || col.includes("_converted_in") || col.includes("_conversion_status");
           default:
             return false;
         }
@@ -1085,6 +1099,22 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                     </select>
                   </div>
 
+                  <div className="flex-1 space-y-1">
+                    <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Target Currency</label>
+                    <select
+                      value={targetCurrency}
+                      onChange={(e) => { setTargetCurrency(e.target.value); setAssessResult(null); setConversionMetrics(null); }}
+                      disabled={isRunning || loading}
+                      className="w-full text-sm rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-red-500/40"
+                    >
+                      {supportedCurrencies.map(ccy => (
+                        <option key={ccy} value={ccy}>{ccy}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-4">
                   {currencyDateColumn === "No date col" && (
                     <div className="flex-1 space-y-1">
                       <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Scope Year <span className="text-red-500">*</span></label>

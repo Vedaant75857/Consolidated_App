@@ -11,6 +11,8 @@ import {
   Globe,
   Loader2,
   RefreshCw,
+  SplitSquareHorizontal,
+  TableProperties,
   Users,
 } from "lucide-react";
 import { SurfaceCard, PrimaryButton, itemVariants } from "../common/ui";
@@ -20,6 +22,8 @@ import {
   postDqaPaymentTerms,
   postDqaCountryRegion,
   postDqaSupplier,
+  postDqaFillRate,
+  postDqaSpendBifurcation,
 } from "./services/stitchingApi";
 import type { MergeOutput } from "../../types";
 
@@ -54,11 +58,19 @@ interface CurrencyCrosstabPivot {
 
 type PivotData = ReportingPivot | CurrencyCrosstabPivot;
 
+interface TotalSpendSummary {
+  type: "reporting" | "local_by_currency";
+  total?: number;
+  currencies?: { code: string; total: number }[];
+  column: string;
+}
+
 interface DateResult {
   availableDateColumns: string[];
   selectedColumn: string | null;
   formatTable: FormatEntry[];
   pivotData: PivotData | null;
+  totalSpendSummary: TotalSpendSummary | null;
   consistent: boolean;
   aiInsight: string;
 }
@@ -114,6 +126,32 @@ interface SupplierResult {
   totalSpendCovered: number;
   spendColumn: string | null;
   aiInsight: string;
+}
+
+interface FillRateColumn {
+  columnName: string;
+  pctRowsCovered: number;
+  spendCoverage: number | { code: string; pct: number }[] | null;
+}
+
+interface FillRateResult {
+  columns: FillRateColumn[];
+  spendType: "reporting" | "local" | "none";
+  spendColumn: string | null;
+}
+
+interface SpendBifurcationCurrency {
+  code: string;
+  positiveSpend: number;
+  negativeSpend: number;
+}
+
+interface SpendBifurcationResult {
+  type: "reporting" | "local" | "local_single" | "none";
+  positiveSpend?: number;
+  negativeSpend?: number;
+  currencies?: SpendBifurcationCurrency[];
+  column: string | null;
 }
 
 interface DataQualityAssessmentProps {
@@ -220,10 +258,16 @@ export default function DataQualityAssessment({
   const [supplierState, setSupplierState] = useState<
     PanelState<SupplierResult>
   >({ loading: false, error: null, data: null });
+  const [fillRateState, setFillRateState] = useState<
+    PanelState<FillRateResult>
+  >({ loading: false, error: null, data: null });
+  const [bifurcationState, setBifurcationState] = useState<
+    PanelState<SpendBifurcationResult>
+  >({ loading: false, error: null, data: null });
 
   // Expanded panels
   const [expandedPanels, setExpandedPanels] = useState<Set<string>>(
-    new Set(["date", "currency", "payment", "country", "supplier"]),
+    new Set(["fillrate", "date", "bifurcation", "currency", "payment", "country", "supplier"]),
   );
 
   // Date column selector
@@ -403,6 +447,48 @@ export default function DataQualityAssessment({
     [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError],
   );
 
+  const runFillRatePanel = useCallback(
+    async (version: number) => {
+      if (sessionExpired || skipRef.current) return;
+      setFillRateState({ loading: true, error: null, data: null });
+      try {
+        const tn = isSingleTable ? "" : tableNameForVersion(version);
+        const data = await postDqaFillRate(sessionId, tn, getTableKey());
+        setFillRateState({ loading: false, error: null, data });
+      } catch (err: any) {
+        if (!checkSessionError(err)) {
+          setFillRateState({
+            loading: false,
+            error: err?.message || "Fill rate analysis failed",
+            data: null,
+          });
+        }
+      }
+    },
+    [sessionId, isSingleTable, getTableKey, sessionExpired, checkSessionError],
+  );
+
+  const runBifurcationPanel = useCallback(
+    async (version: number) => {
+      if (sessionExpired || skipRef.current) return;
+      setBifurcationState({ loading: true, error: null, data: null });
+      try {
+        const tn = isSingleTable ? "" : tableNameForVersion(version);
+        const data = await postDqaSpendBifurcation(sessionId, tn, getTableKey());
+        setBifurcationState({ loading: false, error: null, data });
+      } catch (err: any) {
+        if (!checkSessionError(err)) {
+          setBifurcationState({
+            loading: false,
+            error: err?.message || "Spend bifurcation failed",
+            data: null,
+          });
+        }
+      }
+    },
+    [sessionId, isSingleTable, getTableKey, sessionExpired, checkSessionError],
+  );
+
   const runAllPanels = useCallback(
     (version: number) => {
       skipRef.current = false;
@@ -412,7 +498,9 @@ export default function DataQualityAssessment({
       setLoadingMessage("Running Data Quality Assessment…");
 
       const promises = [
+        runFillRatePanel(version),
         runDatePanel(version),
+        runBifurcationPanel(version),
         runCurrencyPanel(version),
         runPaymentPanel(version),
         runCountryPanel(version),
@@ -426,7 +514,9 @@ export default function DataQualityAssessment({
       });
     },
     [
+      runFillRatePanel,
       runDatePanel,
+      runBifurcationPanel,
       runCurrencyPanel,
       runPaymentPanel,
       runCountryPanel,
@@ -580,6 +670,13 @@ export default function DataQualityAssessment({
         </div>
       </SurfaceCard>
 
+      {/* ── Panel 0: Fill Rate Summary ────────────────────────────────── */}
+      <FillRateSummaryPanel
+        state={fillRateState}
+        expanded={expandedPanels.has("fillrate")}
+        onToggle={() => togglePanel("fillrate")}
+      />
+
       {/* ── Panel 1: Date Analysis ──────────────────────────────────────── */}
       <DatePanel
         state={dateState}
@@ -590,6 +687,13 @@ export default function DataQualityAssessment({
           setSelectedDateColumn(col);
           runDatePanel(selectedVersion, col);
         }}
+      />
+
+      {/* ── Panel 1b: Spend Bifurcation ──────────────────────────────── */}
+      <SpendBifurcationPanel
+        state={bifurcationState}
+        expanded={expandedPanels.has("bifurcation")}
+        onToggle={() => togglePanel("bifurcation")}
       />
 
       {/* ── Panel 2: Currency Analysis ──────────────────────────────────── */}
@@ -840,6 +944,24 @@ function DatePanel({
                           ))}
                         </tbody>
                       </table>
+                    </div>
+                  )}
+
+                  {/* Total spend summary */}
+                  {d.totalSpendSummary && (
+                    <div className="px-6 py-3 border-t border-neutral-100 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-800/30">
+                      <p className="text-[10px] uppercase tracking-wider font-semibold text-neutral-500 dark:text-neutral-400 mb-1">
+                        Total Spend
+                      </p>
+                      <p className="text-sm font-semibold tabular-nums text-neutral-800 dark:text-neutral-200">
+                        {d.totalSpendSummary.type === "reporting"
+                          ? fmtSpend(d.totalSpendSummary.total ?? 0)
+                          : d.totalSpendSummary.currencies
+                              ?.map(
+                                (c) => `${fmtSpend(c.total)} ${c.code}`,
+                              )
+                              .join(", ") ?? "N/A"}
+                      </p>
                     </div>
                   )}
 
@@ -1376,43 +1498,245 @@ function SupplierPanel({
                 <PanelSpinner message="Analysing supplier names for normalisation opportunities…" />
               )}
               {state.error && !d && <PanelError message={state.error} />}
-              {d && (
-                <>
-                  <AiInsightBanner insight={d.aiInsight} />
+              {d && <AiInsightBanner insight={d.aiInsight} />}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </SurfaceCard>
+  );
+}
 
-                  {d.exists && (
-                    <div className="px-6 py-4">
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                        <div className="rounded-xl bg-neutral-50 dark:bg-neutral-800/50 p-4">
-                          <p className="text-[10px] uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1">
-                            Total Unique Suppliers
-                          </p>
-                          <p className="text-lg font-bold tabular-nums text-neutral-800 dark:text-neutral-200">
-                            {d.supplierCount.toLocaleString()}
-                          </p>
-                        </div>
-                        <div className="rounded-xl bg-neutral-50 dark:bg-neutral-800/50 p-4">
-                          <p className="text-[10px] uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1">
-                            Suppliers Analysed
-                          </p>
-                          <p className="text-lg font-bold tabular-nums text-neutral-800 dark:text-neutral-200">
-                            {d.topNCount.toLocaleString()}
-                          </p>
-                        </div>
-                        {d.totalSpendCovered > 0 && (
-                          <div className="rounded-xl bg-neutral-50 dark:bg-neutral-800/50 p-4">
-                            <p className="text-[10px] uppercase tracking-wider text-neutral-500 dark:text-neutral-400 mb-1">
-                              Spend Covered
-                            </p>
-                            <p className="text-lg font-bold tabular-nums text-neutral-800 dark:text-neutral-200">
-                              {fmtSpend(d.totalSpendCovered)}
-                            </p>
-                          </div>
+/* ══════════════════════════════════════════════════════════════════════════
+   Panel 0 – Fill Rate Summary
+   ══════════════════════════════════════════════════════════════════════════ */
+
+function FillRateSummaryPanel({
+  state,
+  expanded,
+  onToggle,
+}: {
+  state: PanelState<FillRateResult>;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const d = state.data;
+  const subtitle = d
+    ? `${d.columns.length} columns analysed`
+    : "Computing fill rates…";
+
+  const spendHeader =
+    d?.spendType === "reporting"
+      ? "% of Total Spend"
+      : d?.spendType === "local"
+        ? "% of Local Spend by Currency"
+        : null;
+
+  return (
+    <SurfaceCard noPadding>
+      <PanelHeader
+        icon={
+          <TableProperties className="w-4 h-4 text-teal-600 dark:text-teal-400" />
+        }
+        iconBg="bg-teal-100 dark:bg-teal-950/40"
+        title="Fill Rate Summary"
+        subtitle={subtitle}
+        expanded={expanded}
+        onToggle={onToggle}
+      />
+
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="border-t border-neutral-100 dark:border-neutral-800">
+              {state.loading && (
+                <PanelSpinner message="Computing fill rates…" />
+              )}
+              {state.error && !d && <PanelError message={state.error} />}
+              {d && d.columns.length > 0 && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                        <th className="px-6 py-3">Column Name</th>
+                        <th className="px-4 py-3 text-center">% Rows Covered</th>
+                        {spendHeader && (
+                          <th className="px-4 py-3 text-center">{spendHeader}</th>
                         )}
-                      </div>
-                    </div>
-                  )}
-                </>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                      {d.columns.map((col) => (
+                        <tr
+                          key={col.columnName}
+                          className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors"
+                        >
+                          <td className="px-6 py-2 font-medium text-neutral-800 dark:text-neutral-200 max-w-[260px] truncate">
+                            {col.columnName}
+                          </td>
+                          <td className="px-4 py-2 text-center tabular-nums text-neutral-700 dark:text-neutral-300">
+                            {col.pctRowsCovered.toFixed(1)}%
+                          </td>
+                          {spendHeader && (
+                            <td className="px-4 py-2 text-center tabular-nums text-neutral-700 dark:text-neutral-300">
+                              <FillRateSpendCell
+                                coverage={col.spendCoverage}
+                                spendType={d.spendType}
+                              />
+                            </td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </SurfaceCard>
+  );
+}
+
+function FillRateSpendCell({
+  coverage,
+  spendType,
+}: {
+  coverage: FillRateColumn["spendCoverage"];
+  spendType: string;
+}) {
+  if (coverage == null) return <span className="text-neutral-400">N/A</span>;
+  if (spendType === "reporting" && typeof coverage === "number") {
+    return <>{coverage.toFixed(1)}%</>;
+  }
+  if (Array.isArray(coverage)) {
+    return (
+      <span className="flex flex-wrap justify-center gap-1">
+        {coverage.map((c) => (
+          <span
+            key={c.code}
+            className="text-xs px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800"
+          >
+            {c.code}({c.pct}%)
+          </span>
+        ))}
+      </span>
+    );
+  }
+  return <span className="text-neutral-400">N/A</span>;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Spend Bifurcation Panel
+   ══════════════════════════════════════════════════════════════════════════ */
+
+function SpendBifurcationPanel({
+  state,
+  expanded,
+  onToggle,
+}: {
+  state: PanelState<SpendBifurcationResult>;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const d = state.data;
+  const subtitle = d
+    ? d.type === "none"
+      ? "No spend column found"
+      : `Positive vs negative spend (${d.column})`
+    : "Computing spend bifurcation…";
+
+  return (
+    <SurfaceCard noPadding>
+      <PanelHeader
+        icon={
+          <SplitSquareHorizontal className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+        }
+        iconBg="bg-indigo-100 dark:bg-indigo-950/40"
+        title="Spend Bifurcation"
+        subtitle={subtitle}
+        expanded={expanded}
+        onToggle={onToggle}
+      />
+
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="border-t border-neutral-100 dark:border-neutral-800">
+              {state.loading && (
+                <PanelSpinner message="Computing spend bifurcation…" />
+              )}
+              {state.error && !d && <PanelError message={state.error} />}
+              {d && d.type === "none" && (
+                <div className="px-6 py-6 text-center text-sm text-neutral-500 dark:text-neutral-400">
+                  No spend column found in the dataset.
+                </div>
+              )}
+              {d && (d.type === "reporting" || d.type === "local_single") && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                        <th className="px-6 py-3 text-right">Total Positive Spend</th>
+                        <th className="px-4 py-3 text-right">Total Negative Spend</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td className="px-6 py-3 text-right tabular-nums font-semibold text-emerald-700 dark:text-emerald-400">
+                          {fmtSpend(d.positiveSpend ?? 0)}
+                        </td>
+                        <td className="px-4 py-3 text-right tabular-nums font-semibold text-red-600 dark:text-red-400">
+                          {fmtSpend(d.negativeSpend ?? 0)}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {d && d.type === "local" && d.currencies && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                        <th className="px-6 py-3">Currency</th>
+                        <th className="px-4 py-3 text-right">Total +ve Spend</th>
+                        <th className="px-4 py-3 text-right">Total -ve Spend</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                      {d.currencies.map((c) => (
+                        <tr
+                          key={c.code}
+                          className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors"
+                        >
+                          <td className="px-6 py-2 font-medium text-neutral-800 dark:text-neutral-200">
+                            {c.code}
+                          </td>
+                          <td className="px-4 py-2 text-right tabular-nums text-emerald-700 dark:text-emerald-400">
+                            {fmtSpend(c.positiveSpend)}
+                          </td>
+                          <td className="px-4 py-2 text-right tabular-nums text-red-600 dark:text-red-400">
+                            {fmtSpend(c.negativeSpend)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </div>
           </motion.div>

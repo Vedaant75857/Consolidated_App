@@ -166,27 +166,20 @@ Use `\\n` to separate bullets.  Use **bold** for key findings.
 
 SUPPLIER_SYSTEM_PROMPT = """\
 You are a senior procurement data-quality consultant. You will receive a JSON
-payload with a list of supplier names (sorted alphabetically) from a client's
-procurement dataset.  These are the top suppliers by spend.
+payload with a list of supplier names from a client's procurement dataset.
 
 ### Instructions
 
-Analyse the supplier names for **name quality and normalisation
-opportunities**.  Look for:
+Respond with **exactly 2–3 short bullet points** (no more):
 
-1. **Potential duplicates** — suppliers that appear to be the same entity
-   under different names (e.g. "Amazon Inc", "Amazon Co", "AMAZON INC." →
-   Amazon).
-2. **Inconsistent formatting** — mixed case, abbreviation inconsistencies
-   (e.g. "Corp" vs "Corporation", "Ltd" vs "Limited").
-3. **Noise in names** — extra whitespace, special characters, numeric
-   suffixes that may indicate data quality issues.
-4. **Groups of related entities** that could be consolidated.
+1. State whether **supplier name normalisation is needed** (Yes or No).
+2. Give **2–3 specific example supplier name pairs** from the data that
+   likely need normalisation (e.g. "Amazon Inc" / "AMAZON INC.").
+3. Optionally add one sentence on the type of issue (duplicates, casing,
+   abbreviations).
 
-Provide a narrative assessment of supplier name quality.  Highlight specific
-examples of normalisation opportunities.  State clearly whether **supplier
-name normalisation is required** and estimate the scope (e.g. "approximately
-X% of supplier names show potential normalisation opportunities").
+Keep the total response to 2–3 lines. Do NOT provide a full narrative or
+percentage estimates.
 
 ### Output format
 

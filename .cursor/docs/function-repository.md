@@ -242,6 +242,12 @@ A complete list of every Python function in the app, organised by module and ste
 | `compute_currency_metrics` | `data_quality_assessment/metrics.py` | Checks currency code quality — how many distinct codes, consistency across rows. |
 | `compute_currency_quality_analysis` | `data_quality_assessment/metrics.py` | A deeper currency check comparing currency codes against actual spend values. |
 | `compute_fill_rate_summary` | `data_quality_assessment/metrics.py` | Summarises fill rates across all columns into a quick overview for the dashboard. |
+| `run_fill_rate_analysis` | `data_quality_assessment/fill_rate_analysis.py` | Computes per-column fill rate (percentage of non-empty rows) and spend coverage. If reporting currency spend exists, shows a single spend percentage per column. If only local spend, shows per-currency spend percentages. |
+| `run_spend_bifurcation` | `data_quality_assessment/fill_rate_analysis.py` | Splits total spend into positive and negative amounts. If reporting currency exists, returns a single pair. If only local spend, groups by currency code. |
+| `dqa_fill_rate` | `routes/data_quality_routes.py` | Receives the request for the fill rate summary and returns per-column fill rates with spend coverage. No AI key required. |
+| `dqa_spend_bifurcation` | `routes/data_quality_routes.py` | Receives the request for positive vs negative spend bifurcation. No AI key required. |
+| `run_dqa_fill_rate` | `data_quality_assessment/service.py` | Validates the table and runs the fill rate analysis. |
+| `run_dqa_spend_bifurcation` | `data_quality_assessment/service.py` | Validates the table and runs the spend bifurcation analysis. |
 
 ### Pre-Merge Insights & Analysis (runs between Append and Merge)
 
@@ -429,8 +435,9 @@ A complete list of every Python function in the app, organised by module and ste
 | `assess_currency_conversion` | `agents/normalization.py` | Pre-checks before running conversion — verifies the FX table can be loaded, flags unsupported currencies, and shows column population stats. |
 | `assess_currency_conversion_api` | `app.py` | Receives the "Assess" button request from the browser and runs the currency conversion assessment. |
 | `load_fx_table` | `agents/fx_rates.py` | Loads the exchange rate Excel workbook and builds lookup tables for monthly and yearly rates. |
-| `run_conversion` | `agents/fx_rates.py` | Converts every spend value in a column to USD using the matching exchange rate, and reports detailed per-row results. |
+| `run_conversion` | `agents/fx_rates.py` | Converts every spend value in a column to a chosen target currency using the matching exchange rate. Supports all currencies in the FX table. For non-USD targets, bridges through USD (source -> USD -> target). Reports detailed per-row results. |
 | `resolve_fx_reference_path` | `agents/fx_rates.py` | Finds the exchange rate Excel file — checks an explicit path, environment variable, and standard locations. |
+| `supported_currencies_api` | `app.py` | Returns the list of all currency codes available in the FX rates table, so the frontend can populate the target currency dropdown. |
 
 ### Normalization — Other
 
@@ -564,8 +571,9 @@ A complete list of every Python function in the app, organised by module and ste
 | `_quote_id` | `services/spend_quality_assessment/data_quality.py` | Wraps a column or table name in quotes for safe use in database queries. |
 | `_nn` | `services/spend_quality_assessment/data_quality.py` | Creates a database condition that checks whether a cell has real content (not blank or null). |
 | `_compute_date_spend_pivot` | `services/spend_quality_assessment/data_quality.py` | Builds a year-by-month pivot table showing total spend per period. |
+| `_compute_spend_bifurcation` | `services/spend_quality_assessment/data_quality.py` | Splits spend into positive and negative totals. Returns both a reporting currency view (using total_spend) and a local currency view (using local_spend grouped by currency). Supports a frontend toggle between the two views. |
 | `_compute_pareto_analysis` | `services/spend_quality_assessment/data_quality.py` | Calculates supplier concentration — what percentage of suppliers account for 80%, 90%, 95%, and 99% of total spend. |
-| `run_executive_summary` | `services/spend_quality_assessment/data_quality.py` | Runs the full quality assessment: date-spend pivot, Pareto analysis, and description quality (with AI). |
+| `run_executive_summary` | `services/spend_quality_assessment/data_quality.py` | Runs the full quality assessment: date-spend pivot, spend bifurcation, Pareto analysis, and description quality (with AI). |
 | `_quote_id` | `services/spend_quality_assessment/description_quality.py` | Same as above — wraps a name in quotes for safe database use. |
 | `_nn` | `services/spend_quality_assessment/description_quality.py` | Same as above — checks if a cell has real content. |
 | `_build_null_proxy_sql` | `services/spend_quality_assessment/description_quality.py` | Creates conditions to catch placeholder descriptions that look filled in but are actually meaningless (e.g. "N/A", "TBD", "---"). |

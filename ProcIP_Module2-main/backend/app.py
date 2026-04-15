@@ -1003,6 +1003,19 @@ def download():
     )
 
 
+@app.route('/api/supported-currencies', methods=['GET'])
+def supported_currencies_api():
+    """Return the list of currency codes available in the FX rates table."""
+    try:
+        from agents.fx_rates import load_fx_table
+        fx_data = load_fx_table()
+        # fx_data tuple: (FX, LATEST_RATE, currencies, latest_period, FX_YEARLY, FX_YEARLY_MONTHS)
+        currencies = sorted(set(fx_data[2]) | {"USD"})
+        return jsonify({"currencies": currencies})
+    except Exception as e:
+        return jsonify({"error": str(e), "currencies": ["USD"]}), 200
+
+
 if __name__ == '__main__':
     port = int(os.environ.get("FLASK_PORT", "5000"))
     app.run(host='0.0.0.0', port=port, debug=os.environ.get("FLASK_DEBUG", "0") == "1")

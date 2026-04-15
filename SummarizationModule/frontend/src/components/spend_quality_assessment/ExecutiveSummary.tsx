@@ -6,6 +6,7 @@ import {
   ChevronDown,
   Loader2,
   RefreshCw,
+  SplitSquareHorizontal,
   TrendingUp,
   FileText,
 } from "lucide-react";
@@ -17,6 +18,7 @@ import {
   type ParetoAnalysisResult,
   type ParetoThresholdMetrics,
   type DescriptionQualityItem,
+  type SpendBifurcationResult,
 } from "../../api/client";
 
 /* ── Helpers ───────────────────────────────────────────────────────────── */
@@ -73,6 +75,7 @@ export default function ExecutiveSummary({
   const [error, setError] = useState<string | null>(null);
 
   const [datePivotOpen, setDatePivotOpen] = useState(true);
+  const [bifurcationOpen, setBifurcationOpen] = useState(true);
   const [paretoOpen, setParetoOpen] = useState(true);
   const [descQualityOpen, setDescQualityOpen] = useState(true);
   const [expandedDescs, setExpandedDescs] = useState<Set<string>>(new Set());
@@ -215,6 +218,13 @@ export default function ExecutiveSummary({
             data={result.datePivot}
             expanded={datePivotOpen}
             onToggle={() => setDatePivotOpen((p) => !p)}
+          />
+
+          {/* ── Panel 1b: Spend Bifurcation ──────────────────────────── */}
+          <SpendBifurcationPanel
+            data={result.spendBifurcation}
+            expanded={bifurcationOpen}
+            onToggle={() => setBifurcationOpen((p) => !p)}
           />
 
           {/* ── Panel 2: Pareto Analysis ───────────────────────────────── */}
@@ -633,6 +643,200 @@ function DescriptionQualityPanel({
                   </tbody>
                 </table>
               </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </SurfaceCard>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Panel – Spend Bifurcation
+   ══════════════════════════════════════════════════════════════════════════ */
+
+function SpendBifurcationPanel({
+  data,
+  expanded,
+  onToggle,
+}: {
+  data: SpendBifurcationResult;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const [view, setView] = React.useState<"reporting" | "local">("reporting");
+
+  const hasReporting = data.reporting != null;
+  const hasLocal = data.local != null;
+  const noData = !hasReporting && !hasLocal;
+
+  const effectiveView =
+    view === "reporting" && hasReporting
+      ? "reporting"
+      : hasLocal
+        ? "local"
+        : "reporting";
+
+  return (
+    <SurfaceCard noPadding>
+      <button
+        onClick={onToggle}
+        className="flex items-center justify-between w-full px-6 py-4 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors rounded-t-2xl"
+      >
+        <div className="flex items-center gap-3">
+          <span className="w-8 h-8 rounded-lg bg-indigo-100 dark:bg-indigo-950/40 flex items-center justify-center">
+            <SplitSquareHorizontal className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+          </span>
+          <div>
+            <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">
+              Spend Bifurcation
+            </h3>
+            <p className="text-xs text-neutral-400">
+              Positive vs negative spend breakdown
+            </p>
+          </div>
+        </div>
+        <ChevronDown
+          className={`w-4 h-4 text-neutral-400 transition-transform ${
+            expanded ? "" : "-rotate-90"
+          }`}
+        />
+      </button>
+
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="border-t border-neutral-100 dark:border-neutral-800">
+              {noData ? (
+                <div className="px-6 py-6 text-center text-sm text-neutral-500 dark:text-neutral-400">
+                  No spend columns mapped. Map total_spend or local_spend to
+                  see bifurcation.
+                </div>
+              ) : (
+                <>
+                  {/* Toggle between reporting and local */}
+                  {hasReporting && hasLocal && (
+                    <div className="px-6 pt-4 pb-2 flex gap-1">
+                      <button
+                        onClick={() => setView("reporting")}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                          effectiveView === "reporting"
+                            ? "bg-indigo-100 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300"
+                            : "text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                        }`}
+                      >
+                        Reporting Currency
+                      </button>
+                      <button
+                        onClick={() => setView("local")}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                          effectiveView === "local"
+                            ? "bg-indigo-100 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300"
+                            : "text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                        }`}
+                      >
+                        Local Currency
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Reporting view */}
+                  {effectiveView === "reporting" && data.reporting && (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                            <th className="px-6 py-3 text-right">
+                              Total Positive Spend
+                            </th>
+                            <th className="px-4 py-3 text-right">
+                              Total Negative Spend
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td className="px-6 py-3 text-right tabular-nums font-semibold text-emerald-700 dark:text-emerald-400">
+                              {fmtSpend(data.reporting.positiveSpend)}
+                            </td>
+                            <td className="px-4 py-3 text-right tabular-nums font-semibold text-red-600 dark:text-red-400">
+                              {fmtSpend(data.reporting.negativeSpend)}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {/* Local view */}
+                  {effectiveView === "local" && data.local && (
+                    <div className="overflow-x-auto">
+                      {Array.isArray(data.local) ? (
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                              <th className="px-6 py-3">Currency</th>
+                              <th className="px-4 py-3 text-right">
+                                Total +ve Spend
+                              </th>
+                              <th className="px-4 py-3 text-right">
+                                Total -ve Spend
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                            {data.local.map((c) => (
+                              <tr
+                                key={c.code}
+                                className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors"
+                              >
+                                <td className="px-6 py-2 font-medium text-neutral-800 dark:text-neutral-200">
+                                  {c.code}
+                                </td>
+                                <td className="px-4 py-2 text-right tabular-nums text-emerald-700 dark:text-emerald-400">
+                                  {fmtSpend(c.positiveSpend)}
+                                </td>
+                                <td className="px-4 py-2 text-right tabular-nums text-red-600 dark:text-red-400">
+                                  {fmtSpend(c.negativeSpend)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      ) : (
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                              <th className="px-6 py-3 text-right">
+                                Total Positive Spend
+                              </th>
+                              <th className="px-4 py-3 text-right">
+                                Total Negative Spend
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr>
+                              <td className="px-6 py-3 text-right tabular-nums font-semibold text-emerald-700 dark:text-emerald-400">
+                                {fmtSpend(data.local.positiveSpend)}
+                              </td>
+                              <td className="px-4 py-3 text-right tabular-nums font-semibold text-red-600 dark:text-red-400">
+                                {fmtSpend(data.local.negativeSpend)}
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           </motion.div>
         )}

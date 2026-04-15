@@ -198,14 +198,17 @@ The DataStitcher helps users combine multiple data files into one clean, merged 
 | 2 | Re-run all | Click "Re-run All" to refresh every quality assessment at once. |
 | 2b | Merge data not found | If the merged table is missing (e.g. earlier steps were changed), a "Merge Data Not Found" card appears with a "Back to Merge" button so you can re-run the merge. |
 | 2c | Session expired | If the session is genuinely gone, a "Session Expired" card appears with a "Back to Upload" button. |
-| 3 | Date panel | Expand the "Date" panel to see date format distributions and timeline charts. If multiple date columns exist, pick which one to analyse from a dropdown. |
-| 4 | Currency panel | Expand the "Currency" panel to see which currencies appear, their distribution, and consistency metrics. |
-| 5 | Payment Terms panel | Expand the "Payment Terms" panel to see how payment terms are distributed across spend. |
-| 6 | Country/Region panel | Expand the "Country & Region" panel to see completeness of country and region fields, with value chips (shows "+N more" when there are many). |
-| 7 | Supplier panel | Expand the "Supplier" panel to see supplier concentration, top-supplier breakdowns, and related metrics. |
-| 8 | AI summaries | Each panel includes an AI-written narrative explaining the findings in plain language. |
-| 9 | Retry on error | If a panel fails to load, click "Retry" to try again for just that one. |
-| 10 | Expand/collapse panels | Click any panel's header to expand or collapse it (chevron rotates to show state). |
+| 3 | Fill Rate Summary panel | Shown above all other panels. A table listing every column with its percentage of non-empty rows and spend coverage. If reporting currency spend exists, shows a single percentage per column. If only local spend exists, shows per-currency percentages like "USD(17%), EUR(36%)". |
+| 4 | Date panel | Expand the "Date" panel to see date format distributions and timeline charts. If multiple date columns exist, pick which one to analyse from a dropdown. |
+| 4b | Total spend summary | Above the pivot table inside the Date panel, a summary block shows total spend. If reporting currency is available, shows a single total. If only local spend, shows totals split by currency (e.g. "965 USD, 765 EUR"). |
+| 5 | Spend Bifurcation panel | Shown after the Date panel. If reporting currency spend exists, shows Total Positive Spend and Total Negative Spend. If only local spend exists, shows a table with Currency, Total +ve Spend, and Total -ve Spend per currency. |
+| 6 | Currency panel | Expand the "Currency" panel to see which currencies appear, their distribution, and consistency metrics. |
+| 7 | Payment Terms panel | Expand the "Payment Terms" panel to see how payment terms are distributed across spend. |
+| 8 | Country/Region panel | Expand the "Country & Region" panel to see completeness of country and region fields, with value chips (shows "+N more" when there are many). |
+| 9 | Supplier panel | Expand the "Supplier" panel to see a short 2-3 bullet AI insight on whether supplier normalisation is needed, with example name cases. No stat cards — just the short insight. |
+| 10 | AI summaries | Each panel includes an AI-written narrative explaining the findings in plain language. |
+| 11 | Retry on error | If a panel fails to load, click "Retry" to try again for just that one. |
+| 12 | Expand/collapse panels | Click any panel's header to expand or collapse it (chevron rotates to show state). |
 
 ### App-Wide Features (available across all steps)
 
@@ -303,6 +306,7 @@ The Normalizer takes a single data table (uploaded directly or received from the
 | 3 | Choose spend column | Select which column contains the spend/amount values (required). |
 | 4 | Choose date column | Select a date column, or choose "No Date col" if dates aren't available. |
 | 5 | Scope year | When "No Date col" is selected, pick a scope year (2023–2026) for exchange rate lookup. |
+| 5b | Target currency | Choose which currency to convert into from a dropdown of all supported currencies (loaded from the FX rates table). Defaults to USD. For non-USD targets, conversion bridges through USD automatically (e.g. INR -> USD -> EUR). |
 | 6 | Assess | Click "Assess" to check for unsupported currencies, missing exchange rates, and column population. |
 | 7 | Unsupported currency panel | If some currencies aren't in the FX table, a detailed panel appears showing which currencies are unsupported, how many rows they affect, and their total spend. |
 | 8 | FX rate mode toggle | Switch between "Yearly" and "Monthly" override modes. Monthly is only available when a date column is selected. |
@@ -439,6 +443,7 @@ The Spend Summarizer takes a procurement dataset and produces charts, quality as
 | 3 | Total rows stat | The header shows the total number of rows being assessed. |
 | 4 | Re-run assessment | Click the refresh icon in the header to re-run the entire assessment. |
 | 5 | Date-spend pivot panel | Expand this panel to see a pivot table of spend by year and month. Cells with zero spend are dimmed. |
+| 5b | Spend Bifurcation panel | Shown after the Date-spend pivot. Shows positive vs negative spend. A toggle lets you switch between "Reporting Currency" (single total) and "Local Currency" (table with per-currency breakdown). Handles missing columns gracefully. |
 | 6 | Pareto analysis panel | Expand to see supplier concentration metrics at different thresholds (80%, 85%, 90%, 95%, 99%) — shows total spend, number of transactions, unique transactions, and supplier count at each level. |
 | 7 | Description quality panel | Expand to see how many description columns were mapped and their quality. Shows spend coverage per description type. |
 | 8 | Top 10 descriptions | Click "Show top 10" on any description type to see the most common descriptions ranked by spend. Click "Hide top 10" to collapse. |

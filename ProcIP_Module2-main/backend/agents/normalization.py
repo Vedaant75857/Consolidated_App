@@ -1559,6 +1559,7 @@ def normalize_spend_agent(df, api_key=None, **kwargs):
             fx_data=fx_data,
             fx_overrides=fx_overrides,
             fx_override_mode=fx_override_mode,
+            target_currency=target_currency,
         )
 
         if conversion_mode == "monthly":

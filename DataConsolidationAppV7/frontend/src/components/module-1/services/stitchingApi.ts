@@ -288,6 +288,30 @@ export async function postDqaSupplier(
   });
 }
 
+export async function postDqaFillRate(
+  sessionId: string,
+  tableName: string,
+  tableKey?: string,
+): Promise<any> {
+  return jsonPost("/dqa/fill-rate", {
+    sessionId,
+    tableName: tableName || undefined,
+    tableKey,
+  });
+}
+
+export async function postDqaSpendBifurcation(
+  sessionId: string,
+  tableName: string,
+  tableKey?: string,
+): Promise<any> {
+  return jsonPost("/dqa/spend-bifurcation", {
+    sessionId,
+    tableName: tableName || undefined,
+    tableKey,
+  });
+}
+
 // --- Chat ---
 
 export async function chat(body: {

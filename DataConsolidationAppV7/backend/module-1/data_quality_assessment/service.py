@@ -15,6 +15,7 @@ from shared.db import DuckDBConnection, read_table_columns, table_exists, table_
 from .currency_analysis import run_currency_analysis
 from .country_region_analysis import run_country_region_analysis
 from .date_analysis import run_date_analysis
+from .fill_rate_analysis import run_fill_rate_analysis, run_spend_bifurcation
 from .payment_terms_analysis import run_payment_terms_analysis
 from .supplier_analysis import run_supplier_analysis
 
@@ -27,6 +28,8 @@ __all__ = [
     "run_dqa_payment_terms",
     "run_dqa_country_region",
     "run_dqa_supplier",
+    "run_dqa_fill_rate",
+    "run_dqa_spend_bifurcation",
 ]
 
 
@@ -189,3 +192,37 @@ def run_dqa_supplier(
     """
     table_name = _validate_table(conn, table_name)
     return run_supplier_analysis(conn, table_name, api_key)
+
+
+def run_dqa_fill_rate(
+    conn: DuckDBConnection,
+    table_name: str,
+) -> dict[str, Any]:
+    """Per-column fill rate with spend coverage.
+
+    Args:
+        conn: DuckDB session connection.
+        table_name: Target table.
+
+    Returns:
+        JSON-serialisable result dict.
+    """
+    table_name = _validate_table(conn, table_name)
+    return run_fill_rate_analysis(conn, table_name)
+
+
+def run_dqa_spend_bifurcation(
+    conn: DuckDBConnection,
+    table_name: str,
+) -> dict[str, Any]:
+    """Positive vs negative spend bifurcation.
+
+    Args:
+        conn: DuckDB session connection.
+        table_name: Target table.
+
+    Returns:
+        JSON-serialisable result dict.
+    """
+    table_name = _validate_table(conn, table_name)
+    return run_spend_bifurcation(conn, table_name)

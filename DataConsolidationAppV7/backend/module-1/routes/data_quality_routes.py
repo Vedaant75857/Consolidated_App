@@ -17,7 +17,9 @@ from data_quality_assessment.service import (
     run_dqa_country_region,
     run_dqa_currency,
     run_dqa_date,
+    run_dqa_fill_rate,
     run_dqa_payment_terms,
+    run_dqa_spend_bifurcation,
     run_dqa_supplier,
 )
 
@@ -163,6 +165,76 @@ def dqa_supplier():
         conn = get_session_db(session_id)
         with _session_lock(session_id):
             result = run_dqa_supplier(conn, table_name, api_key)
+
+        return jsonify(result)
+    except TableMissingError as exc:
+        return jsonify({"error": str(exc), "code": "TABLE_MISSING"}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+# ── Fill Rate Summary ─────────────────────────────────────────────────────
+
+@data_quality_bp.route("/dqa/fill-rate", methods=["POST"])
+def dqa_fill_rate():
+    """Per-column fill rate with spend coverage (no AI key required)."""
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+        table_name = body.get("tableName")
+        table_key = body.get("tableKey")
+
+        if not session_id:
+            raise ValueError("Missing sessionId")
+
+        conn = get_session_db(str(session_id))
+
+        if not table_name and table_key:
+            table_name = lookup_sql_name(conn, str(table_key))
+            if not table_name:
+                raise ValueError(f"No table found for key: {table_key}")
+        if not table_name:
+            raise ValueError("Missing tableName or tableKey")
+
+        with _session_lock(str(session_id)):
+            result = run_dqa_fill_rate(conn, str(table_name))
+
+        return jsonify(result)
+    except TableMissingError as exc:
+        return jsonify({"error": str(exc), "code": "TABLE_MISSING"}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+# ── Spend Bifurcation ─────────────────────────────────────────────────────
+
+@data_quality_bp.route("/dqa/spend-bifurcation", methods=["POST"])
+def dqa_spend_bifurcation():
+    """Positive vs negative spend split (no AI key required)."""
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+        table_name = body.get("tableName")
+        table_key = body.get("tableKey")
+
+        if not session_id:
+            raise ValueError("Missing sessionId")
+
+        conn = get_session_db(str(session_id))
+
+        if not table_name and table_key:
+            table_name = lookup_sql_name(conn, str(table_key))
+            if not table_name:
+                raise ValueError(f"No table found for key: {table_key}")
+        if not table_name:
+            raise ValueError("Missing tableName or tableKey")
+
+        with _session_lock(str(session_id)):
+            result = run_dqa_spend_bifurcation(conn, str(table_name))
 
         return jsonify(result)
     except TableMissingError as exc:

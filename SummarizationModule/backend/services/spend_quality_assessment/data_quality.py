@@ -326,7 +326,81 @@ def _compute_pareto_analysis(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# D.  Public Orchestrator
+# D.  Spend Bifurcation
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _compute_spend_bifurcation(
+    conn: DuckDBConnection,
+    available: set[str],
+) -> dict[str, Any]:
+    """Compute positive/negative spend for both reporting and local currencies.
+
+    Returns both views so the frontend can toggle between them.
+    """
+    result: dict[str, Any] = {"reporting": None, "local": None}
+
+    # Reporting currency (total_spend)
+    if "total_spend" in available:
+        row = conn.execute(
+            """
+            SELECT
+                SUM(CASE WHEN TRY_CAST(total_spend AS DOUBLE) > 0
+                    THEN CAST(total_spend AS REAL) ELSE 0 END) AS pos,
+                SUM(CASE WHEN TRY_CAST(total_spend AS DOUBLE) < 0
+                    THEN CAST(total_spend AS REAL) ELSE 0 END) AS neg
+            FROM "analysis_data"
+            """
+        ).fetchone()
+        result["reporting"] = {
+            "positiveSpend": round(float(row[0] or 0)),
+            "negativeSpend": round(float(row[1] or 0)),
+        }
+
+    # Local currency (local_spend grouped by currency)
+    if "local_spend" in available and "currency" in available:
+        rows = conn.execute(
+            """
+            SELECT
+                UPPER(TRIM(CAST(currency AS TEXT))) AS code,
+                SUM(CASE WHEN TRY_CAST(local_spend AS DOUBLE) > 0
+                    THEN CAST(local_spend AS REAL) ELSE 0 END) AS pos,
+                SUM(CASE WHEN TRY_CAST(local_spend AS DOUBLE) < 0
+                    THEN CAST(local_spend AS REAL) ELSE 0 END) AS neg
+            FROM "analysis_data"
+            WHERE currency IS NOT NULL AND TRIM(CAST(currency AS TEXT)) != ''
+            GROUP BY UPPER(TRIM(CAST(currency AS TEXT)))
+            ORDER BY pos DESC
+            """
+        ).fetchall()
+        result["local"] = [
+            {
+                "code": str(r[0]),
+                "positiveSpend": round(float(r[1] or 0)),
+                "negativeSpend": round(float(r[2] or 0)),
+            }
+            for r in rows
+        ]
+    elif "local_spend" in available:
+        row = conn.execute(
+            """
+            SELECT
+                SUM(CASE WHEN TRY_CAST(local_spend AS DOUBLE) > 0
+                    THEN CAST(local_spend AS REAL) ELSE 0 END) AS pos,
+                SUM(CASE WHEN TRY_CAST(local_spend AS DOUBLE) < 0
+                    THEN CAST(local_spend AS REAL) ELSE 0 END) AS neg
+            FROM "analysis_data"
+            """
+        ).fetchone()
+        result["local"] = {
+            "positiveSpend": round(float(row[0] or 0)),
+            "negativeSpend": round(float(row[1] or 0)),
+        }
+
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# E.  Public Orchestrator
 # ═══════════════════════════════════════════════════════════════════════════
 
 def run_executive_summary(
@@ -367,6 +441,9 @@ def run_executive_summary(
     # Panel 1: Date Spend Pivot
     date_pivot = _compute_date_spend_pivot(conn)
 
+    # Panel 1b: Spend Bifurcation
+    spend_bifurcation = _compute_spend_bifurcation(conn, available)
+
     # Panel 2: Pareto Analysis
     pareto = _compute_pareto_analysis(conn, available)
 
@@ -376,6 +453,7 @@ def run_executive_summary(
     return {
         "totalRows": total_rows,
         "datePivot": date_pivot,
+        "spendBifurcation": spend_bifurcation,
         "paretoAnalysis": pareto,
         "descriptionQuality": desc_quality,
     }

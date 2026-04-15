@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 
 MONTH_ORDER = ["Jan","Feb","Mar","Apr","May","Jun", "Jul","Aug","Sep","Oct","Nov","Dec"]
-TARGET_CURRENCY = "USD"
+DEFAULT_TARGET_CURRENCY = "USD"
 
 def _candidate_reference_paths():
     """Build an ordered list of paths to search for the FX rates workbook.
@@ -128,6 +128,7 @@ def run_conversion(
     fx_data=None,
     fx_overrides=None,
     fx_override_mode: str = "flat",
+    target_currency: str = DEFAULT_TARGET_CURRENCY,
 ):
     df = df.copy()
     if fx_data is None:
@@ -199,12 +200,14 @@ def run_conversion(
                     if c == ccy:
                         FX_YEARLY[(ccy, yr)] = rate
 
+    target_currency = target_currency.upper().strip() if target_currency else DEFAULT_TARGET_CURRENCY
+
     fx_col = f"FX_rate_used_{spend_col}"
-    out_col = f"{spend_col}_converted_inUSD"
+    out_col = f"{spend_col}_converted_in{target_currency}"
     _s = 1
     while fx_col in df.columns: fx_col = f"FX_rate_used_{spend_col}_{_s}"; _s += 1
     _s = 1
-    while out_col in df.columns: out_col = f"{spend_col}_converted_inUSD_{_s}"; _s += 1
+    while out_col in df.columns: out_col = f"{spend_col}_converted_in{target_currency}_{_s}"; _s += 1
 
     status_col = f"{spend_col}_conversion_status"
     _s = 1
@@ -233,16 +236,33 @@ def run_conversion(
         lookup_keys = pd.DataFrame({"ccy": ccy_series.values, "year": row_year.values, "month": row_month.values})
 
         def _resolve_monthly(ccy, year, month):
+            """Resolve the effective conversion rate for source -> target.
+
+            All FX table rates are "local currency units per 1 USD".
+            For non-USD targets we bridge: spend / source_rate * target_rate.
+            Returns (effective_rate, used_fallback).  The caller divides spend
+            by effective_rate to get the target amount.
+            """
             if pd.isna(ccy): return np.nan, False
-            if ccy == TARGET_CURRENCY: return 1.0, False
-            if pd.notna(year) and pd.notna(month):
-                rate = FX.get((ccy, int(year), month))
-                if rate is not None: return rate, False
-            # No fallback for user-override currencies — produce NaN if exact rate not found
-            if ccy in _override_ccys:
-                return np.nan, False
-            rate = LATEST_RATE.get(ccy)
-            return rate if rate is not None else np.nan, True
+            if ccy == target_currency: return 1.0, False
+
+            def _src_rate(c, yr, mo):
+                if c == "USD": return 1.0, False
+                if pd.notna(yr) and pd.notna(mo):
+                    r = FX.get((c, int(yr), mo))
+                    if r is not None: return r, False
+                if c in _override_ccys: return np.nan, False
+                r = LATEST_RATE.get(c)
+                return (r, True) if r is not None else (np.nan, False)
+
+            src, src_fb = _src_rate(ccy, year, month)
+            if target_currency == "USD":
+                return src, src_fb
+            tgt, tgt_fb = _src_rate(target_currency, year, month)
+            if np.isnan(src) or np.isnan(tgt) or tgt == 0:
+                return np.nan, src_fb or tgt_fb
+            # effective_rate: spend / effective = spend / src * tgt
+            return src / tgt, src_fb or tgt_fb
 
         unique_combos = lookup_keys.drop_duplicates().copy()
         resolved = unique_combos.apply(lambda r: _resolve_monthly(r["ccy"], r["year"], r["month"]), axis=1)
@@ -257,15 +277,24 @@ def run_conversion(
     elif conversion_mode == "scope_year":
         def _resolve_scope(ccy):
             if pd.isna(ccy): return np.nan, False
-            if ccy == TARGET_CURRENCY: return 1.0, False
-            if scope_year:
-                rate = FX_YEARLY.get((ccy, int(scope_year)))
-                if rate is not None: return rate, False
-            # No fallback for user-override currencies — produce NaN if exact rate not found
-            if ccy in _override_ccys:
-                return np.nan, False
-            rate = LATEST_RATE.get(ccy)
-            return rate if rate is not None else np.nan, True
+            if ccy == target_currency: return 1.0, False
+
+            def _src_scope(c):
+                if c == "USD": return 1.0, False
+                if scope_year:
+                    r = FX_YEARLY.get((c, int(scope_year)))
+                    if r is not None: return r, False
+                if c in _override_ccys: return np.nan, False
+                r = LATEST_RATE.get(c)
+                return (r, True) if r is not None else (np.nan, False)
+
+            src, src_fb = _src_scope(ccy)
+            if target_currency == "USD":
+                return src, src_fb
+            tgt, tgt_fb = _src_scope(target_currency)
+            if np.isnan(src) or np.isnan(tgt) or tgt == 0:
+                return np.nan, src_fb or tgt_fb
+            return src / tgt, src_fb or tgt_fb
 
         unique_ccys = list(ccy_series.unique())
         resolved_map = {c: _resolve_scope(c) for c in unique_ccys}
@@ -276,8 +305,14 @@ def run_conversion(
     else:
         def _resolve_latest(ccy):
             if pd.isna(ccy): return np.nan
-            if ccy == TARGET_CURRENCY: return 1.0
-            return LATEST_RATE.get(ccy, np.nan)
+            if ccy == target_currency: return 1.0
+            src = 1.0 if ccy == "USD" else LATEST_RATE.get(ccy, np.nan)
+            if target_currency == "USD":
+                return src
+            tgt = LATEST_RATE.get(target_currency, np.nan)
+            if np.isnan(src) or np.isnan(tgt) or tgt == 0:
+                return np.nan
+            return src / tgt
 
         unique_ccys = list(ccy_series.unique())
         resolved_map = {c: _resolve_latest(c) for c in unique_ccys}
@@ -286,9 +321,9 @@ def run_conversion(
         use_string_labels = False
 
     converted = np.where(
-        ccy_series == TARGET_CURRENCY,
-        spend_num,               
-        spend_num / rate_values, 
+        ccy_series == target_currency,
+        spend_num,
+        spend_num / rate_values,
     )
     converted = pd.array(converted, dtype="Float64")
 

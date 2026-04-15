@@ -488,6 +488,52 @@ def run_date_analysis(
                     conn, table_name, date_column, spend_col, dominant_format,
                 )
 
+    # ── Total spend summary ─────────────────────────────────────────────
+    total_spend_summary: dict[str, Any] | None = None
+    if spend_col:
+        tbl = quote_id(table_name)
+        qs = quote_id(spend_col)
+        spend_expr = _numeric_spend_expr(qs)
+
+        if is_reporting:
+            ts_row = conn.execute(
+                f"SELECT SUM({spend_expr}) AS ts FROM {tbl}"
+            ).fetchone()
+            total_spend_summary = {
+                "type": "reporting",
+                "total": round(float(ts_row["ts"] or 0)),
+                "column": spend_col,
+            }
+        else:
+            ccy_code_col = _pick_currency_code_column(spend_col, available)
+            if ccy_code_col:
+                qcc = quote_id(ccy_code_col)
+                ccy_rows = conn.execute(
+                    f"SELECT UPPER(TRIM({qcc})) AS code, "
+                    f"SUM({spend_expr}) AS ts "
+                    f"FROM {tbl} "
+                    f"WHERE {qcc} IS NOT NULL AND TRIM({qcc}) != '' "
+                    f"GROUP BY UPPER(TRIM({qcc})) "
+                    f"ORDER BY ts DESC"
+                ).fetchall()
+                total_spend_summary = {
+                    "type": "local_by_currency",
+                    "currencies": [
+                        {"code": str(r["code"]), "total": round(float(r["ts"] or 0))}
+                        for r in ccy_rows
+                    ],
+                    "column": spend_col,
+                }
+            else:
+                ts_row = conn.execute(
+                    f"SELECT SUM({spend_expr}) AS ts FROM {tbl}"
+                ).fetchone()
+                total_spend_summary = {
+                    "type": "reporting",
+                    "total": round(float(ts_row["ts"] or 0)),
+                    "column": spend_col,
+                }
+
     # ── AI insight ────────────────────────────────────────────────────────
     ai_payload = {
         "formatTable": format_table,
@@ -506,6 +552,7 @@ def run_date_analysis(
         "selectedColumn": date_column,
         "formatTable": format_table,
         "pivotData": pivot_data,
+        "totalSpendSummary": total_spend_summary,
         "consistent": all_consistent,
         "aiInsight": ai_insight,
     }
