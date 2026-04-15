@@ -39,26 +39,20 @@ _CURRENCY_SPEND_PAIRS: dict[str, tuple[str, str]] = {
 }
 
 
-def run_currency_analysis(
+def run_currency_analysis_sql(
     conn: DuckDBConnection,
     table_name: str,
-    api_key: str,
 ) -> dict[str, Any]:
-    """Run the full currency analysis for the DQA currency panel.
+    """SQL-only phase: currency metrics and per-currency breakdown.
 
-    Args:
-        conn: SQLite session connection.
-        table_name: Target table.
-        api_key: API key for AI insight generation.
+    Must be called under the session lock.
 
     Returns:
-        JSON-serialisable dict with ``currencyTable``, ``distinctCount``,
-        ``codes``, ``aiInsight``, and ``exists``.
+        JSON-serialisable dict with ``aiInsight`` set to ``None``.
     """
     available = set(read_table_columns(conn, table_name))
     total_rows = table_row_count(conn, table_name)
 
-    # Find the first available currency column (case-insensitive)
     currency_col = find_column(available, CURRENCY_COLUMNS)
 
     if currency_col is None:
@@ -68,35 +62,22 @@ def run_currency_analysis(
             "distinctCount": 0,
             "codes": [],
             "currencyTable": [],
+            "hasLocalSpend": False,
+            "hasReportingSpend": False,
             "aiInsight": "No currency columns found in the dataset.",
         }
 
-    # Basic metrics (distinct count + code list)
     basic = compute_currency_metrics(conn, table_name, currency_col)
 
-    # Paired spend columns -- look up via the canonical key that matched
     matched_key = find_column(set(_CURRENCY_SPEND_PAIRS.keys()), [currency_col])
     pair = _CURRENCY_SPEND_PAIRS.get(matched_key, (None, None)) if matched_key else (None, None)
     local_spend = find_column(available, [pair[0]]) if pair[0] else None
     reporting_spend = find_column(available, [pair[1]]) if pair[1] else None
 
-    # Detailed per-currency breakdown
     currency_table = compute_currency_quality_analysis(
         conn, table_name, currency_col,
         local_spend, reporting_spend, total_rows,
     )
-
-    # AI insight
-    ai_payload = {
-        "currencyTable": currency_table,
-        "distinctCount": basic["distinctCount"],
-        "codes": basic["codes"],
-    }
-    try:
-        ai_insight = generate_currency_insight(ai_payload, api_key)
-    except Exception as exc:
-        logger.warning("Currency AI insight generation failed: %s", exc)
-        ai_insight = "AI insight generation failed."
 
     return {
         "exists": True,
@@ -106,5 +87,30 @@ def run_currency_analysis(
         "currencyTable": currency_table,
         "hasLocalSpend": local_spend is not None,
         "hasReportingSpend": reporting_spend is not None,
-        "aiInsight": ai_insight,
+        "aiInsight": None,
     }
+
+
+def run_currency_analysis_ai(
+    sql_result: dict[str, Any],
+    api_key: str,
+) -> dict[str, Any]:
+    """AI phase: generate insight from pre-computed SQL data.
+
+    Safe to call without any database lock held.
+    """
+    if sql_result.get("aiInsight") is not None:
+        return sql_result
+
+    ai_payload = {
+        "currencyTable": sql_result["currencyTable"],
+        "distinctCount": sql_result["distinctCount"],
+        "codes": sql_result["codes"],
+    }
+    try:
+        sql_result["aiInsight"] = generate_currency_insight(ai_payload, api_key)
+    except Exception as exc:
+        logger.warning("Currency AI insight generation failed: %s", exc)
+        sql_result["aiInsight"] = "AI insight generation failed."
+
+    return sql_result

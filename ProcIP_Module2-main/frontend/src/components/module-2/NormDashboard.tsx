@@ -15,8 +15,9 @@ import UnsupportedCurrencyPanel, {
   type MonthlyOverrides,
 } from "./UnsupportedCurrencyPanel";
 import type { LogEntry } from "../module-1/StatusLog";
+import { getConfig } from "../../runtimeConfig";
 
-const ANALYZER_FE = import.meta.env.VITE_ANALYZER_FE ?? "http://localhost:3004";
+const ANALYZER_FE = getConfig().summarizer ?? import.meta.env.VITE_ANALYZER_FE ?? "http://localhost:3004";
 
 const OPERATIONS = [
   { id: "supplier_name", label: "Supplier Names", icon: Building2, desc: "Clean & deduplicate supplier names", loadingMsg: "Cleaning & deduplicating supplier names…" },

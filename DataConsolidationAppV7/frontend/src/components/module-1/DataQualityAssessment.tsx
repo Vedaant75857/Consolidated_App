@@ -242,7 +242,6 @@ export default function DataQualityAssessment({
   const [selectedVersion, setSelectedVersion] = useState(latestVersion);
   const [sessionExpired, setSessionExpired] = useState(false);
   const [tableMissing, setTableMissing] = useState(false);
-  const skipRef = useRef(false);
   const completedPanelsRef = useRef(0);
 
   const markPanelComplete = useCallback(() => {
@@ -252,7 +251,6 @@ export default function DataQualityAssessment({
     );
   }, [setLoadingMessage]);
 
-  // Per-panel state
   const [dateState, setDateState] = useState<PanelState<DateResult>>({
     loading: false,
     error: null,
@@ -277,62 +275,74 @@ export default function DataQualityAssessment({
     PanelState<SpendBifurcationResult>
   >({ loading: false, error: null, data: null });
 
-  // Expanded panels
   const [expandedPanels, setExpandedPanels] = useState<Set<string>>(
     new Set(["fillrate", "date", "bifurcation", "currency", "payment", "country", "supplier"]),
   );
 
-  // Date column selector
   const [selectedDateColumn, setSelectedDateColumn] = useState<
     string | undefined
   >(undefined);
 
   const hasRunRef = useRef(false);
 
-  const getTableName = useCallback(
-    (version: number) =>
-      isSingleTable ? singleTableName! : tableNameForVersion(version),
-    [isSingleTable, singleTableName],
-  );
-
   const getTableKey = useCallback(
     () => (isSingleTable ? singleTableName : undefined),
     [isSingleTable, singleTableName],
   );
 
-  // ── Retry machinery for DuckDB WAL visibility race ─────────────────
-  const retryCountRef = useRef(0);
+  // ── TABLE_MISSING retry: counter-based so re-trigger always works ──
+  const [tableMissingRetry, setTableMissingRetry] = useState(0);
   const MAX_TABLE_MISSING_RETRIES = 2;
+
+  // ── Overlay: state-derived, stays until ALL panels settle ──────────
+  const allPanelsSettled =
+    !dateState.loading &&
+    !currencyState.loading &&
+    !paymentState.loading &&
+    !countryState.loading &&
+    !supplierState.loading &&
+    !fillRateState.loading &&
+    !bifurcationState.loading;
+
+  const [runningAssessment, setRunningAssessment] = useState(false);
+
+  useEffect(() => {
+    if (runningAssessment && allPanelsSettled) {
+      setAiLoading(false);
+      setLoadingMessage("");
+      setRunningAssessment(false);
+      addLog("Data Quality", "success", "Assessment complete.");
+    }
+  }, [runningAssessment, allPanelsSettled, setAiLoading, setLoadingMessage, addLog]);
+
+  // ── Silent retry helper (exponential backoff: 2s, 4s, 8s) ─────────
+  const MAX_PANEL_RETRIES = 3;
+  const RETRY_BASE_MS = 2000;
+
+  async function withRetry<T>(
+    fn: () => Promise<T>,
+    attempt = 0,
+  ): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt < MAX_PANEL_RETRIES - 1) {
+        await new Promise((r) => setTimeout(r, RETRY_BASE_MS * 2 ** attempt));
+        return withRetry(fn, attempt + 1);
+      }
+      throw err;
+    }
+  }
 
   // ── Panel runners ────────────────────────────────────────────────────
 
-  const checkSessionError = useCallback((err: any) => {
-    const code = err?.code || "";
-    if (code === ERROR_CODE_TABLE_MISSING) {
-      if (retryCountRef.current < MAX_TABLE_MISSING_RETRIES) {
-        skipRef.current = true;
-        setTableMissing(true);
-        return true;
-      }
-      skipRef.current = true;
-      setTableMissing(true);
-      return true;
-    }
-    return false;
-  }, []);
-
   const runDatePanel = useCallback(
     async (version: number, dateCol?: string) => {
-      if (sessionExpired || skipRef.current) return;
       setDateState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
-        const data = await postDqaDate(
-          sessionId,
-          apiKey,
-          tn,
-          dateCol,
-          getTableKey(),
+        const data = await withRetry(() =>
+          postDqaDate(sessionId, apiKey, tn, dateCol, getTableKey()),
         );
         setDateState({ loading: false, error: null, data });
         if (
@@ -343,7 +353,11 @@ export default function DataQualityAssessment({
           setSelectedDateColumn(data.selectedColumn);
         }
       } catch (err: any) {
-        if (!checkSessionError(err)) {
+        const code = err?.code || "";
+        if (code === ERROR_CODE_TABLE_MISSING) {
+          setDateState({ loading: false, error: null, data: null });
+          setTableMissingRetry((c) => c + 1);
+        } else {
           setDateState({
             loading: false,
             error: err?.message || "Date analysis failed",
@@ -354,24 +368,24 @@ export default function DataQualityAssessment({
         markPanelComplete();
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError, markPanelComplete],
+    [sessionId, apiKey, isSingleTable, getTableKey, markPanelComplete],
   );
 
   const runCurrencyPanel = useCallback(
     async (version: number) => {
-      if (sessionExpired || skipRef.current) return;
       setCurrencyState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
-        const data = await postDqaCurrency(
-          sessionId,
-          apiKey,
-          tn,
-          getTableKey(),
+        const data = await withRetry(() =>
+          postDqaCurrency(sessionId, apiKey, tn, getTableKey()),
         );
         setCurrencyState({ loading: false, error: null, data });
       } catch (err: any) {
-        if (!checkSessionError(err)) {
+        const code = err?.code || "";
+        if (code === ERROR_CODE_TABLE_MISSING) {
+          setCurrencyState({ loading: false, error: null, data: null });
+          setTableMissingRetry((c) => c + 1);
+        } else {
           setCurrencyState({
             loading: false,
             error: err?.message || "Currency analysis failed",
@@ -382,24 +396,24 @@ export default function DataQualityAssessment({
         markPanelComplete();
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError, markPanelComplete],
+    [sessionId, apiKey, isSingleTable, getTableKey, markPanelComplete],
   );
 
   const runPaymentPanel = useCallback(
     async (version: number) => {
-      if (sessionExpired || skipRef.current) return;
       setPaymentState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
-        const data = await postDqaPaymentTerms(
-          sessionId,
-          apiKey,
-          tn,
-          getTableKey(),
+        const data = await withRetry(() =>
+          postDqaPaymentTerms(sessionId, apiKey, tn, getTableKey()),
         );
         setPaymentState({ loading: false, error: null, data });
       } catch (err: any) {
-        if (!checkSessionError(err)) {
+        const code = err?.code || "";
+        if (code === ERROR_CODE_TABLE_MISSING) {
+          setPaymentState({ loading: false, error: null, data: null });
+          setTableMissingRetry((c) => c + 1);
+        } else {
           setPaymentState({
             loading: false,
             error: err?.message || "Payment terms analysis failed",
@@ -410,24 +424,24 @@ export default function DataQualityAssessment({
         markPanelComplete();
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError, markPanelComplete],
+    [sessionId, apiKey, isSingleTable, getTableKey, markPanelComplete],
   );
 
   const runCountryPanel = useCallback(
     async (version: number) => {
-      if (sessionExpired || skipRef.current) return;
       setCountryState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
-        const data = await postDqaCountryRegion(
-          sessionId,
-          apiKey,
-          tn,
-          getTableKey(),
+        const data = await withRetry(() =>
+          postDqaCountryRegion(sessionId, apiKey, tn, getTableKey()),
         );
         setCountryState({ loading: false, error: null, data });
       } catch (err: any) {
-        if (!checkSessionError(err)) {
+        const code = err?.code || "";
+        if (code === ERROR_CODE_TABLE_MISSING) {
+          setCountryState({ loading: false, error: null, data: null });
+          setTableMissingRetry((c) => c + 1);
+        } else {
           setCountryState({
             loading: false,
             error: err?.message || "Country/Region analysis failed",
@@ -438,24 +452,24 @@ export default function DataQualityAssessment({
         markPanelComplete();
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError, markPanelComplete],
+    [sessionId, apiKey, isSingleTable, getTableKey, markPanelComplete],
   );
 
   const runSupplierPanel = useCallback(
     async (version: number) => {
-      if (sessionExpired || skipRef.current) return;
       setSupplierState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
-        const data = await postDqaSupplier(
-          sessionId,
-          apiKey,
-          tn,
-          getTableKey(),
+        const data = await withRetry(() =>
+          postDqaSupplier(sessionId, apiKey, tn, getTableKey()),
         );
         setSupplierState({ loading: false, error: null, data });
       } catch (err: any) {
-        if (!checkSessionError(err)) {
+        const code = err?.code || "";
+        if (code === ERROR_CODE_TABLE_MISSING) {
+          setSupplierState({ loading: false, error: null, data: null });
+          setTableMissingRetry((c) => c + 1);
+        } else {
           setSupplierState({
             loading: false,
             error: err?.message || "Supplier analysis failed",
@@ -466,19 +480,24 @@ export default function DataQualityAssessment({
         markPanelComplete();
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError, markPanelComplete],
+    [sessionId, apiKey, isSingleTable, getTableKey, markPanelComplete],
   );
 
   const runFillRatePanel = useCallback(
     async (version: number) => {
-      if (sessionExpired || skipRef.current) return;
       setFillRateState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
-        const data = await postDqaFillRate(sessionId, tn, getTableKey());
+        const data = await withRetry(() =>
+          postDqaFillRate(sessionId, tn, getTableKey()),
+        );
         setFillRateState({ loading: false, error: null, data });
       } catch (err: any) {
-        if (!checkSessionError(err)) {
+        const code = err?.code || "";
+        if (code === ERROR_CODE_TABLE_MISSING) {
+          setFillRateState({ loading: false, error: null, data: null });
+          setTableMissingRetry((c) => c + 1);
+        } else {
           setFillRateState({
             loading: false,
             error: err?.message || "Fill rate analysis failed",
@@ -489,19 +508,24 @@ export default function DataQualityAssessment({
         markPanelComplete();
       }
     },
-    [sessionId, isSingleTable, getTableKey, sessionExpired, checkSessionError, markPanelComplete],
+    [sessionId, isSingleTable, getTableKey, markPanelComplete],
   );
 
   const runBifurcationPanel = useCallback(
     async (version: number) => {
-      if (sessionExpired || skipRef.current) return;
       setBifurcationState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
-        const data = await postDqaSpendBifurcation(sessionId, tn, getTableKey());
+        const data = await withRetry(() =>
+          postDqaSpendBifurcation(sessionId, tn, getTableKey()),
+        );
         setBifurcationState({ loading: false, error: null, data });
       } catch (err: any) {
-        if (!checkSessionError(err)) {
+        const code = err?.code || "";
+        if (code === ERROR_CODE_TABLE_MISSING) {
+          setBifurcationState({ loading: false, error: null, data: null });
+          setTableMissingRetry((c) => c + 1);
+        } else {
           setBifurcationState({
             loading: false,
             error: err?.message || "Spend bifurcation failed",
@@ -512,33 +536,26 @@ export default function DataQualityAssessment({
         markPanelComplete();
       }
     },
-    [sessionId, isSingleTable, getTableKey, sessionExpired, checkSessionError, markPanelComplete],
+    [sessionId, isSingleTable, getTableKey, markPanelComplete],
   );
 
   const runAllPanels = useCallback(
     (version: number) => {
-      skipRef.current = false;
       completedPanelsRef.current = 0;
       setTableMissing(false);
+      setTableMissingRetry(0);
       addLog("Data Quality", "info", "Running data quality assessment…");
       setAiLoading(true);
+      setRunningAssessment(true);
       setLoadingMessage("Data Quality Assessment… 0/7 panels complete");
 
-      const promises = [
-        runFillRatePanel(version),
-        runDatePanel(version),
-        runBifurcationPanel(version),
-        runCurrencyPanel(version),
-        runPaymentPanel(version),
-        runCountryPanel(version),
-        runSupplierPanel(version),
-      ];
-
-      Promise.allSettled(promises).then(() => {
-        setAiLoading(false);
-        setLoadingMessage("");
-        addLog("Data Quality", "success", "Assessment complete.");
-      });
+      runFillRatePanel(version);
+      runDatePanel(version);
+      runBifurcationPanel(version);
+      runCurrencyPanel(version);
+      runPaymentPanel(version);
+      runCountryPanel(version);
+      runSupplierPanel(version);
     },
     [
       runFillRatePanel,
@@ -557,23 +574,24 @@ export default function DataQualityAssessment({
   useEffect(() => {
     if (!hasRunRef.current && sessionId && apiKey) {
       hasRunRef.current = true;
-      retryCountRef.current = 0;
       runAllPanels(selectedVersion);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-retry when TABLE_MISSING — DuckDB WAL may not have flushed yet
+  // Auto-retry on TABLE_MISSING — counter-based so React always re-fires
   useEffect(() => {
-    if (!tableMissing) return;
-    if (retryCountRef.current >= MAX_TABLE_MISSING_RETRIES) return;
-    retryCountRef.current += 1;
+    if (tableMissingRetry === 0) return;
+    if (tableMissingRetry > MAX_TABLE_MISSING_RETRIES) {
+      setTableMissing(true);
+      return;
+    }
     const timer = setTimeout(() => {
       runAllPanels(selectedVersion);
     }, 1500);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tableMissing]);
+  }, [tableMissingRetry]);
 
   const togglePanel = (id: string) =>
     setExpandedPanels((prev) => {

@@ -199,31 +199,42 @@ A complete list of every Python function in the app, organised by module and ste
 
 | Function | File | What it does |
 |----------|------|--------------|
-| `dqa_date` | `routes/data_quality_routes.py` | Receives the request to run the date quality assessment and returns the results. |
-| `dqa_currency` | `routes/data_quality_routes.py` | Receives the request to run the currency quality assessment and returns the results. |
-| `dqa_payment_terms` | `routes/data_quality_routes.py` | Receives the request to run the payment terms quality assessment and returns the results. |
-| `dqa_country_region` | `routes/data_quality_routes.py` | Receives the request to run the country/region quality assessment and returns the results. |
-| `dqa_supplier` | `routes/data_quality_routes.py` | Receives the request to run the supplier quality assessment and returns the results. |
+| `dqa_date` | `routes/data_quality_routes.py` | Receives the date quality request. Runs SQL under the session lock, then calls AI outside the lock so other panels aren't blocked. |
+| `dqa_currency` | `routes/data_quality_routes.py` | Receives the currency quality request. Runs SQL under the session lock, then calls AI outside the lock. |
+| `dqa_payment_terms` | `routes/data_quality_routes.py` | Receives the payment terms quality request. Runs SQL under the session lock, then calls AI outside the lock. |
+| `dqa_country_region` | `routes/data_quality_routes.py` | Receives the country/region quality request. Runs SQL under the session lock, then calls AI outside the lock. |
+| `dqa_supplier` | `routes/data_quality_routes.py` | Receives the supplier quality request. Runs SQL under the session lock, then calls AI outside the lock. |
 | `_session_lock` | `routes/data_quality_routes.py` | Prevents two quality assessments from running at the same time for the same session. |
-| `_parse_common_body` | `routes/data_quality_routes.py` | Reads the standard fields (session ID, table name, API key) from every quality assessment request. |
+| `_parse_request_fields` | `routes/data_quality_routes.py` | Reads the standard fields (session ID, table name, API key) from every quality assessment request without touching the database. |
+| `_resolve_table_under_lock` | `routes/data_quality_routes.py` | Gets the database connection and resolves the table name, all under the session lock so there are no race conditions. |
 | `TableMissingError` | `data_quality_assessment/service.py` | A custom error type raised when a table is missing from the session but the session itself is still alive. |
 | `_validate_table` | `data_quality_assessment/service.py` | Checks that the requested table actually exists before running an assessment. Raises TableMissingError if the table is gone but the session is alive. |
-| `run_dqa_date` | `data_quality_assessment/service.py` | Runs the full date quality check — analyses formats, finds gaps, and calculates completeness. |
-| `run_dqa_currency` | `data_quality_assessment/service.py` | Runs the full currency quality check — finds which currencies appear and flags inconsistencies. |
-| `run_dqa_payment_terms` | `data_quality_assessment/service.py` | Runs the full payment terms quality check — analyses how terms are distributed across spend. |
-| `run_dqa_country_region` | `data_quality_assessment/service.py` | Runs the full country/region quality check — measures completeness and consistency. |
-| `run_dqa_supplier` | `data_quality_assessment/service.py` | Runs the full supplier quality check — measures concentration and identifies top suppliers. |
-| `run_supplier_analysis` | `data_quality_assessment/supplier_analysis.py` | Calculates supplier concentration stats and builds the data for charts and tables. |
-| `run_payment_terms_analysis` | `data_quality_assessment/payment_terms_analysis.py` | Calculates how payment terms are distributed and builds chart data. |
+| `run_dqa_date_sql` | `data_quality_assessment/service.py` | Runs the database queries for the date quality check — must be called under the session lock. |
+| `run_dqa_date_ai` | `data_quality_assessment/service.py` | Generates the AI insight for the date panel — safe to call without any lock. |
+| `run_dqa_currency_sql` | `data_quality_assessment/service.py` | Runs the database queries for the currency quality check — must be called under the session lock. |
+| `run_dqa_currency_ai` | `data_quality_assessment/service.py` | Generates the AI insight for the currency panel — safe to call without any lock. |
+| `run_dqa_payment_terms_sql` | `data_quality_assessment/service.py` | Runs the database queries for the payment terms quality check — must be called under the session lock. |
+| `run_dqa_payment_terms_ai` | `data_quality_assessment/service.py` | Generates the AI insight for the payment terms panel — safe to call without any lock. |
+| `run_dqa_country_region_sql` | `data_quality_assessment/service.py` | Runs the database queries for the country/region quality check — must be called under the session lock. |
+| `run_dqa_country_region_ai` | `data_quality_assessment/service.py` | Generates the AI insight for the country/region panel — safe to call without any lock. |
+| `run_dqa_supplier_sql` | `data_quality_assessment/service.py` | Runs the database queries for the supplier quality check — must be called under the session lock. |
+| `run_dqa_supplier_ai` | `data_quality_assessment/service.py` | Generates the AI insight for the supplier panel — safe to call without any lock. |
+| `run_supplier_analysis_sql` | `data_quality_assessment/supplier_analysis.py` | Queries the database for top suppliers by spend and unique supplier count. |
+| `run_supplier_analysis_ai` | `data_quality_assessment/supplier_analysis.py` | Sends the supplier list to AI for normalisation assessment. |
+| `run_payment_terms_analysis_sql` | `data_quality_assessment/payment_terms_analysis.py` | Queries the database for payment terms breakdown by spend. |
+| `run_payment_terms_analysis_ai` | `data_quality_assessment/payment_terms_analysis.py` | Sends the payment terms data to AI for insight generation. |
 | `_find_available_date_columns` | `data_quality_assessment/date_analysis.py` | Finds which standard date columns exist in the table. |
 | `_build_date_extract_sql` | `data_quality_assessment/date_analysis.py` | Creates database queries that pull apart dates into year, month, etc. for analysis. |
 | `_build_format_table` | `data_quality_assessment/date_analysis.py` | Builds a breakdown table showing how many dates are in each format. |
 | `_build_reporting_pivot` | `data_quality_assessment/date_analysis.py` | Creates a pivot showing spend by reporting period (e.g. monthly or quarterly). |
 | `_build_currency_crosstab_pivot` | `data_quality_assessment/date_analysis.py` | Creates a cross-tab of currencies vs. dates for mixed-currency analysis. |
-| `run_date_analysis` | `data_quality_assessment/date_analysis.py` | Runs the full date analysis — formats, timelines, overlaps, and pivot tables. |
-| `run_currency_analysis` | `data_quality_assessment/currency_analysis.py` | Analyses currency codes — how many different currencies, distribution, and anomalies. |
+| `run_date_analysis_sql` | `data_quality_assessment/date_analysis.py` | Runs the database queries for date format detection, spend pivot, and total spend summary. |
+| `run_date_analysis_ai` | `data_quality_assessment/date_analysis.py` | Sends the date data to AI for insight generation. |
+| `run_currency_analysis_sql` | `data_quality_assessment/currency_analysis.py` | Queries the database for currency metrics and per-currency breakdown. |
+| `run_currency_analysis_ai` | `data_quality_assessment/currency_analysis.py` | Sends the currency data to AI for insight generation. |
 | `_unique_values` | `data_quality_assessment/country_region_analysis.py` | Gets the list of unique values in a country or region column. |
-| `run_country_region_analysis` | `data_quality_assessment/country_region_analysis.py` | Analyses country and region data — completeness and mapping quality. |
+| `run_country_region_analysis_sql` | `data_quality_assessment/country_region_analysis.py` | Queries the database for unique country and region values. |
+| `run_country_region_analysis_ai` | `data_quality_assessment/country_region_analysis.py` | Sends the country/region data to AI for insight generation. |
 | `generate_date_insight` | `data_quality_assessment/ai_prompts.py` | Asks the AI to write a plain-English summary of the date quality findings. |
 | `generate_currency_insight` | `data_quality_assessment/ai_prompts.py` | Asks the AI to write a plain-English summary of the currency quality findings. |
 | `generate_payment_terms_insight` | `data_quality_assessment/ai_prompts.py` | Asks the AI to write a plain-English summary of the payment terms findings. |
@@ -296,6 +307,7 @@ A complete list of every Python function in the app, organised by module and ste
 | Function | File | What it does |
 |----------|------|--------------|
 | `create_app` | `app.py` | Creates and configures the Flask web application — sets up all routes, middleware, and background tasks. |
+| `health` | `app.py` | A simple endpoint that returns "ok" to confirm the server is running. Used by the launcher to verify the service is fully ready before opening the browser. |
 | `_nan_to_none` | `app.py` | Cleans up data for JSON responses by replacing special "not a number" values with proper empty values. |
 | `_session_cleanup_loop` | `app.py` | A background process that periodically deletes old session files that haven't been used recently. |
 | `chunk_list` | `shared/utils/helpers.py` | Splits a list into smaller batches of a given size (used when processing data in chunks). |
@@ -434,9 +446,11 @@ A complete list of every Python function in the app, organised by module and ste
 | `_coerce_spend_columns` | `agents/normalization.py` | Tidies up the list of spend column names the user provided, removing blanks and duplicates. |
 | `assess_currency_conversion` | `agents/normalization.py` | Pre-checks before running conversion — verifies the FX table can be loaded, flags unsupported currencies, and shows column population stats. |
 | `assess_currency_conversion_api` | `app.py` | Receives the "Assess" button request from the browser and runs the currency conversion assessment. |
-| `load_fx_table` | `agents/fx_rates.py` | Loads the exchange rate Excel workbook and builds lookup tables for monthly and yearly rates. |
+| `load_fx_table` | `agents/fx_rates.py` | Loads exchange rates from a built-in dictionary (the default) or from an Excel file if you pass a file path. Builds lookup tables for monthly and yearly rates, and caches the result so it only runs once. |
+| `_build_derived_structures` | `agents/fx_rates.py` | Takes the raw rate entries and the list of currencies, then figures out the newest available rate for each currency, calculates yearly averages, and counts how many months each average is based on. |
+| `_load_from_excel` | `agents/fx_rates.py` | Reads an FX rate Excel workbook, finds the header row, and extracts all the monthly rates into a dictionary. Used as a fallback when someone provides an explicit file path to load_fx_table. |
 | `run_conversion` | `agents/fx_rates.py` | Converts every spend value in a column to a chosen target currency using the matching exchange rate. Supports all currencies in the FX table. For non-USD targets, bridges through USD (source -> USD -> target). Reports detailed per-row results. |
-| `resolve_fx_reference_path` | `agents/fx_rates.py` | Finds the exchange rate Excel file — checks an explicit path, environment variable, and standard locations. |
+| `resolve_fx_reference_path` | `agents/fx_rates.py` | Finds the exchange rate Excel file — checks an explicit path, environment variable, and standard locations. Used only when an explicit override path is provided. |
 | `supported_currencies_api` | `app.py` | Returns the list of all currency codes available in the FX rates table, so the frontend can populate the target currency dropdown. |
 
 ### Normalization — Other
@@ -455,7 +469,7 @@ A complete list of every Python function in the app, organised by module and ste
 | `_get_session_id` | `app.py` | Reads the session ID from the request (JSON body, form data, query param, or header). |
 | `_clean_preview_rows` | `app.py` | Replaces NaN-like string values with empty strings for display in the browser. |
 | `get_api_key` | `app.py` | Reads the API key from the request body or from an environment variable. |
-| `health_check` | `app.py` | A simple endpoint that returns "ok" to confirm the server is running. |
+| `health_check` | `app.py` | A simple endpoint (available at both /api/status and /api/health) that returns "ok" to confirm the server is running. Used by the launcher to verify the service is fully ready before opening the browser. |
 | `run_normalization` | `app.py` | Dispatches the correct normalisation agent based on which operation the user selected, runs it, and returns results. |
 | `transfer_to_analyzer` | `app.py` | Sends the normalised data to the Summarizer module (Module 3). |
 | `reset_normalization` | `app.py` | Reloads the original data from the session database, discarding all normalisation changes. |
@@ -570,9 +584,9 @@ A complete list of every Python function in the app, organised by module and ste
 | `_es_lock` | `routes/views_routes.py` | Prevents two quality assessments from running at the same time for the same session. |
 | `_quote_id` | `services/spend_quality_assessment/data_quality.py` | Wraps a column or table name in quotes for safe use in database queries. |
 | `_nn` | `services/spend_quality_assessment/data_quality.py` | Creates a database condition that checks whether a cell has real content (not blank or null). |
-| `_compute_date_spend_pivot` | `services/spend_quality_assessment/data_quality.py` | Builds a year-by-month pivot table showing total spend per period. |
+| `_compute_date_spend_pivot` | `services/spend_quality_assessment/data_quality.py` | Builds a year-by-month pivot table showing total spend per period. Rows with non-numeric spend are excluded (not counted as zero). |
 | `_compute_spend_bifurcation` | `services/spend_quality_assessment/data_quality.py` | Splits spend into positive and negative totals. Returns both a reporting currency view (using total_spend) and a local currency view (using local_spend grouped by currency). Supports a frontend toggle between the two views. |
-| `_compute_pareto_analysis` | `services/spend_quality_assessment/data_quality.py` | Calculates supplier concentration — what percentage of suppliers account for 80%, 90%, 95%, and 99% of total spend. |
+| `_compute_pareto_analysis` | `services/spend_quality_assessment/data_quality.py` | Calculates supplier concentration — groups all invoices by supplier, sums their spend, ranks suppliers from biggest to smallest, then walks down the list to find how many suppliers make up 80%, 85%, 90%, 95%, and 99% of total positive spend. For each threshold, also counts the total invoice rows and unique transaction types belonging to those suppliers. |
 | `run_executive_summary` | `services/spend_quality_assessment/data_quality.py` | Runs the full quality assessment: date-spend pivot, spend bifurcation, Pareto analysis, and description quality (with AI). |
 | `_quote_id` | `services/spend_quality_assessment/description_quality.py` | Same as above — wraps a name in quotes for safe database use. |
 | `_nn` | `services/spend_quality_assessment/description_quality.py` | Same as above — checks if a cell has real content. |
@@ -671,3 +685,49 @@ A complete list of every Python function in the app, organised by module and ste
 | `call_ai_json_validated` | `shared/ai_client.py` | Same as above but also checks the response matches the expected data format. |
 | `format_spend` | `shared/formatting.py` | Formats a number as a compact currency string (e.g. 1200000 becomes "$1.2M"). |
 | `format_pct` | `shared/formatting.py` | Formats a fraction as a percentage (e.g. 0.85 becomes "85.0%"). |
+
+---
+
+## Launcher (`launcher.py`)
+
+### Startup & Configuration
+
+| Function | File | What it does |
+|----------|------|--------------|
+| `_base_path` | `launcher.py` | Figures out where the app's files live — the extracted folder when running as a packaged app, or the project folder when running in development. |
+| `_resolve` | `launcher.py` | Builds a full file path by joining pieces onto the base path. |
+| `_setup_ssl` | `launcher.py` | Sets up the SSL certificate bundle for HTTPS calls. Checks for a user-provided bundle first, then a corporate-set environment variable, then the built-in certificates. |
+| `_validate_resources` | `launcher.py` | Before starting, checks that all critical files (frontend pages, backend code, certificates) are present. Returns whether everything looks good. |
+| `_cleanup_stale_sessions` | `launcher.py` | On startup, finds and deletes leftover session folders from previous runs that are older than 24 hours. |
+| `_run_diagnostics` | `launcher.py` | When the user runs the app with --diagnostics, checks ports, certificates, disk space, DuckDB, and file presence, then prints a report. |
+
+### Port Management
+
+| Function | File | What it does |
+|----------|------|--------------|
+| `_port_available` | `launcher.py` | Checks whether a specific port number is free on the computer. |
+| `_pick_port` | `launcher.py` | Tries to use the preferred port; if something else is using it, tries the next few port numbers until it finds a free one. |
+
+### Module Import Isolation
+
+| Function | File | What it does |
+|----------|------|--------------|
+| `_import_module_app` | `launcher.py` | Loads a module's backend code in a way that prevents its packages from clashing with other modules' identically-named packages. |
+| `_post_load_cleanup` | `launcher.py` | After all modules are loaded, locks down the import system so packages from different modules can never accidentally get mixed up. |
+| `_ModuleRedirectFinder` | `launcher.py` | A custom Python import hook that watches for package imports and automatically routes them to the correct module based on which module's code is asking. |
+
+### Static File Serving
+
+| Function | File | What it does |
+|----------|------|--------------|
+| `_add_static_serving` | `launcher.py` | Adds routes to a module's server so it can serve its frontend web pages. Returns 404 for missing asset files instead of a confusing fallback page. |
+| `_add_config_endpoint` | `launcher.py` | Adds a /config.json endpoint to each server that tells the frontend the actual URLs of all modules (useful when ports shift dynamically). |
+
+### Server Lifecycle
+
+| Function | File | What it does |
+|----------|------|--------------|
+| `_run_server` | `launcher.py` | Starts a web server for one module on a specific port. Runs in a background thread. |
+| `_wait_for_health` | `launcher.py` | After starting all servers, keeps checking each one until they all respond to confirm they're fully ready. |
+| `_cleanup` | `launcher.py` | Shuts down all servers, cleans up session files, and deletes temporary caches. Runs both on normal exit and if the app crashes. |
+| `main` | `launcher.py` | The main entry point — validates resources, picks ports, loads all modules, starts servers, waits for them to be healthy, opens the browser, and monitors everything until the user closes the app. |

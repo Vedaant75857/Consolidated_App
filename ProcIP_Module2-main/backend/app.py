@@ -72,6 +72,7 @@ from agents.normalization import (
     assess_region,
     assess_currency_conversion,
 )
+from agents.fx_rates import load_fx_table
 
 import sys as _sys
 warnings.filterwarnings('ignore')
@@ -293,7 +294,9 @@ def _clean_preview_rows(rows: list[dict]) -> list[dict]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.route('/api/status', methods=['GET'])
+@app.route('/api/health', methods=['GET'])
 def health_check():
+    """Lightweight liveness check used by the launcher before opening the browser."""
     return jsonify({"status": "ok"})
 
 
@@ -1007,9 +1010,7 @@ def download():
 def supported_currencies_api():
     """Return the list of currency codes available in the FX rates table."""
     try:
-        from agents.fx_rates import load_fx_table
         fx_data = load_fx_table()
-        # fx_data tuple: (FX, LATEST_RATE, currencies, latest_period, FX_YEARLY, FX_YEARLY_MONTHS)
         currencies = sorted(set(fx_data[2]) | {"USD"})
         return jsonify({"currencies": currencies})
     except Exception as e:

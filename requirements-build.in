@@ -1,0 +1,35 @@
+# Human-readable constraints for the consolidated EXE build.
+# Run `pip-compile requirements-build.in -o requirements-build.txt` to regenerate
+# the pinned lockfile. Do NOT hand-edit requirements-build.txt directly.
+
+# Module 1 (Data Stitcher)
+Flask>=3.1,<4
+flask-cors>=5.0,<7
+pandas>=2.2,<3
+openpyxl>=3.1,<4
+requests>=2.31,<3
+python-dotenv>=1.0,<2
+portkey-ai>=2.2,<3
+pydantic>=2.10,<3
+rapidfuzz>=3.0,<4
+Werkzeug>=3.1,<4
+
+# DuckDB (analytics engine for all modules)
+duckdb>=1.0,<2
+
+# Module 2 (Data Normalizer)
+XlsxWriter>=3.1,<4
+openai>=1.12,<3
+langdetect==1.0.9
+python-calamine>=0.2.0
+numpy>=2.0,<3
+
+# Module 3 (Spend Summarizer)
+reportlab>=4.2,<5
+Pillow>=11,<12
+httpx>=0.28,<1
+
+# Build & runtime tools
+waitress>=3.0,<4
+pyinstaller>=6.0,<7
+certifi>=2024

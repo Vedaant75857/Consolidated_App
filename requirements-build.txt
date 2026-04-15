@@ -1,31 +1,41 @@
-# Consolidated dependencies for all 3 modules + build tools
-# Module 1 (Data Stitcher)
-flask==3.0.0
-flask-cors>=4.0.0
-pandas>=2.2.0
-openpyxl>=3.1.5
-requests>=2.31.0
-python-dotenv==1.0.0
-portkey-ai>=2.2,<3
-pydantic>=2.10,<3
-rapidfuzz
-werkzeug==3.0.1
+# Pinned build dependencies — generated from requirements-build.in
+# Do NOT hand-edit. Run `pip-compile requirements-build.in -o requirements-build.txt`
+# to regenerate after changing constraints.
+#
+# Versions reconciled across Module 1, 2, and 3 requirements.txt files.
 
-# DuckDB (analytics engine for all modules)
-duckdb>=1.0,<2
+# --- Core web framework ---
+Flask==3.1.3
+Werkzeug==3.1.6
+flask-cors==6.0.2
+python-dotenv==1.2.2
 
-# Module 2 (Data Normalizer)
-xlsxwriter==3.1.9
-openai>=1.12.0
+# --- Data processing ---
+pandas==2.3.3
+numpy==2.4.3
+openpyxl==3.1.5
+duckdb==1.5.2
+python-calamine==0.6.2
+XlsxWriter==3.1.9
+
+# --- AI / LLM clients ---
+portkey-ai==2.2.0
+openai==2.30.0
+pydantic==2.12.5
+
+# --- HTTP / networking ---
+requests==2.32.5
+httpx==0.28.1
+certifi==2026.2.25
+
+# --- Text / NLP ---
 langdetect==1.0.9
-python-calamine>=0.2.0
-numpy
+rapidfuzz==3.14.5
 
-# Module 3 (Spend Summarizer)
-reportlab>=4.2,<5
-Pillow>=11,<12
-httpx>=0.28,<1
+# --- Reporting ---
+reportlab==4.4.10
+Pillow==11.3.0
 
-# Build & runtime tools
-waitress
-pyinstaller
+# --- Build & runtime tools ---
+waitress==3.0.2
+pyinstaller==6.19.0

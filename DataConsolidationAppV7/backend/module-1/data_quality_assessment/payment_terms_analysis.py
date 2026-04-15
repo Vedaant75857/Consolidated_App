@@ -41,22 +41,16 @@ def _numeric_spend_expr(qs: str) -> str:
     )
 
 
-def run_payment_terms_analysis(
+def run_payment_terms_analysis_sql(
     conn: DuckDBConnection,
     table_name: str,
-    api_key: str,
 ) -> dict[str, Any]:
-    """Run the payment terms analysis for the DQA panel.
+    """SQL-only phase: payment terms breakdown.
 
-    Args:
-        conn: SQLite session connection.
-        table_name: Target table.
-        api_key: API key for AI insight generation.
+    Must be called under the session lock.
 
     Returns:
-        JSON-serialisable dict with ``paymentTerms`` (list of
-        ``{term, spend, pctOfTotal}``), ``totalSpend``, ``uniqueCount``,
-        ``aiInsight``, ``exists``, and ``spendColumn``.
+        JSON-serialisable dict with ``aiInsight`` set to ``None``.
     """
     available = set(read_table_columns(conn, table_name))
 
@@ -103,7 +97,6 @@ def run_payment_terms_analysis(
             for r in rows
         ]
     else:
-        # No spend column — just list unique terms with row counts
         rows = conn.execute(
             f"SELECT TRIM({qpt}) AS term, COUNT(*) AS row_ct "
             f"FROM {tbl} WHERE {nn} "
@@ -123,23 +116,36 @@ def run_payment_terms_analysis(
 
     unique_count = len(payment_terms)
 
-    # AI insight
-    ai_payload = {
-        "paymentTerms": payment_terms[:200],  # cap to keep prompt within limits
-        "totalSpend": round(total_spend),
-        "uniqueCount": unique_count,
-    }
-    try:
-        ai_insight = generate_payment_terms_insight(ai_payload, api_key)
-    except Exception as exc:
-        logger.warning("Payment terms AI insight generation failed: %s", exc)
-        ai_insight = "AI insight generation failed."
-
     return {
         "exists": True,
         "paymentTerms": payment_terms,
         "totalSpend": round(total_spend),
         "uniqueCount": unique_count,
         "spendColumn": spend_col,
-        "aiInsight": ai_insight,
+        "aiInsight": None,
     }
+
+
+def run_payment_terms_analysis_ai(
+    sql_result: dict[str, Any],
+    api_key: str,
+) -> dict[str, Any]:
+    """AI phase: generate insight from pre-computed SQL data.
+
+    Safe to call without any database lock held.
+    """
+    if sql_result.get("aiInsight") is not None:
+        return sql_result
+
+    ai_payload = {
+        "paymentTerms": sql_result["paymentTerms"][:200],
+        "totalSpend": sql_result["totalSpend"],
+        "uniqueCount": sql_result["uniqueCount"],
+    }
+    try:
+        sql_result["aiInsight"] = generate_payment_terms_insight(ai_payload, api_key)
+    except Exception as exc:
+        logger.warning("Payment terms AI insight generation failed: %s", exc)
+        sql_result["aiInsight"] = "AI insight generation failed."
+
+    return sql_result

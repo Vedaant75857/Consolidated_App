@@ -9,6 +9,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { useTheme } from "./theme/ThemeProvider";
+import { getConfig } from "./runtimeConfig";
 import type {
   AppStep,
   AIMapping,
@@ -704,7 +705,7 @@ export default function App() {
       {/* Back to Home bar */}
       <div className="h-10 bg-white/90 dark:bg-neutral-900/90 backdrop-blur-sm border-b border-neutral-200/80 dark:border-neutral-700/80 flex items-center px-4 shrink-0 z-50">
         <a
-          href={import.meta.env.VITE_HOME_URL ?? "http://localhost:3000"}
+          href={getConfig().home ?? import.meta.env.VITE_HOME_URL ?? "http://localhost:3000"}
           className="flex items-center gap-2 text-xs font-medium text-neutral-500 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
         >
           <ArrowLeft className="w-3.5 h-3.5" />

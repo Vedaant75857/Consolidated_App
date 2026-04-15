@@ -12,6 +12,7 @@ import LoadingOverlay from "./components/module-2/LoadingOverlay";
 import StepChangeWarningDialog from "./components/module-2/StepChangeWarningDialog";
 import StatusLog, { type LogEntry } from "./components/module-1/StatusLog";
 import { useTheme } from "./components/common/ThemeProvider";
+import { getConfig } from "./runtimeConfig";
 
 /* ── Normalization sub-step definitions (mirrored in sidebar + NormDashboard) ── */
 const NORM_OPS = [
@@ -314,7 +315,7 @@ export default function App() {
       {/* Back to Home bar */}
       <div className="h-10 bg-white dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-800 flex items-center px-4 shrink-0 z-50">
         <a
-          href={import.meta.env.VITE_HOME_URL ?? "http://localhost:3000"}
+          href={getConfig().home ?? import.meta.env.VITE_HOME_URL ?? "http://localhost:3000"}
           className="flex items-center gap-2 text-xs font-medium text-neutral-500 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
         >
           <ArrowLeft className="w-3.5 h-3.5" />

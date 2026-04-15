@@ -72,6 +72,11 @@ def create_app() -> Flask:
             pass
         return resp
 
+    @app.route("/api/health")
+    def health():
+        """Lightweight liveness check used by the launcher before opening the browser."""
+        return {"status": "ok"}
+
     _blueprints: list[tuple[str, str]] = [
         ("routes.data_loading_routes", "data_loading_bp"),
         ("routes.inventory_routes", "inventory_bp"),

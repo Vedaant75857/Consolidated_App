@@ -423,25 +423,18 @@ def _build_currency_crosstab_pivot(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def run_date_analysis(
+def run_date_analysis_sql(
     conn: DuckDBConnection,
     table_name: str,
     date_column: str | None,
-    api_key: str,
 ) -> dict[str, Any]:
-    """Run the full date analysis for the DQA date panel.
+    """SQL-only phase: format detection, spend pivot, total spend summary.
 
-    Args:
-        conn: SQLite session connection.
-        table_name: Target table (e.g. ``final_merged_v1``).
-        date_column: Selected date column, or ``None`` to auto-pick the first
-            available one (preferring Invoice Date).
-        api_key: API key for AI insight generation.
+    Must be called under the session lock (uses the DuckDB connection).
 
     Returns:
-        JSON-serialisable dict with ``availableDateColumns``,
-        ``selectedColumn``, ``formatTable``, ``pivotData``, ``consistent``,
-        and ``aiInsight``.
+        JSON-serialisable dict with all data fields. The ``aiInsight`` key
+        is set to ``None`` — the caller fills it in via :func:`run_date_analysis_ai`.
     """
     available = set(read_table_columns(conn, table_name))
     available_date_cols = _find_available_date_columns(available)
@@ -453,6 +446,7 @@ def run_date_analysis(
             "selectedColumn": None,
             "formatTable": [],
             "pivotData": None,
+            "totalSpendSummary": None,
             "consistent": True,
             "aiInsight": "No date columns found in the dataset.",
         }
@@ -462,12 +456,10 @@ def run_date_analysis(
     else:
         date_column = find_column(available, [date_column]) or available_date_cols[0]
 
-    # ── Format detection ──────────────────────────────────────────────────
     format_table, all_consistent, dominant_format = _build_format_table(
         conn, table_name, date_column, file_name_col,
     )
 
-    # ── Spend pivot ───────────────────────────────────────────────────────
     spend_col, is_reporting = _pick_spend_column(available)
     pivot_data: dict[str, Any] | None = None
 
@@ -488,7 +480,6 @@ def run_date_analysis(
                     conn, table_name, date_column, spend_col, dominant_format,
                 )
 
-    # ── Total spend summary ─────────────────────────────────────────────
     total_spend_summary: dict[str, Any] | None = None
     if spend_col:
         tbl = quote_id(table_name)
@@ -534,19 +525,6 @@ def run_date_analysis(
                     "column": spend_col,
                 }
 
-    # ── AI insight ────────────────────────────────────────────────────────
-    ai_payload = {
-        "formatTable": format_table,
-        "consistent": all_consistent,
-        "pivotData": pivot_data,
-        "selectedColumn": date_column,
-    }
-    try:
-        ai_insight = generate_date_insight(ai_payload, api_key)
-    except Exception as exc:
-        logger.warning("Date AI insight generation failed: %s", exc)
-        ai_insight = "AI insight generation failed."
-
     return {
         "availableDateColumns": available_date_cols,
         "selectedColumn": date_column,
@@ -554,5 +532,34 @@ def run_date_analysis(
         "pivotData": pivot_data,
         "totalSpendSummary": total_spend_summary,
         "consistent": all_consistent,
-        "aiInsight": ai_insight,
+        "aiInsight": None,
     }
+
+
+def run_date_analysis_ai(
+    sql_result: dict[str, Any],
+    api_key: str,
+) -> dict[str, Any]:
+    """AI phase: generate insight from pre-computed SQL data.
+
+    Safe to call without any database lock held.
+
+    Returns:
+        The *sql_result* dict with ``aiInsight`` populated.
+    """
+    if sql_result.get("aiInsight") is not None:
+        return sql_result
+
+    ai_payload = {
+        "formatTable": sql_result["formatTable"],
+        "consistent": sql_result["consistent"],
+        "pivotData": sql_result["pivotData"],
+        "selectedColumn": sql_result["selectedColumn"],
+    }
+    try:
+        sql_result["aiInsight"] = generate_date_insight(ai_payload, api_key)
+    except Exception as exc:
+        logger.warning("Date AI insight generation failed: %s", exc)
+        sql_result["aiInsight"] = "AI insight generation failed."
+
+    return sql_result

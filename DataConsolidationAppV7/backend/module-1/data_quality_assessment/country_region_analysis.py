@@ -46,32 +46,25 @@ def _unique_values(
     return [str(r["val"]) for r in rows]
 
 
-def run_country_region_analysis(
+def run_country_region_analysis_sql(
     conn: DuckDBConnection,
     table_name: str,
-    api_key: str,
 ) -> dict[str, Any]:
-    """Run country and region analysis for the DQA panel.
+    """SQL-only phase: unique country/region values.
 
-    Args:
-        conn: SQLite session connection.
-        table_name: Target table.
-        api_key: API key for AI insight generation.
+    Must be called under the session lock.
 
     Returns:
-        JSON-serialisable dict with ``countryData``, ``regionData``,
-        ``countryAiInsight``, ``regionAiInsight``.
+        JSON-serialisable dict with AI insight fields set to ``None``.
     """
     available = set(read_table_columns(conn, table_name))
 
-    # Country — pick the first available column (case-insensitive)
     country_col = find_column(available, COUNTRY_COLUMNS)
 
     country_values: list[str] | None = None
     if country_col:
         country_values = _unique_values(conn, table_name, country_col)
 
-    # Region (case-insensitive)
     region_col = find_column(available, [REGION_COLUMN])
 
     region_values: list[str] | None = None
@@ -88,27 +81,44 @@ def run_country_region_analysis(
             "regionAiInsight": None,
         }
 
-    # AI insight
-    ai_payload = {
-        "countryValues": country_values,
-        "regionValues": region_values,
-        "countryColumn": country_col,
-        "regionColumn": region_col,
-    }
-    try:
-        insights = generate_country_region_insight(ai_payload, api_key)
-        country_insight = insights.get("countryInsight")
-        region_insight = insights.get("regionInsight")
-    except Exception as exc:
-        logger.warning("Country/region AI insight generation failed: %s", exc)
-        country_insight = "AI insight generation failed." if country_col else None
-        region_insight = "AI insight generation failed." if region_col else None
-
     return {
         "countryColumn": country_col,
         "regionColumn": region_col,
         "countryValues": country_values,
         "regionValues": region_values,
-        "countryAiInsight": country_insight,
-        "regionAiInsight": region_insight,
+        "countryAiInsight": None,
+        "regionAiInsight": None,
     }
+
+
+def run_country_region_analysis_ai(
+    sql_result: dict[str, Any],
+    api_key: str,
+) -> dict[str, Any]:
+    """AI phase: generate insight from pre-computed SQL data.
+
+    Safe to call without any database lock held.
+    """
+    if sql_result.get("countryAiInsight") is not None:
+        return sql_result
+
+    ai_payload = {
+        "countryValues": sql_result["countryValues"],
+        "regionValues": sql_result["regionValues"],
+        "countryColumn": sql_result["countryColumn"],
+        "regionColumn": sql_result["regionColumn"],
+    }
+    try:
+        insights = generate_country_region_insight(ai_payload, api_key)
+        sql_result["countryAiInsight"] = insights.get("countryInsight")
+        sql_result["regionAiInsight"] = insights.get("regionInsight")
+    except Exception as exc:
+        logger.warning("Country/region AI insight generation failed: %s", exc)
+        sql_result["countryAiInsight"] = (
+            "AI insight generation failed." if sql_result["countryColumn"] else None
+        )
+        sql_result["regionAiInsight"] = (
+            "AI insight generation failed." if sql_result["regionColumn"] else None
+        )
+
+    return sql_result

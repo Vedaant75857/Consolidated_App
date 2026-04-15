@@ -13,6 +13,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import pandas as pd
+
 from shared.duckdb_compat import DuckDBConnection
 from services.spend_quality_assessment.description_quality import (
     DESCRIPTION_FIELD_KEYS,
@@ -78,13 +80,12 @@ def _compute_date_spend_pivot(
         SELECT
             CAST(strftime('%Y', TRY_CAST(invoice_date AS TIMESTAMP)) AS INTEGER) AS yr,
             CAST(strftime('%m', TRY_CAST(invoice_date AS TIMESTAMP)) AS INTEGER) AS mo,
-            SUM(CASE
-                WHEN TRY_CAST(total_spend AS DOUBLE) IS NOT NULL
-                THEN CAST(total_spend AS REAL) ELSE 0 END) AS spend
+            SUM(TRY_CAST(total_spend AS DOUBLE)) AS spend
         FROM "analysis_data"
         WHERE invoice_date IS NOT NULL
           AND TRIM(CAST(invoice_date AS TEXT)) != ''
           AND TRY_CAST(invoice_date AS TIMESTAMP) IS NOT NULL
+          AND TRY_CAST(total_spend AS DOUBLE) IS NOT NULL
         GROUP BY yr, mo
         ORDER BY yr, mo
         """
@@ -140,14 +141,18 @@ def _compute_pareto_analysis(
 ) -> dict[str, Any]:
     """Compute Pareto metrics at 80/85/90/95/99% spend thresholds.
 
-    For each threshold, returns:
-      - totalSpend: cumulative spend for rows in the top X%
-      - transactionCount: number of rows
-      - uniqueTransactions: unique (vendor + best_description) combos
-      - supplierCount: unique vendors
+    Uses the same supplier-grouped approach as the Dashboard's compute_pareto:
+      1. Load rows into a DataFrame, coerce total_spend to numeric
+      2. Drop rows where supplier or total_spend is missing
+      3. Exclude negative/zero spend from the ranking
+      4. Group by supplier, sum spend per supplier
+      5. Sort descending, compute cumulative %
+      6. Walk suppliers to find the cutoff index for each threshold
+      7. For each threshold, go back to the raw rows to count transactions
 
-    The "best description" uses the fallback chain:
-    invoice_description -> po_description -> material_description -> gl_account_description
+    Args:
+        conn: DuckDB session connection.
+        available_columns: Set of column names present in analysis_data.
 
     Returns:
         {
@@ -166,162 +171,102 @@ def _compute_pareto_analysis(
             "totalDatasetSpend": 0,
         }
 
-    desc_cols_available = [
-        fk for fk in DESCRIPTION_FIELD_KEYS if fk in available_columns
-    ]
-    if desc_cols_available:
-        coalesce_parts = ", ".join(
-            f"NULLIF(TRIM(CAST({_quote_id(fk)} AS TEXT)), '')"
-            for fk in desc_cols_available
+    has_supplier = "supplier" in available_columns
+
+    # Determine which description columns are available for unique-transaction counting
+    desc_cols = [fk for fk in DESCRIPTION_FIELD_KEYS if fk in available_columns]
+
+    # --- Load raw data into a DataFrame (mirrors view_engine._load_analysis_df) ---
+    select_cols = ["total_spend"]
+    if has_supplier:
+        select_cols.append("supplier")
+    select_cols.extend(desc_cols)
+
+    quoted = ", ".join(_quote_id(c) for c in select_cols)
+    df = conn._conn.execute(f'SELECT {quoted} FROM "analysis_data"').df()
+
+    df["total_spend"] = pd.to_numeric(df["total_spend"], errors="coerce")
+
+    if has_supplier:
+        df["supplier"] = (
+            df["supplier"].astype(str)
+            .replace({"nan": None, "None": None, "": None})
         )
-        best_desc_expr = f"COALESCE({coalesce_parts}, '')"
     else:
-        best_desc_expr = "''"
+        df["supplier"] = None
 
-    supplier_expr = (
-        f"TRIM(CAST({_quote_id('supplier')} AS TEXT))"
-        if "supplier" in available_columns else "''"
-    )
+    # Build best_description from the first non-empty description column per row
+    if desc_cols:
+        for dc in desc_cols:
+            df[dc] = df[dc].astype(str).replace({"nan": None, "None": None, "": None})
+        df["_best_desc"] = df[desc_cols].bfill(axis=1).iloc[:, 0].fillna("")
+    else:
+        df["_best_desc"] = ""
 
-    # Pure SQL Pareto: use window functions to avoid loading all rows into Python
-    total_row = conn.execute(
-        "SELECT SUM(CASE WHEN TRY_CAST(total_spend AS DOUBLE) IS NOT NULL "
-        "THEN TRY_CAST(total_spend AS REAL) ELSE 0 END) AS total "
-        'FROM "analysis_data"'
-    ).fetchone()
-    total_spend = float(total_row[0] or 0) if total_row else 0.0
+    # --- Clean: drop rows with missing supplier or spend ---
+    work = df.dropna(subset=["supplier", "total_spend"]).copy()
+    work = work[work["supplier"].str.strip() != ""]
 
-    if total_spend <= 0:
+    # Exclude negative/zero spend from Pareto ranking
+    positive = work[work["total_spend"] > 0].copy()
+
+    if positive.empty:
         return {
             "thresholds": PARETO_THRESHOLDS,
             "metrics": {},
             "feasible": False,
-            "message": "Total spend is zero or no spend data found.",
+            "message": "No positive spend data found after filtering.",
             "totalDatasetSpend": 0,
         }
 
-    # Build a CTE with cumulative spend via window function, then aggregate
-    # per-threshold metrics entirely in SQL
-    thresholds_sql = ", ".join(str(t) for t in PARETO_THRESHOLDS)
-    pareto_sql = f"""
-    WITH ranked AS (
-        SELECT
-            CASE WHEN TRY_CAST(total_spend AS DOUBLE) IS NOT NULL
-                 THEN TRY_CAST(total_spend AS REAL) ELSE 0 END AS spend,
-            {supplier_expr} AS vendor,
-            {best_desc_expr} AS best_desc,
-            SUM(CASE WHEN TRY_CAST(total_spend AS DOUBLE) IS NOT NULL
-                     THEN TRY_CAST(total_spend AS REAL) ELSE 0 END)
-                OVER (ORDER BY CASE WHEN TRY_CAST(total_spend AS DOUBLE) IS NOT NULL
-                                    THEN TRY_CAST(total_spend AS REAL) ELSE 0 END DESC
-                      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cum_spend
-        FROM "analysis_data"
-    ),
-    thresholds(t) AS (VALUES {', '.join(f'({t})' for t in PARETO_THRESHOLDS)})
-    SELECT
-        t.t AS threshold,
-        COALESCE(ROUND(MAX(r.cum_spend)), 0) AS total_spend,
-        COUNT(r.spend) AS txn_count,
-        COUNT(DISTINCT (r.vendor || '|||' || r.best_desc)) AS unique_txn,
-        COUNT(DISTINCT CASE WHEN r.vendor != '' THEN r.vendor END) AS supplier_count
-    FROM thresholds t
-    LEFT JOIN ranked r ON r.cum_spend <= {total_spend} * t.t / 100.0
-                       OR r.cum_spend = (
-                           SELECT MIN(cum_spend) FROM ranked
-                           WHERE cum_spend >= {total_spend} * t.t / 100.0
-                       )
-    WHERE r.cum_spend <= (
-        SELECT MIN(cum_spend) FROM ranked
-        WHERE cum_spend >= {total_spend} * t.t / 100.0
+    # --- Group by supplier, sum spend ---
+    supplier_spend = (
+        positive.groupby("supplier")["total_spend"]
+        .sum()
+        .reset_index()
+        .sort_values("total_spend", ascending=False)
+        .reset_index(drop=True)
     )
-    GROUP BY t.t
-    ORDER BY t.t
-    """
+    grand_total = supplier_spend["total_spend"].sum()
+    supplier_spend["cum_pct"] = (
+        supplier_spend["total_spend"].cumsum() / max(grand_total, 1e-9) * 100
+    ).round(4)
 
-    try:
-        rows = conn.execute(pareto_sql).fetchall()
-    except Exception:
-        logger.warning("SQL Pareto failed, falling back to Python-based computation")
-        rows = []
-
+    # --- Walk thresholds ---
     metrics: dict[str, dict[str, Any]] = {}
 
-    if rows:
-        for r in rows:
-            t = int(r[0])
-            metrics[str(t)] = {
-                "totalSpend": int(r[1]),
-                "transactionCount": int(r[2]),
-                "uniqueTransactions": int(r[3]),
-                "supplierCount": int(r[4]),
-            }
-    else:
-        # Fallback: lightweight Python computation using fetchmany
-        cursor = conn.execute(
-            f"SELECT "
-            f"  CASE WHEN TRY_CAST(total_spend AS DOUBLE) IS NOT NULL "
-            f"       THEN TRY_CAST(total_spend AS REAL) ELSE 0 END AS spend, "
-            f"  {supplier_expr} AS vendor, "
-            f"  {best_desc_expr} AS best_desc "
-            f'FROM "analysis_data" '
-            f"ORDER BY spend DESC"
-        )
-        cumulative = 0.0
-        txn_count = 0
-        vendors: set[str] = set()
-        unique_combos: set[str] = set()
-        threshold_idx = 0
-
-        while True:
-            batch = cursor.fetchmany(5000)
-            if not batch:
-                break
-            for spend_val, vendor, best_desc in batch:
-                spend_f = float(spend_val or 0)
-                cumulative += spend_f
-                txn_count += 1
-                if vendor:
-                    vendors.add(vendor)
-                unique_combos.add(f"{vendor or ''}|||{best_desc or ''}")
-
-                while (
-                    threshold_idx < len(PARETO_THRESHOLDS)
-                    and cumulative >= total_spend * PARETO_THRESHOLDS[threshold_idx] / 100.0
-                ):
-                    t = PARETO_THRESHOLDS[threshold_idx]
-                    metrics[str(t)] = {
-                        "totalSpend": round(cumulative),
-                        "transactionCount": txn_count,
-                        "uniqueTransactions": len(unique_combos),
-                        "supplierCount": len(vendors),
-                    }
-                    threshold_idx += 1
-
-        while threshold_idx < len(PARETO_THRESHOLDS):
-            t = PARETO_THRESHOLDS[threshold_idx]
-            metrics[str(t)] = {
-                "totalSpend": round(cumulative),
-                "transactionCount": txn_count,
-                "uniqueTransactions": len(unique_combos),
-                "supplierCount": len(vendors),
-            }
-            threshold_idx += 1
-
-    # Fill any thresholds not yet in metrics
     for t in PARETO_THRESHOLDS:
-        if str(t) not in metrics:
-            metrics[str(t)] = {
-                "totalSpend": round(total_spend),
-                "transactionCount": 0,
-                "uniqueTransactions": 0,
-                "supplierCount": 0,
-            }
+        # Find the first supplier index where cumulative % reaches the threshold
+        crossed = supplier_spend[supplier_spend["cum_pct"] >= t].index
+        if len(crossed) > 0:
+            cutoff_idx = crossed[0]
+        else:
+            cutoff_idx = len(supplier_spend) - 1
+
+        top_suppliers = supplier_spend.loc[:cutoff_idx]
+        top_names = set(top_suppliers["supplier"])
+        bucket_spend = top_suppliers["total_spend"].sum()
+
+        # Go back to the raw positive-spend rows for those suppliers
+        bucket_rows = positive[positive["supplier"].isin(top_names)]
+        txn_count = len(bucket_rows)
+        unique_txns = bucket_rows.apply(
+            lambda r: (r["supplier"] or "") + "|||" + (r["_best_desc"] or ""),
+            axis=1,
+        ).nunique()
+
+        metrics[str(t)] = {
+            "totalSpend": round(bucket_spend),
+            "transactionCount": txn_count,
+            "uniqueTransactions": unique_txns,
+            "supplierCount": len(top_names),
+        }
 
     return {
         "thresholds": PARETO_THRESHOLDS,
         "metrics": metrics,
         "feasible": True,
-        "totalDatasetSpend": round(total_spend),
+        "totalDatasetSpend": round(grand_total),
     }
 
 

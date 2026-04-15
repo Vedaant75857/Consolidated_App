@@ -4,9 +4,10 @@ import { Download, Package, Trash2, X, Loader2, FileSpreadsheet, BarChart3, Data
 
 import type { MergeOutput } from "../../types";
 import TransferOverlay from "../common/TransferOverlay";
+import { getConfig } from "../../runtimeConfig";
 
-const NORMALIZER_FE = import.meta.env.VITE_NORMALIZER_FE ?? "http://localhost:3003";
-const ANALYZER_FE = import.meta.env.VITE_ANALYZER_FE ?? "http://localhost:3004";
+const NORMALIZER_FE = getConfig().normalizer ?? import.meta.env.VITE_NORMALIZER_FE ?? "http://localhost:3003";
+const ANALYZER_FE = getConfig().summarizer ?? import.meta.env.VITE_ANALYZER_FE ?? "http://localhost:3004";
 
 type SelectionTarget = "analyzer" | "normalizer";
 

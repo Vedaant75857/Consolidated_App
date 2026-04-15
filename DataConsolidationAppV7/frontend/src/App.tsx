@@ -8,10 +8,12 @@ import HeaderNormalisation from "./components/module-1/HeaderNormalisation";
 import Appending from "./components/module-1/Appending";
 import Merging from "./components/module-1/Merging";
 import DataQualityAssessment from "./components/module-1/DataQualityAssessment";
+import ErrorBoundary from "./components/common/ErrorBoundary";
 import LoadingOverlay from "./components/module-1/LoadingOverlay";
 import StatusLog, { type LogEntry } from "./components/module-1/StatusLog";
 import DataPreviewOverlay from "./components/module-1/DataPreviewOverlay";
 import MergeOutputsPanel from "./components/module-1/MergeOutputsPanel";
+import { getConfig } from "./runtimeConfig";
 import StepChangeWarningDialog from "./components/common/StepChangeWarningDialog";
 import { StepHero, pageVariants, horizontalVariants } from "./components/common/ui";
 import { useTheme } from "./components/common/ThemeProvider";
@@ -1566,7 +1568,7 @@ export default function App() {
       {/* Back to Home bar */}
       <div className="h-10 bg-white/90 dark:bg-neutral-900/90 backdrop-blur-sm border-b border-neutral-200/80 dark:border-neutral-700/80 flex items-center px-4 shrink-0 z-50">
         <a
-          href={import.meta.env.VITE_HOME_URL ?? "http://localhost:3000"}
+          href={getConfig().home ?? import.meta.env.VITE_HOME_URL ?? "http://localhost:3000"}
           className="flex items-center gap-2 text-xs font-medium text-neutral-500 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
         >
           <ArrowLeft className="w-3.5 h-3.5" />
@@ -1873,16 +1875,18 @@ export default function App() {
                 )}
 
                 {step === 8 && (
-                  <DataQualityAssessment
-                    sessionId={sessionId}
-                    apiKey={apiKey}
-                    mergeOutputs={mergeOutputs}
-                    singleTableName={singleTableMode && inventory.length > 0 ? inventory[0].table_key : undefined}
-                    addLog={addLog}
-                    setAiLoading={setAiLoading}
-                    setLoadingMessage={setLoadingMessage}
-                    setStep={setStep}
-                  />
+                  <ErrorBoundary moduleName="Data Quality Assessment">
+                    <DataQualityAssessment
+                      sessionId={sessionId}
+                      apiKey={apiKey}
+                      mergeOutputs={mergeOutputs}
+                      singleTableName={singleTableMode && inventory.length > 0 ? inventory[0].table_key : undefined}
+                      addLog={addLog}
+                      setAiLoading={setAiLoading}
+                      setLoadingMessage={setLoadingMessage}
+                      setStep={setStep}
+                    />
+                  </ErrorBoundary>
                 )}
 
               </motion.div>

@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for DataScopingTool — single-file EXE."""
+"""PyInstaller spec for DataScopingTool — one-folder portable app."""
 
 import os
 import certifi
@@ -24,11 +24,6 @@ datas = [
      os.path.join("SummarizationModule", "frontend", "dist")),
 
 ]
-
-# FX reference workbook used by Module 2 currency conversion (optional)
-_fx_path = os.path.join(ROOT, "FX_rates_table.xlsx")
-if os.path.isfile(_fx_path):
-    datas.append((_fx_path, "."))
 
 # Bundle certifi CA certificates so HTTPS (httpx / portkey) works in frozen mode
 datas.append((certifi.where(), "certifi"))
@@ -81,6 +76,8 @@ hiddenimports = [
     "xlsxwriter",
     "requests",
     "pydantic",
+    "pydantic_core",
+    "annotated_types",
     "portkey_ai",
     "openai",
     "httpx",
@@ -96,8 +93,6 @@ hiddenimports = [
     "PIL",
     "PIL.Image",
     "python_calamine",
-    "engineio",
-    "engineio.async_drivers",
     "duckdb",
     "json",
     "csv",
@@ -133,20 +128,27 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
     name="DataScopingTool",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
-    runtime_tmpdir=None,
     console=True,           # keep console visible so user sees status
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name="DataScopingTool",
 )

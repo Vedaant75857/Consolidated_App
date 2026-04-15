@@ -42,24 +42,18 @@ def _numeric_spend_expr(qs: str) -> str:
     )
 
 
-def run_supplier_analysis(
+def run_supplier_analysis_sql(
     conn: DuckDBConnection,
     table_name: str,
-    api_key: str,
 ) -> dict[str, Any]:
-    """Run the supplier analysis for the DQA supplier panel.
+    """SQL-only phase: top suppliers by spend and unique count.
 
-    Retrieves the top 1 000 suppliers by spend, sorts them alphabetically,
-    and sends the name list to AI for normalisation assessment.
-
-    Args:
-        conn: SQLite session connection.
-        table_name: Target table.
-        api_key: API key for AI insight generation.
+    Must be called under the session lock.
 
     Returns:
-        JSON-serialisable dict with ``aiInsight``, ``supplierCount``,
-        ``totalSpendCovered``, ``spendColumn``, and ``exists``.
+        JSON-serialisable dict with ``aiInsight`` set to ``None``.
+        Includes a ``_supplierNames`` key (list) used by the AI phase
+        but stripped before returning to the client.
     """
     available = set(read_table_columns(conn, table_name))
 
@@ -68,9 +62,11 @@ def run_supplier_analysis(
         return {
             "exists": False,
             "supplierCount": 0,
+            "topNCount": 0,
             "totalSpendCovered": 0,
             "spendColumn": None,
             "aiInsight": "No 'Vendor Name' column found in the dataset.",
+            "_supplierNames": [],
         }
 
     tbl = quote_id(table_name)
@@ -103,23 +99,10 @@ def run_supplier_analysis(
         supplier_names = sorted(str(r["vendor"]) for r in rows)
         total_spend_covered = 0
 
-    # Count total unique suppliers (not just top N)
     total_unique_row = conn.execute(
         f"SELECT COUNT(DISTINCT TRIM({qv})) AS cnt FROM {tbl} WHERE {nn}"
     ).fetchone()
     total_unique = int(total_unique_row["cnt"] or 0)
-
-    # AI insight — send alphabetically sorted name list
-    ai_payload = {
-        "supplierNames": supplier_names,
-        "count": len(supplier_names),
-        "totalUniqueSuppliers": total_unique,
-    }
-    try:
-        ai_insight = generate_supplier_insight(ai_payload, api_key)
-    except Exception as exc:
-        logger.warning("Supplier AI insight generation failed: %s", exc)
-        ai_insight = "AI insight generation failed."
 
     return {
         "exists": True,
@@ -127,5 +110,34 @@ def run_supplier_analysis(
         "topNCount": len(supplier_names),
         "totalSpendCovered": round(total_spend_covered),
         "spendColumn": spend_col,
-        "aiInsight": ai_insight,
+        "aiInsight": None,
+        "_supplierNames": supplier_names,
     }
+
+
+def run_supplier_analysis_ai(
+    sql_result: dict[str, Any],
+    api_key: str,
+) -> dict[str, Any]:
+    """AI phase: generate insight from pre-computed SQL data.
+
+    Safe to call without any database lock held.
+    Removes the internal ``_supplierNames`` key before returning.
+    """
+    supplier_names = sql_result.pop("_supplierNames", [])
+
+    if sql_result.get("aiInsight") is not None:
+        return sql_result
+
+    ai_payload = {
+        "supplierNames": supplier_names,
+        "count": len(supplier_names),
+        "totalUniqueSuppliers": sql_result["supplierCount"],
+    }
+    try:
+        sql_result["aiInsight"] = generate_supplier_insight(ai_payload, api_key)
+    except Exception as exc:
+        logger.warning("Supplier AI insight generation failed: %s", exc)
+        sql_result["aiInsight"] = "AI insight generation failed."
+
+    return sql_result

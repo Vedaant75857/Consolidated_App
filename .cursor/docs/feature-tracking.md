@@ -306,7 +306,7 @@ The Normalizer takes a single data table (uploaded directly or received from the
 | 3 | Choose spend column | Select which column contains the spend/amount values (required). |
 | 4 | Choose date column | Select a date column, or choose "No Date col" if dates aren't available. |
 | 5 | Scope year | When "No Date col" is selected, pick a scope year (2023–2026) for exchange rate lookup. |
-| 5b | Target currency | Choose which currency to convert into from a dropdown of all supported currencies (loaded from the FX rates table). Defaults to USD. For non-USD targets, conversion bridges through USD automatically (e.g. INR -> USD -> EUR). |
+| 5b | Target currency | Choose which currency to convert into from a dropdown of all 29 supported currencies (built into the app — no external file needed). Defaults to USD. For non-USD targets, conversion bridges through USD automatically (e.g. INR -> USD -> EUR). |
 | 6 | Assess | Click "Assess" to check for unsupported currencies, missing exchange rates, and column population. |
 | 7 | Unsupported currency panel | If some currencies aren't in the FX table, a detailed panel appears showing which currencies are unsupported, how many rows they affect, and their total spend. |
 | 8 | FX rate mode toggle | Switch between "Yearly" and "Monthly" override modes. Monthly is only available when a date column is selected. |
@@ -444,7 +444,7 @@ The Spend Summarizer takes a procurement dataset and produces charts, quality as
 | 4 | Re-run assessment | Click the refresh icon in the header to re-run the entire assessment. |
 | 5 | Date-spend pivot panel | Expand this panel to see a pivot table of spend by year and month. Cells with zero spend are dimmed. |
 | 5b | Spend Bifurcation panel | Shown after the Date-spend pivot. Shows positive vs negative spend. A toggle lets you switch between "Reporting Currency" (single total) and "Local Currency" (table with per-currency breakdown). Handles missing columns gracefully. |
-| 6 | Pareto analysis panel | Expand to see supplier concentration metrics at different thresholds (80%, 85%, 90%, 95%, 99%) — shows total spend, number of transactions, unique transactions, and supplier count at each level. |
+| 6 | Pareto analysis panel | Expand to see supplier concentration metrics at different thresholds (80%, 85%, 90%, 95%, 99%) — shows total positive spend, number of invoice rows, unique transaction types, and supplier count at each level. Negative spend and credit notes are excluded from the ranking (they appear separately in the Spend Bifurcation panel). Suppliers are grouped and ranked by their total spend, matching the Dashboard's Pareto chart. |
 | 7 | Description quality panel | Expand to see how many description columns were mapped and their quality. Shows spend coverage per description type. |
 | 8 | Top 10 descriptions | Click "Show top 10" on any description type to see the most common descriptions ranked by spend. Click "Hide top 10" to collapse. |
 | 9 | AI insight per description | Each description type shows an AI-written insight (rendered as formatted text with bullet points) assessing specificity, length, and usefulness. |
@@ -533,3 +533,35 @@ The Spend Summarizer takes a procurement dataset and produces charts, quality as
 | 8 | Error banner | Red error banner shown on all steps when something goes wrong. |
 | 9 | Error boundary | If a step crashes, a "Something went wrong" screen appears with "Try Again". |
 | 10 | Session restore | The app can restore your session from the URL or local storage so you pick up where you left off. If the session can't be restored, a clear error message tells you to start a new upload. |
+
+---
+
+## Launcher & Distribution
+
+The launcher starts all services and opens the browser. It is packaged as a portable folder (ZIP) that users unzip and run.
+
+### Startup
+
+| # | Feature | Details |
+|---|---------|---------|
+| 1 | One-click launch | Double-click DataScopingTool.exe inside the unzipped folder. A console window appears showing startup progress, then the browser opens automatically. |
+| 2 | Dynamic port selection | If the default ports (3000, 3001, 5000, 3005) are busy, the app automatically tries nearby ports so it can still start. |
+| 3 | Runtime config | Each module serves a /config.json with the actual URLs of all services, so cross-module navigation always works even when ports shift. |
+| 4 | Health check | The app waits until every module is fully ready before opening the browser. If a module is slow, it retries for up to 2 minutes. |
+| 5 | Resource validation | Before starting, the app checks that all critical files (frontend pages, backend code, certificates) are present and reports what's missing. |
+
+### Diagnostics & Logging
+
+| # | Feature | Details |
+|---|---------|---------|
+| 1 | Log file | The app writes a detailed log to the "logs" folder next to the EXE. Users can send this file when reporting problems. |
+| 2 | Diagnostics mode | Run "DataScopingTool.exe --diagnostics" to check ports, certificates, disk space, DuckDB, and bundled resources without launching the full app. |
+| 3 | Thread monitoring | While running, the app checks that all services are still alive and logs a warning if one dies. |
+
+### Shutdown & Cleanup
+
+| # | Feature | Details |
+|---|---------|---------|
+| 1 | Graceful shutdown | Close the console window or press Ctrl+C. The app shuts down all servers and cleans up session files. |
+| 2 | Crash-safe cleanup | If the app exits unexpectedly, a backup cleanup handler still runs. |
+| 3 | Stale session cleanup | On startup, leftover session folders from previous runs (older than 24 hours) are automatically deleted. |

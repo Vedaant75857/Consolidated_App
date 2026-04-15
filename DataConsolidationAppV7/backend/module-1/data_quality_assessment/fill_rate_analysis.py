@@ -81,10 +81,8 @@ def run_fill_rate_analysis(
 ) -> dict[str, Any]:
     """Compute per-column fill rate and spend coverage.
 
-    For each column returns:
-      - pctRowsCovered: percentage of non-null/non-empty rows
-      - spendCoverage: either a single percentage (reporting) or a list of
-        {code, pct} dicts (local-by-currency), or None if no spend column.
+    Uses batched SQL (one query for all fill rates, one for all reporting
+    spend coverage) to avoid per-column round trips.
 
     Args:
         conn: DuckDB session connection.
@@ -109,13 +107,24 @@ def run_fill_rate_analysis(
     qs = quote_id(spend_col) if spend_col else None
     spend_expr = _numeric_spend_expr(qs) if qs else None
 
-    # Total spend (denominator for reporting %)
+    # ── Batch fill rates: single query for all columns ────────────────────
+    fill_parts = [
+        f"COUNT(CASE WHEN {_non_null_condition(quote_id(c))} THEN 1 END)"
+        for c in columns
+    ]
+    fill_sql = f"SELECT {', '.join(fill_parts)} FROM {tbl}"
+    fill_row = conn.execute(fill_sql).fetchone()
+
+    filled_counts: dict[str, int] = {}
+    for i, col in enumerate(columns):
+        filled_counts[col] = int(fill_row[i] or 0)
+
+    # ── Spend denominators ────────────────────────────────────────────────
     total_spend = 0.0
     if spend_expr:
         row = conn.execute(f"SELECT SUM({spend_expr}) AS ts FROM {tbl}").fetchone()
         total_spend = float(row["ts"] or 0)
 
-    # Per-currency totals (denominator for local %)
     ccy_col = None
     ccy_totals: dict[str, float] = {}
     if spend_col and not is_reporting:
@@ -131,32 +140,28 @@ def run_fill_rate_analysis(
             ).fetchall()
             ccy_totals = {str(r["code"]): float(r["ts"] or 0) for r in ccy_rows}
 
-    # Build per-column metrics in a single pass per column
-    result_columns: list[dict[str, Any]] = []
+    # ── Batch spend coverage (reporting) ──────────────────────────────────
+    reporting_coverage: dict[str, float] = {}
+    if spend_col and is_reporting and spend_expr and total_spend > 0:
+        spend_parts = [
+            f"SUM(CASE WHEN {_non_null_condition(quote_id(c))} THEN {spend_expr} ELSE 0 END)"
+            for c in columns
+        ]
+        spend_sql = f"SELECT {', '.join(spend_parts)} FROM {tbl}"
+        spend_row = conn.execute(spend_sql).fetchone()
+        for i, col in enumerate(columns):
+            covered = float(spend_row[i] or 0)
+            reporting_coverage[col] = round(covered / total_spend * 100, 2)
 
-    for col in columns:
-        qc = quote_id(col)
-        nn_cond = _non_null_condition(qc)
-
-        # Fill rate
-        fr_row = conn.execute(
-            f"SELECT COUNT(CASE WHEN {nn_cond} THEN 1 END) AS filled FROM {tbl}"
-        ).fetchone()
-        filled = int(fr_row["filled"] or 0)
-        pct_rows = round(filled / total_rows * 100, 2) if total_rows > 0 else 0.0
-
-        # Spend coverage
-        spend_coverage: Any = None
-
-        if spend_col and is_reporting and spend_expr and total_spend > 0:
-            s_row = conn.execute(
-                f"SELECT SUM({spend_expr}) AS cs FROM {tbl} WHERE {nn_cond}"
-            ).fetchone()
-            covered_spend = float(s_row["cs"] or 0)
-            spend_coverage = round(covered_spend / total_spend * 100, 2)
-
-        elif spend_col and not is_reporting and ccy_col and spend_expr and ccy_totals:
-            qcc = quote_id(ccy_col)
+    # ── Per-column spend coverage (local by currency) ─────────────────────
+    # For local-currency mode, each column needs a GROUP BY currency query.
+    # We still batch where possible but currency breakdowns need grouping.
+    local_coverage: dict[str, list[dict[str, Any]]] = {}
+    if spend_col and not is_reporting and ccy_col and spend_expr and ccy_totals:
+        qcc = quote_id(ccy_col)
+        for col in columns:
+            qc = quote_id(col)
+            nn_cond = _non_null_condition(qc)
             ccy_rows = conn.execute(
                 f"SELECT UPPER(TRIM({qcc})) AS code, "
                 f"SUM({spend_expr}) AS cs "
@@ -173,7 +178,19 @@ def run_fill_rate_analysis(
                 pct = round(covered / denom * 100, 0) if denom > 0 else 0
                 breakdown.append({"code": code, "pct": pct})
             breakdown.sort(key=lambda x: x["code"])
-            spend_coverage = breakdown
+            local_coverage[col] = breakdown
+
+    # ── Assemble results ──────────────────────────────────────────────────
+    result_columns: list[dict[str, Any]] = []
+    for col in columns:
+        filled = filled_counts[col]
+        pct_rows = round(filled / total_rows * 100, 2) if total_rows > 0 else 0.0
+
+        spend_coverage: Any = None
+        if reporting_coverage:
+            spend_coverage = reporting_coverage.get(col)
+        elif local_coverage:
+            spend_coverage = local_coverage.get(col)
 
         result_columns.append({
             "columnName": col,

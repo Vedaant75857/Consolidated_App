@@ -1,19 +1,38 @@
 const BASE = "/api";
+const DEFAULT_TIMEOUT_MS = 120_000;
 
-async function jsonPost<T = any>(path: string, body: any, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    ...options,
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    const err = new Error(data.error || `Request failed: ${res.status}`);
-    (err as any).code = data.code || null;
+async function jsonPost<T = any>(
+  path: string,
+  body: any,
+  options?: RequestInit & { timeoutMs?: number },
+): Promise<T> {
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      ...options,
+      signal: controller.signal,
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      const err = new Error(data.error || `Request failed: ${res.status}`);
+      (err as any).code = data.code || null;
+      throw err;
+    }
+    return res.json();
+  } catch (err: any) {
+    if (err?.name === "AbortError") {
+      throw new Error(`Request to ${path} timed out after ${timeoutMs / 1000}s`);
+    }
     throw err;
+  } finally {
+    clearTimeout(timer);
   }
-  return res.json();
 }
 
 async function jsonGet<T = any>(path: string): Promise<T> {
