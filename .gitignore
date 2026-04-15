@@ -1,6 +1,5 @@
 node_modules/
 build/
-dist/
 coverage/
 .sessions/
 sessions/
@@ -14,6 +13,3 @@ __pycache__/
 *.log
 .env*
 !.env.example
-
-# PyInstaller build output (dist/ and build/ already covered above)
-*.exe
