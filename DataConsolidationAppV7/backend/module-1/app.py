@@ -102,10 +102,6 @@ def _session_cleanup_loop() -> None:
 
 app = create_app()
 
-_startup_cleaned = cleanup_all_sessions()
-if _startup_cleaned:
-    logger.info("[Module-1] Startup: cleared %d leftover session(s).", _startup_cleaned)
-
 
 def _on_exit():
     cleaned = cleanup_all_sessions()

@@ -9,7 +9,9 @@ async function jsonPost<T = any>(path: string, body: any, options?: RequestInit)
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `Request failed: ${res.status}`);
+    const err = new Error(data.error || `Request failed: ${res.status}`);
+    (err as any).code = data.code || null;
+    throw err;
   }
   return res.json();
 }

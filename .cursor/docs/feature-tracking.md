@@ -153,7 +153,8 @@ The DataStitcher helps users combine multiple data files into one clean, merged 
 | 3 | Choose source table | Pick the source table from a separate dropdown. |
 | 4 | Nothing to merge card | When only one table exists after appending, a clear card explains that all files were combined into one table and merging is not needed. Click "Continue to Next Step" to proceed. |
 | 4b | Skip merge | When multiple tables exist, click "Skip merge entirely" under the dropdowns to skip without joining. |
-| 4c | Session expired | If the server was restarted and session data is lost, a "Session Expired" card appears with a "Back to Upload" button instead of a confusing error message. |
+| 4c | Prerequisite missing | If the Append Strategy step hasn't been completed yet, an "Earlier Steps Required" card appears with a "Back to Append Strategy" button. |
+| 4d | Session expired | If the session is genuinely gone, a "Session Expired" card appears with a "Back to Upload" button. |
 | 5 | Side-by-side column view | See columns from both tables displayed side by side with colour coding (identifiers, descriptors, metrics, keys, etc.). |
 | 6 | Pair join keys | Click key buttons above base columns, then matching source columns, to pair them as join keys. Key pairs appear as chips you can remove with X. |
 | 7 | Pull source columns | Click source column headers to "pull" them into the merged result. Pull chips appear and can be removed with X. |
@@ -195,7 +196,8 @@ The DataStitcher helps users combine multiple data files into one clean, merged 
 |---|---------|---------|
 | 1 | Choose merge version | If multiple merges were run, pick which version to assess from a dropdown. In single-table mode, the table is selected automatically. |
 | 2 | Re-run all | Click "Re-run All" to refresh every quality assessment at once. |
-| 2b | Session expired detection | If the data table is missing (e.g. after a server restart), a "Session Expired" card appears with a "Back to Upload" button instead of showing raw error messages in each panel. |
+| 2b | Merge data not found | If the merged table is missing (e.g. earlier steps were changed), a "Merge Data Not Found" card appears with a "Back to Merge" button so you can re-run the merge. |
+| 2c | Session expired | If the session is genuinely gone, a "Session Expired" card appears with a "Back to Upload" button. |
 | 3 | Date panel | Expand the "Date" panel to see date format distributions and timeline charts. If multiple date columns exist, pick which one to analyse from a dropdown. |
 | 4 | Currency panel | Expand the "Currency" panel to see which currencies appear, their distribution, and consistency metrics. |
 | 5 | Payment Terms panel | Expand the "Payment Terms" panel to see how payment terms are distributed across spend. |
@@ -237,7 +239,7 @@ The Normalizer takes a single data table (uploaded directly or received from the
 | 5 | Remove file | Click the X on the upload area to clear the staged file and reset. |
 | 6 | API key entry | Type or paste your API key into a password field. |
 | 7 | Upload | Click "Upload & Analyze" to upload and process the files. Disabled while uploading or if no file is selected. Data is stored in a per-session SQLite database so multiple users can work at the same time. |
-| 8 | Import from DataStitcher | The app can receive data automatically from Module 1's "Send to Normalizer" button — data loads and you jump straight to Data Preview. |
+| 8 | Import from DataStitcher | The app can receive data automatically from Module 1's "Send to Normalizer" button — data loads and you jump straight to Data Preview. If the imported session is missing or has no data, a clear error banner tells you what went wrong. |
 | 9 | Multi-session support | Each browser tab gets its own isolated session. Multiple users can use the Normalizer at the same time without interfering with each other. |
 
 ### Data Preview
@@ -525,4 +527,4 @@ The Spend Summarizer takes a procurement dataset and produces charts, quality as
 | 7 | Step-change warning | Warning dialog when going back would reset later work. |
 | 8 | Error banner | Red error banner shown on all steps when something goes wrong. |
 | 9 | Error boundary | If a step crashes, a "Something went wrong" screen appears with "Try Again". |
-| 10 | Session restore | The app can restore your session from the URL or local storage so you pick up where you left off. |
+| 10 | Session restore | The app can restore your session from the URL or local storage so you pick up where you left off. If the session can't be restored, a clear error message tells you to start a new upload. |

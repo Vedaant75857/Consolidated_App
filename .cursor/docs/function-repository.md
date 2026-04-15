@@ -206,7 +206,8 @@ A complete list of every Python function in the app, organised by module and ste
 | `dqa_supplier` | `routes/data_quality_routes.py` | Receives the request to run the supplier quality assessment and returns the results. |
 | `_session_lock` | `routes/data_quality_routes.py` | Prevents two quality assessments from running at the same time for the same session. |
 | `_parse_common_body` | `routes/data_quality_routes.py` | Reads the standard fields (session ID, table name, API key) from every quality assessment request. |
-| `_validate_table` | `data_quality_assessment/service.py` | Checks that the requested table actually exists before running an assessment. |
+| `TableMissingError` | `data_quality_assessment/service.py` | A custom error type raised when a table is missing from the session but the session itself is still alive. |
+| `_validate_table` | `data_quality_assessment/service.py` | Checks that the requested table actually exists before running an assessment. Raises TableMissingError if the table is gone but the session is alive. |
 | `run_dqa_date` | `data_quality_assessment/service.py` | Runs the full date quality check — analyses formats, finds gaps, and calculates completeness. |
 | `run_dqa_currency` | `data_quality_assessment/service.py` | Runs the full currency quality check — finds which currencies appear and flags inconsistencies. |
 | `run_dqa_payment_terms` | `data_quality_assessment/service.py` | Runs the full payment terms quality check — analyses how terms are distributed across spend. |

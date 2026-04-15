@@ -235,6 +235,7 @@ export default function App() {
         })
         .catch(() => {
           sessionStorage.removeItem(LS_SESSION_KEY);
+          setError("Previous session could not be restored. Please start a new upload.");
         });
     }
   }, []);

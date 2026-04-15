@@ -13,6 +13,7 @@ from flask import Blueprint, jsonify, request
 from shared.db import get_session_db, lookup_sql_name
 
 from data_quality_assessment.service import (
+    TableMissingError,
     run_dqa_country_region,
     run_dqa_currency,
     run_dqa_date,
@@ -89,6 +90,8 @@ def dqa_date():
             result = run_dqa_date(conn, table_name, api_key, date_column)
 
         return jsonify(result)
+    except TableMissingError as exc:
+        return jsonify({"error": str(exc), "code": "TABLE_MISSING"}), 404
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
@@ -108,6 +111,8 @@ def dqa_currency():
             result = run_dqa_currency(conn, table_name, api_key)
 
         return jsonify(result)
+    except TableMissingError as exc:
+        return jsonify({"error": str(exc), "code": "TABLE_MISSING"}), 404
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
@@ -127,6 +132,8 @@ def dqa_payment_terms():
             result = run_dqa_payment_terms(conn, table_name, api_key)
 
         return jsonify(result)
+    except TableMissingError as exc:
+        return jsonify({"error": str(exc), "code": "TABLE_MISSING"}), 404
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
@@ -146,6 +153,8 @@ def dqa_country_region():
             result = run_dqa_country_region(conn, table_name, api_key)
 
         return jsonify(result)
+    except TableMissingError as exc:
+        return jsonify({"error": str(exc), "code": "TABLE_MISSING"}), 404
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
@@ -165,6 +174,8 @@ def dqa_supplier():
             result = run_dqa_supplier(conn, table_name, api_key)
 
         return jsonify(result)
+    except TableMissingError as exc:
+        return jsonify({"error": str(exc), "code": "TABLE_MISSING"}), 404
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:

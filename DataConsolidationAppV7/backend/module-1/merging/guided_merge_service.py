@@ -96,7 +96,8 @@ def recommend_base_file(
             "recommended": None,
             "reasoning": None,
             "rankings": [],
-            "session_expired": True,
+            "prerequisite_missing": True,
+            "error": "No table groups found. Please complete the Append Strategy step first.",
         }
 
     if len(schema) == 1:

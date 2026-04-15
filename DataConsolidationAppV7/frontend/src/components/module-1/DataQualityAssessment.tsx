@@ -131,7 +131,7 @@ interface DataQualityAssessmentProps {
   setStep: (s: number) => void;
 }
 
-const SESSION_EXPIRED_PATTERN = /not found in session/i;
+const ERROR_CODE_TABLE_MISSING = "TABLE_MISSING";
 
 /* ── Helpers ───────────────────────────────────────────────────────────── */
 
@@ -199,6 +199,7 @@ export default function DataQualityAssessment({
 
   const [selectedVersion, setSelectedVersion] = useState(latestVersion);
   const [sessionExpired, setSessionExpired] = useState(false);
+  const [tableMissing, setTableMissing] = useState(false);
 
   // Per-panel state
   const [dateState, setDateState] = useState<PanelState<DateResult>>({
@@ -245,9 +246,9 @@ export default function DataQualityAssessment({
   // ── Panel runners ────────────────────────────────────────────────────
 
   const checkSessionError = useCallback((err: any) => {
-    const msg = err?.message || "";
-    if (SESSION_EXPIRED_PATTERN.test(msg)) {
-      setSessionExpired(true);
+    const code = err?.code || "";
+    if (code === ERROR_CODE_TABLE_MISSING) {
+      setTableMissing(true);
       return true;
     }
     return false;
@@ -255,7 +256,7 @@ export default function DataQualityAssessment({
 
   const runDatePanel = useCallback(
     async (version: number, dateCol?: string) => {
-      if (sessionExpired) return;
+      if (sessionExpired || tableMissing) return;
       setDateState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
@@ -284,12 +285,12 @@ export default function DataQualityAssessment({
         }
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError],
+    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, tableMissing, checkSessionError],
   );
 
   const runCurrencyPanel = useCallback(
     async (version: number) => {
-      if (sessionExpired) return;
+      if (sessionExpired || tableMissing) return;
       setCurrencyState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
@@ -310,12 +311,12 @@ export default function DataQualityAssessment({
         }
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError],
+    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, tableMissing, checkSessionError],
   );
 
   const runPaymentPanel = useCallback(
     async (version: number) => {
-      if (sessionExpired) return;
+      if (sessionExpired || tableMissing) return;
       setPaymentState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
@@ -336,12 +337,12 @@ export default function DataQualityAssessment({
         }
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError],
+    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, tableMissing, checkSessionError],
   );
 
   const runCountryPanel = useCallback(
     async (version: number) => {
-      if (sessionExpired) return;
+      if (sessionExpired || tableMissing) return;
       setCountryState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
@@ -362,12 +363,12 @@ export default function DataQualityAssessment({
         }
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError],
+    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, tableMissing, checkSessionError],
   );
 
   const runSupplierPanel = useCallback(
     async (version: number) => {
-      if (sessionExpired) return;
+      if (sessionExpired || tableMissing) return;
       setSupplierState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
@@ -388,7 +389,7 @@ export default function DataQualityAssessment({
         }
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey],
+    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, tableMissing, checkSessionError],
   );
 
   const runAllPanels = useCallback(
@@ -441,6 +442,30 @@ export default function DataQualityAssessment({
 
   // ── Render ───────────────────────────────────────────────────────────
 
+  if (tableMissing) {
+    return (
+      <motion.div variants={itemVariants} className="space-y-6">
+        <SurfaceCard title="Merge Data Not Found" icon={AlertTriangle}>
+          <div className="flex flex-col items-center text-center py-6 gap-4">
+            <AlertTriangle className="w-10 h-10 text-amber-500" />
+            <div>
+              <p className="text-sm font-semibold text-neutral-800 dark:text-neutral-200 mb-1">
+                Merged table is missing
+              </p>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400 max-w-md">
+                The merged data table could not be found. This can happen if earlier steps were changed. Please go back to the Merge step and re-run the merge.
+              </p>
+            </div>
+            <PrimaryButton onClick={() => setStep(6)}>
+              <ArrowRight className="w-4 h-4 rotate-180" />
+              Back to Merge
+            </PrimaryButton>
+          </div>
+        </SurfaceCard>
+      </motion.div>
+    );
+  }
+
   if (sessionExpired) {
     return (
       <motion.div variants={itemVariants} className="space-y-6">
@@ -452,7 +477,7 @@ export default function DataQualityAssessment({
                 Your session data was reset
               </p>
               <p className="text-xs text-neutral-500 dark:text-neutral-400 max-w-md">
-                The server was restarted and the data tables are no longer available. Please go back to the Upload step and re-upload your files.
+                The session is no longer available. Please go back to the Upload step and re-upload your files.
               </p>
             </div>
             <PrimaryButton onClick={() => setStep(1)}>

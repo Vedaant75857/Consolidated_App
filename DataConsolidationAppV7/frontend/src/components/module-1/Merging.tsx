@@ -134,6 +134,7 @@ export default function Merging(props: MergingProps) {
   // --- Section A: Recommend Base ---
 
   const [sessionExpired, setSessionExpired] = useState(false);
+  const [prerequisiteMissing, setPrerequisiteMissing] = useState(false);
 
   const fetchRecommendation = useCallback(async () => {
     if (!sessionId || groupSchema.length === 0) return;
@@ -152,9 +153,9 @@ export default function Merging(props: MergingProps) {
         throw new Error(errMsg);
       }
       const data = await res.json();
-      if (data.session_expired) {
-        setSessionExpired(true);
-        addLog("Merge", "error", "Session data was reset. Please re-upload your files.");
+      if (data.prerequisite_missing) {
+        setPrerequisiteMissing(true);
+        addLog("Merge", "error", data.error || "No table groups found. Please complete earlier steps first.");
         return;
       }
       setMergeBaseRecommendation(data);
@@ -756,6 +757,30 @@ export default function Merging(props: MergingProps) {
 
   const showSetup = !mergeExecuteResult;
 
+  if (prerequisiteMissing) {
+    return (
+      <motion.div variants={itemVariants} className="space-y-6">
+        <SurfaceCard title="Earlier Steps Required" icon={AlertTriangle}>
+          <div className="flex flex-col items-center text-center py-6 gap-4">
+            <AlertTriangle className="w-10 h-10 text-amber-500" />
+            <div>
+              <p className="text-sm font-semibold text-neutral-800 dark:text-neutral-200 mb-1">
+                No table groups found
+              </p>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400 max-w-md">
+                The Append Strategy step needs to be completed before merging. Please go back and set up your table groups.
+              </p>
+            </div>
+            <PrimaryButton onClick={() => setStep(3)}>
+              <ArrowRight className="w-4 h-4 rotate-180" />
+              Back to Append Strategy
+            </PrimaryButton>
+          </div>
+        </SurfaceCard>
+      </motion.div>
+    );
+  }
+
   if (sessionExpired) {
     return (
       <motion.div variants={itemVariants} className="space-y-6">
@@ -767,7 +792,7 @@ export default function Merging(props: MergingProps) {
                 Your session data was reset
               </p>
               <p className="text-xs text-neutral-500 dark:text-neutral-400 max-w-md">
-                The server was restarted and your workspace data is no longer available. Please go back to the Upload step and re-upload your files.
+                The session is no longer available. Please go back to the Upload step and re-upload your files.
               </p>
             </div>
             <PrimaryButton onClick={() => setStep(1)}>

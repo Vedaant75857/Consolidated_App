@@ -35,39 +35,33 @@ def upload():
         session_id = str(int(time.time() * 1000)) + hex(random.getrandbits(32))[2:]
         conn = get_session_db(session_id)
 
-        try:
-            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-            if ext == "zip" or zipfile.is_zipfile(io.BytesIO(file_data)):
-                table_keys, warnings = load_zip_to_session(conn, file_data)
-            else:
-                table_keys, warnings = load_single_file(conn, filename, file_data)
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        if ext == "zip" or zipfile.is_zipfile(io.BytesIO(file_data)):
+            table_keys, warnings = load_zip_to_session(conn, file_data)
+        else:
+            table_keys, warnings = load_single_file(conn, filename, file_data)
 
-            if not table_keys:
-                return jsonify({
-                    "error": "No valid data files found in upload.",
-                    "warnings": warnings,
-                }), 400
-
-            columns = collect_column_info(conn, table_keys)
-            inventory = build_inventory(conn)
-
-            set_meta(conn, "table_keys", table_keys)
-            set_meta(conn, "inventory", inventory)
-            set_meta(conn, "columns", columns)
-            set_meta(conn, "step", 2)
-
+        if not table_keys:
             return jsonify({
-                "sessionId": session_id,
-                "columns": columns,
-                "fileInventory": inventory,
-                "previews": {},
+                "error": "No valid data files found in upload.",
                 "warnings": warnings,
-            })
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+            }), 400
+
+        columns = collect_column_info(conn, table_keys)
+        inventory = build_inventory(conn)
+
+        set_meta(conn, "table_keys", table_keys)
+        set_meta(conn, "inventory", inventory)
+        set_meta(conn, "columns", columns)
+        set_meta(conn, "step", 2)
+
+        return jsonify({
+            "sessionId": session_id,
+            "columns": columns,
+            "fileInventory": inventory,
+            "previews": {},
+            "warnings": warnings,
+        })
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -90,16 +84,10 @@ def get_preview():
             return jsonify({"error": "Invalid session"}), 400
 
         conn = get_session_db(session_id)
-        try:
-            preview = build_single_preview(conn, table_key)
-            if preview is None:
-                return jsonify({"error": "Table not found."}), 404
-            return jsonify({"preview": preview})
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        preview = build_single_preview(conn, table_key)
+        if preview is None:
+            return jsonify({"error": "Table not found."}), 404
+        return jsonify({"preview": preview})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -121,27 +109,21 @@ def import_from_module():
         session_id = str(int(time.time() * 1000)) + hex(random.getrandbits(32))[2:]
         conn = get_session_db(session_id)
 
-        try:
-            table_keys, load_warnings = load_single_file(conn, filename, file_data)
+        table_keys, load_warnings = load_single_file(conn, filename, file_data)
 
-            if not table_keys:
-                error_detail = "; ".join(w.get("message", "") for w in load_warnings) if load_warnings else "File could not be parsed"
-                return jsonify({"error": f"Import failed: {error_detail}"}), 400
+        if not table_keys:
+            error_detail = "; ".join(w.get("message", "") for w in load_warnings) if load_warnings else "File could not be parsed"
+            return jsonify({"error": f"Import failed: {error_detail}"}), 400
 
-            columns = collect_column_info(conn, table_keys)
-            inventory = build_inventory(conn)
+        columns = collect_column_info(conn, table_keys)
+        inventory = build_inventory(conn)
 
-            set_meta(conn, "table_keys", table_keys)
-            set_meta(conn, "inventory", inventory)
-            set_meta(conn, "columns", columns)
-            set_meta(conn, "step", 2)
+        set_meta(conn, "table_keys", table_keys)
+        set_meta(conn, "inventory", inventory)
+        set_meta(conn, "columns", columns)
+        set_meta(conn, "step", 2)
 
-            return jsonify({"sessionId": session_id})
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        return jsonify({"sessionId": session_id})
     except Exception as exc:
         import traceback
         traceback.print_exc()
@@ -153,50 +135,44 @@ def get_session_state(session_id: str):
     if not session_exists(session_id):
         return jsonify({"error": "Session not found"}), 404
     conn = get_session_db(session_id)
-    try:
-        step = get_meta(conn, "step") or 1
-        columns = get_meta(conn, "columns")
-        inventory_meta = get_meta(conn, "inventory")
-        mapping = get_meta(conn, "mapping")
-        cast_report = get_meta(conn, "cast_report")
-        view_results = get_meta(conn, "view_results")
-        ai_mappings = get_meta(conn, "ai_mappings")
-        if isinstance(ai_mappings, list):
-            for m in ai_mappings:
-                bm = m.get("bestMatch")
-                if isinstance(bm, dict):
-                    m["bestMatch"] = bm.get("column") or bm.get("name") or None
-                alts = m.get("alternatives")
-                if isinstance(alts, list):
-                    m["alternatives"] = [
-                        (a.get("column") or a.get("name") or "")
-                        if isinstance(a, dict) else str(a)
-                        for a in alts
-                    ]
+    step = get_meta(conn, "step") or 1
+    columns = get_meta(conn, "columns")
+    inventory_meta = get_meta(conn, "inventory")
+    mapping = get_meta(conn, "mapping")
+    cast_report = get_meta(conn, "cast_report")
+    view_results = get_meta(conn, "view_results")
+    ai_mappings = get_meta(conn, "ai_mappings")
+    if isinstance(ai_mappings, list):
+        for m in ai_mappings:
+            bm = m.get("bestMatch")
+            if isinstance(bm, dict):
+                m["bestMatch"] = bm.get("column") or bm.get("name") or None
+            alts = m.get("alternatives")
+            if isinstance(alts, list):
+                m["alternatives"] = [
+                    (a.get("column") or a.get("name") or "")
+                    if isinstance(a, dict) else str(a)
+                    for a in alts
+                ]
 
-        previews = None
-        if inventory_meta:
-            try:
-                previews = build_preview(conn)
-            except Exception:
-                pass
-
-        return jsonify({
-            "step": step,
-            "columns": columns,
-            "fileInventory": inventory_meta,
-            "previews": previews,
-            "mapping": mapping,
-            "castReport": cast_report,
-            "viewResults": view_results,
-            "aiMappings": ai_mappings,
-            "standardFields": STANDARD_FIELDS if ai_mappings else None,
-        })
-    finally:
+    previews = None
+    if inventory_meta:
         try:
-            conn.close()
+            previews = build_preview(conn)
         except Exception:
             pass
+
+    return jsonify({
+        "step": step,
+        "columns": columns,
+        "fileInventory": inventory_meta,
+        "previews": previews,
+        "mapping": mapping,
+        "castReport": cast_report,
+        "viewResults": view_results,
+        "aiMappings": ai_mappings,
+        "standardFields": STANDARD_FIELDS if ai_mappings else None,
+    })
 
 
 @upload_bp.route("/delete-table", methods=["POST"])
@@ -212,23 +188,17 @@ def delete_table():
             return jsonify({"error": "tableKey required"}), 400
 
         conn = get_session_db(session_id)
-        try:
-            delete_table_from_session(conn, table_key)
+        delete_table_from_session(conn, table_key)
 
-            inventory = build_inventory(conn)
-            previews = build_preview(conn)
-            set_meta(conn, "inventory", inventory)
+        inventory = build_inventory(conn)
+        previews = build_preview(conn)
+        set_meta(conn, "inventory", inventory)
 
-            table_keys = [inv["table_key"] for inv in inventory]
-            columns = collect_column_info(conn, table_keys)
-            set_meta(conn, "columns", columns)
+        table_keys = [inv["table_key"] for inv in inventory]
+        columns = collect_column_info(conn, table_keys)
+        set_meta(conn, "columns", columns)
 
-            return jsonify({"inventory": inventory, "previews": previews})
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        return jsonify({"inventory": inventory, "previews": previews})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -246,14 +216,8 @@ def raw_preview():
             return jsonify({"error": "tableKey required"}), 400
 
         conn = get_session_db(session_id)
-        try:
-            preview = get_raw_preview(conn, table_key)
-            return jsonify({"rawPreview": preview})
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        preview = get_raw_preview(conn, table_key)
+        return jsonify({"rawPreview": preview})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -279,27 +243,21 @@ def set_header_row():
             custom_names = {int(k): v for k, v in custom_column_names.items()}
 
         conn = get_session_db(session_id)
-        try:
-            set_header_row_for_table(conn, table_key, header_row_index, custom_names)
+        set_header_row_for_table(conn, table_key, header_row_index, custom_names)
 
-            inventory = build_inventory(conn)
-            previews = build_preview(conn)
-            set_meta(conn, "inventory", inventory)
+        inventory = build_inventory(conn)
+        previews = build_preview(conn)
+        set_meta(conn, "inventory", inventory)
 
-            table_keys = [inv["table_key"] for inv in inventory]
-            columns = collect_column_info(conn, table_keys)
-            set_meta(conn, "columns", columns)
+        table_keys = [inv["table_key"] for inv in inventory]
+        columns = collect_column_info(conn, table_keys)
+        set_meta(conn, "columns", columns)
 
-            return jsonify({
-                "inventory": inventory,
-                "previews": previews,
-                "columns": columns,
-            })
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        return jsonify({
+            "inventory": inventory,
+            "previews": previews,
+            "columns": columns,
+        })
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -320,26 +278,20 @@ def delete_rows():
             return jsonify({"error": "rowIds required"}), 400
 
         conn = get_session_db(session_id)
-        try:
-            deleted_count = delete_rows_from_table(conn, table_key, row_ids)
+        deleted_count = delete_rows_from_table(conn, table_key, row_ids)
 
-            inventory = build_inventory(conn)
-            previews = build_preview(conn)
-            set_meta(conn, "inventory", inventory)
+        inventory = build_inventory(conn)
+        previews = build_preview(conn)
+        set_meta(conn, "inventory", inventory)
 
-            inventory_row = next((inv for inv in inventory if inv["table_key"] == table_key), None)
-            preview = previews.get(table_key)
+        inventory_row = next((inv for inv in inventory if inv["table_key"] == table_key), None)
+        preview = previews.get(table_key)
 
-            return jsonify({
-                "deletedCount": deleted_count,
-                "preview": preview,
-                "inventoryRow": inventory_row,
-            })
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        return jsonify({
+            "deletedCount": deleted_count,
+            "preview": preview,
+            "inventoryRow": inventory_row,
+        })
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -370,44 +322,35 @@ def invalidate_downstream():
 
         conn = get_session_db(session_id)
 
-        try:
-            if from_step == 0:
-                # Full session wipe (re-upload scenario)
-                for key in get_all_meta_keys(conn):
-                    conn.execute("DELETE FROM _meta WHERE key = ?", (key,))
-                # Drop all user tables (keep system tables)
-                tables = conn.execute(
-                    "SELECT table_name FROM information_schema.tables "
-                    "WHERE table_schema = 'main' AND table_name NOT LIKE '\\_%' ESCAPE '\\'"
-                ).fetchall()
-                for (tbl,) in tables:
-                    conn.execute(f'DROP TABLE IF EXISTS "{tbl}"')
-                # Also drop registry-tracked tables
-                try:
-                    regs = conn.execute("SELECT data_table, raw_table FROM _table_registry").fetchall()
-                    for dt, rt in regs:
-                        if dt:
-                            conn.execute(f'DROP TABLE IF EXISTS "{dt}"')
-                        if rt:
-                            conn.execute(f'DROP TABLE IF EXISTS "{rt}"')
-                    conn.execute("DELETE FROM _table_registry")
-                except Exception:
-                    pass  # registry may not exist yet
-                conn.commit()
-            else:
-                for step_num in range(from_step + 1, 9):
-                    for key in _STEP_META_KEYS.get(step_num, []):
-                        conn.execute("DELETE FROM _meta WHERE key = ?", (key,))
-                    for tbl in _STEP_TABLES.get(step_num, []):
-                        conn.execute(f'DROP TABLE IF EXISTS "{tbl}"')
-                set_meta(conn, "step", from_step)
-                conn.commit()
-
-            return jsonify({"ok": True})
-        finally:
+        if from_step == 0:
+            for key in get_all_meta_keys(conn):
+                conn.execute("DELETE FROM _meta WHERE key = ?", (key,))
+            tables = conn.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'main' AND table_name NOT LIKE '\\_%' ESCAPE '\\'"
+            ).fetchall()
+            for (tbl,) in tables:
+                conn.execute(f'DROP TABLE IF EXISTS "{tbl}"')
             try:
-                conn.close()
+                regs = conn.execute("SELECT data_table, raw_table FROM _table_registry").fetchall()
+                for dt, rt in regs:
+                    if dt:
+                        conn.execute(f'DROP TABLE IF EXISTS "{dt}"')
+                    if rt:
+                        conn.execute(f'DROP TABLE IF EXISTS "{rt}"')
+                conn.execute("DELETE FROM _table_registry")
             except Exception:
-                pass
+                pass  # registry may not exist yet
+            conn.commit()
+        else:
+            for step_num in range(from_step + 1, 9):
+                for key in _STEP_META_KEYS.get(step_num, []):
+                    conn.execute("DELETE FROM _meta WHERE key = ?", (key,))
+                for tbl in _STEP_TABLES.get(step_num, []):
+                    conn.execute(f'DROP TABLE IF EXISTS "{tbl}"')
+            set_meta(conn, "step", from_step)
+            conn.commit()
+
+        return jsonify({"ok": True})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500

@@ -21,6 +21,7 @@ from .supplier_analysis import run_supplier_analysis
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "TableMissingError",
     "run_dqa_date",
     "run_dqa_currency",
     "run_dqa_payment_terms",
@@ -29,10 +30,19 @@ __all__ = [
 ]
 
 
+class TableMissingError(Exception):
+    """Raised when a specific table is missing from the session DB,
+    but the session itself is still alive (DB file exists)."""
+    pass
+
+
 def _validate_table(conn: DuckDBConnection, table_name: str) -> str:
     """Validate the table exists, falling back to 'final_merged' for versioned names.
 
     Returns the resolved table name (may differ from input if fallback was used).
+
+    Raises:
+        TableMissingError: If the table doesn't exist in the session DB.
     """
     if table_exists(conn, table_name):
         return table_name
@@ -41,7 +51,7 @@ def _validate_table(conn: DuckDBConnection, table_name: str) -> str:
             "Table '%s' not found, falling back to 'final_merged'", table_name,
         )
         return "final_merged"
-    raise ValueError(f"Table '{table_name}' not found in session.")
+    raise TableMissingError(f"Table '{table_name}' not found. Please re-run the Merge step.")
 
 
 # ── Per-panel dispatchers ─────────────────────────────────────────────────

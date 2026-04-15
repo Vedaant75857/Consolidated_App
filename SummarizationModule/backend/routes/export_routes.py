@@ -16,13 +16,7 @@ def export_csv(view_id: str):
             return jsonify({"error": "Invalid session"}), 400
 
         conn = get_session_db(session_id)
-        try:
-            view_results = get_meta(conn, "view_results") or []
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        view_results = get_meta(conn, "view_results") or []
 
         view = next((v for v in view_results if v.get("viewId") == view_id), None)
         if not view:

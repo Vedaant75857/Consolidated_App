@@ -96,17 +96,29 @@ export default function App() {
 
       const sid = urlSessionId || sessionId;
       fetch(`/api/current-inventory?sessionId=${encodeURIComponent(sid)}`)
-        .then((res) => res.json())
+        .then((res) => {
+          if (!res.ok) throw new Error(`Session not found (${res.status})`);
+          return res.json();
+        })
         .then((data) => {
+          if (data.error) {
+            setError(data.error);
+            addLog("IMPORT", "error", data.error);
+            return;
+          }
           if (data.inventory?.length) {
             setInventory(data.inventory);
             setStep(2);
             setMaxStepReached(2);
             addLog("IMPORT", "success", `Data imported from ${source === "stitcher" ? "DataStitcher" : "external module"} — ${data.inventory.length} table(s) ready.`);
+          } else {
+            setError("Imported session has no data. Please re-import from the source module.");
+            addLog("IMPORT", "error", "Imported session has no data.");
           }
         })
-        .catch(() => {
-          addLog("IMPORT", "error", "Failed to load imported data from backend.");
+        .catch((err) => {
+          setError("Failed to load imported data. The session may have expired.");
+          addLog("IMPORT", "error", err?.message || "Failed to load imported data from backend.");
         });
     }
   }, [addLog]);

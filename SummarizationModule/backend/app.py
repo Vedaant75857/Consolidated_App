@@ -54,11 +54,6 @@ app.register_blueprint(email_bp, url_prefix="/api")
 
 logger = logging.getLogger("module3")
 
-_startup_cleaned = cleanup_all_sessions()
-if _startup_cleaned:
-    logger.info("[Module-3] Startup: cleared %d leftover session(s).", _startup_cleaned)
-
-
 def _on_exit():
     cleaned = cleanup_all_sessions()
     logger.info("[Module-3] Shutdown: deleted %d session(s).", cleaned)

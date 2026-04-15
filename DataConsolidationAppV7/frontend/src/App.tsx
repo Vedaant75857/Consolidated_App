@@ -445,6 +445,11 @@ export default function App() {
           }));
         });
       }
+    } else {
+      // Backend has no merge data -- clear any stale merge outputs from sessionStorage hydration
+      setMergeOutputs([]);
+      setMergeResult(null);
+      setMergeHistory([]);
     }
   }, []);
 
