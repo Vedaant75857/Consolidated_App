@@ -31,6 +31,19 @@ _db_cache: "OrderedDict[str, DuckDBConnection]" = OrderedDict()
 _db_lock = threading.Lock()
 _MAX_CACHE = max(1, int(os.getenv("SESSION_DB_MAX_CACHE", "50")))
 
+_session_locks: dict[str, threading.RLock] = {}
+_session_locks_guard = threading.Lock()
+
+
+def get_session_lock(session_id: str) -> threading.RLock:
+    """Return a per-session reentrant lock for serializing DuckDB access."""
+    with _session_locks_guard:
+        lock = _session_locks.get(session_id)
+        if lock is None:
+            lock = threading.RLock()
+            _session_locks[session_id] = lock
+        return lock
+
 
 def _db_path(session_id: str) -> str:
     safe = "".join(c for c in session_id if c.isalnum() or c in "-_")

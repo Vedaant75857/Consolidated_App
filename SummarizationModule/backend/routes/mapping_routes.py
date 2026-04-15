@@ -2,7 +2,7 @@ import logging
 
 from flask import Blueprint, jsonify, request
 
-from shared.db import get_session_db, get_meta, set_meta, session_exists
+from shared.db import get_session_db, get_session_lock, get_meta, set_meta, session_exists
 from services.mapping.column_mapper import (
     STANDARD_FIELDS,
     deterministic_match,
@@ -27,47 +27,48 @@ def map_columns():
         if not api_key:
             return jsonify({"error": "API key required"}), 400
 
-        conn = get_session_db(session_id)
-        columns = get_meta(conn, "columns")
-        if not columns:
-            return jsonify({"error": "No columns found. Upload data first."}), 400
+        with get_session_lock(session_id):
+            conn = get_session_db(session_id)
+            columns = get_meta(conn, "columns")
+            if not columns:
+                return jsonify({"error": "No columns found. Upload data first."}), 400
 
-        exact_matched, unmatched_fields, unmatched_cols = deterministic_match(columns)
-        logger.info(
-            "Deterministic pass: %d exact matches, %d fields remaining",
-            len(exact_matched),
-            len(unmatched_fields),
-        )
+            exact_matched, unmatched_fields, unmatched_cols = deterministic_match(columns)
+            logger.info(
+                "Deterministic pass: %d exact matches, %d fields remaining",
+                len(exact_matched),
+                len(unmatched_fields),
+            )
 
-        ai_results = ai_map_columns(unmatched_fields, unmatched_cols, api_key)
-        logger.info("AI pass returned %d mapping(s)", len(ai_results))
+            ai_results = ai_map_columns(unmatched_fields, unmatched_cols, api_key)
+            logger.info("AI pass returned %d mapping(s)", len(ai_results))
 
-        mappings: list[dict] = []
-        for field in STANDARD_FIELDS:
-            fk = field["fieldKey"]
-            if fk in exact_matched:
-                mappings.append({
-                    "fieldKey": fk,
-                    "bestMatch": exact_matched[fk],
-                    "alternatives": [],
-                    "reasoning": "Exact name match",
-                    "expectedType": field["expectedType"],
-                })
-            else:
-                ai_entry = next((r for r in ai_results if r["fieldKey"] == fk), None)
-                if ai_entry:
-                    mappings.append(ai_entry)
-                else:
+            mappings: list[dict] = []
+            for field in STANDARD_FIELDS:
+                fk = field["fieldKey"]
+                if fk in exact_matched:
                     mappings.append({
                         "fieldKey": fk,
-                        "bestMatch": None,
+                        "bestMatch": exact_matched[fk],
                         "alternatives": [],
-                        "reasoning": "No match found",
+                        "reasoning": "Exact name match",
                         "expectedType": field["expectedType"],
                     })
+                else:
+                    ai_entry = next((r for r in ai_results if r["fieldKey"] == fk), None)
+                    if ai_entry:
+                        mappings.append(ai_entry)
+                    else:
+                        mappings.append({
+                            "fieldKey": fk,
+                            "bestMatch": None,
+                            "alternatives": [],
+                            "reasoning": "No match found",
+                            "expectedType": field["expectedType"],
+                        })
 
-        set_meta(conn, "ai_mappings", mappings)
-        set_meta(conn, "step", 3)
+            set_meta(conn, "ai_mappings", mappings)
+            set_meta(conn, "step", 3)
 
         return jsonify({
             "mappings": mappings,
@@ -86,8 +87,9 @@ def procurement_views():
         if not session_id or not session_exists(session_id):
             return jsonify({"error": "Invalid session"}), 400
 
-        conn = get_session_db(session_id)
-        mapping = get_meta(conn, "mapping")
+        with get_session_lock(session_id):
+            conn = get_session_db(session_id)
+            mapping = get_meta(conn, "mapping")
 
         if not mapping:
             return jsonify({"error": "No mapping found. Complete column mapping first."}), 400
@@ -95,6 +97,7 @@ def procurement_views():
         views = get_procurement_view_availability(mapping)
         return jsonify({"views": views})
     except Exception as exc:
+        logger.exception("procurement-views failed for session %s", body.get("sessionId", "?"))
         return jsonify({"error": str(exc)}), 500
 
 
@@ -110,11 +113,12 @@ def confirm_mapping():
         if not mapping:
             return jsonify({"error": "Mapping required"}), 400
 
-        conn = get_session_db(session_id)
-        set_meta(conn, "mapping", mapping)
+        with get_session_lock(session_id):
+            conn = get_session_db(session_id)
+            set_meta(conn, "mapping", mapping)
 
-        cast_report = build_typed_table(conn, mapping)
-        set_meta(conn, "step", 4)
+            cast_report = build_typed_table(conn, mapping)
+            set_meta(conn, "step", 4)
 
         return jsonify({"castReport": cast_report})
     except Exception as exc:

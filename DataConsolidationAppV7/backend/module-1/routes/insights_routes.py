@@ -370,6 +370,47 @@ def _build_state_patch(conn) -> dict[str, Any]:
         "dateStandardizeResult": get_meta(conn, "dateStandardizeLast"),
     }
     merged = _build_merge_result_from_table(conn, "final_merged")
+    if not merged:
+        # WAL might not be flushed yet — force a checkpoint and retry
+        try:
+            conn.execute("CHECKPOINT")
+            conn.commit()
+        except Exception:
+            pass
+        merged = _build_merge_result_from_table(conn, "final_merged")
+    if not merged:
+        # Last resort: look for any final_merged_v* table
+        try:
+            rows = conn.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_name LIKE 'final_merged%' ORDER BY table_name DESC"
+            ).fetchall()
+            for r in rows:
+                fallback = r["table_name"]
+                merged = _build_merge_result_from_table(conn, fallback)
+                if merged:
+                    break
+        except Exception:
+            pass
+    if not merged:
+        # Table not found, but if merge_history metadata exists, build a
+        # minimal mergeResult so the frontend doesn't clear its state.
+        merge_history = get_meta(conn, "merge_history") or []
+        if merge_history:
+            latest = merge_history[-1] if merge_history else None
+            merged = {
+                "final_table": "final_merged",
+                "rows": latest.get("rows", 0) if latest else 0,
+                "cols": latest.get("cols", 0) if latest else 0,
+                "columns": [],
+                "column_stats": [],
+                "preview": [],
+                "skipped": not bool(get_meta(conn, "mergeApprovedSources")),
+                "merge_history": merge_history,
+            }
+            if latest:
+                merged["version"] = latest.get("version")
+                merged["file_label"] = latest.get("file_label")
     if merged:
         patch["mergeResult"] = merged
     return patch

@@ -5,7 +5,7 @@ import zipfile
 
 from flask import Blueprint, jsonify, request
 
-from shared.db import get_session_db, set_meta, get_meta, delete_meta, get_all_meta_keys, session_exists
+from shared.db import get_session_db, get_session_lock, set_meta, get_meta, delete_meta, get_all_meta_keys, session_exists
 from services.mapping.column_mapper import STANDARD_FIELDS
 from services.upload.file_loader import (
     load_zip_to_session,
@@ -134,14 +134,24 @@ def import_from_module():
 def get_session_state(session_id: str):
     if not session_exists(session_id):
         return jsonify({"error": "Session not found"}), 404
-    conn = get_session_db(session_id)
-    step = get_meta(conn, "step") or 1
-    columns = get_meta(conn, "columns")
-    inventory_meta = get_meta(conn, "inventory")
-    mapping = get_meta(conn, "mapping")
-    cast_report = get_meta(conn, "cast_report")
-    view_results = get_meta(conn, "view_results")
-    ai_mappings = get_meta(conn, "ai_mappings")
+
+    with get_session_lock(session_id):
+        conn = get_session_db(session_id)
+        step = get_meta(conn, "step") or 1
+        columns = get_meta(conn, "columns")
+        inventory_meta = get_meta(conn, "inventory")
+        mapping = get_meta(conn, "mapping")
+        cast_report = get_meta(conn, "cast_report")
+        view_results = get_meta(conn, "view_results")
+        ai_mappings = get_meta(conn, "ai_mappings")
+
+        previews = None
+        if inventory_meta:
+            try:
+                previews = build_preview(conn)
+            except Exception:
+                pass
+
     if isinstance(ai_mappings, list):
         for m in ai_mappings:
             bm = m.get("bestMatch")
@@ -154,13 +164,6 @@ def get_session_state(session_id: str):
                     if isinstance(a, dict) else str(a)
                     for a in alts
                 ]
-
-    previews = None
-    if inventory_meta:
-        try:
-            previews = build_preview(conn)
-        except Exception:
-            pass
 
     return jsonify({
         "step": step,
@@ -320,36 +323,37 @@ def invalidate_downstream():
         if not session_id or not session_exists(session_id):
             return jsonify({"error": "Invalid session"}), 400
 
-        conn = get_session_db(session_id)
+        with get_session_lock(session_id):
+            conn = get_session_db(session_id)
 
-        if from_step == 0:
-            for key in get_all_meta_keys(conn):
-                conn.execute("DELETE FROM _meta WHERE key = ?", (key,))
-            tables = conn.execute(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = 'main' AND table_name NOT LIKE '\\_%' ESCAPE '\\'"
-            ).fetchall()
-            for (tbl,) in tables:
-                conn.execute(f'DROP TABLE IF EXISTS "{tbl}"')
-            try:
-                regs = conn.execute("SELECT data_table, raw_table FROM _table_registry").fetchall()
-                for dt, rt in regs:
-                    if dt:
-                        conn.execute(f'DROP TABLE IF EXISTS "{dt}"')
-                    if rt:
-                        conn.execute(f'DROP TABLE IF EXISTS "{rt}"')
-                conn.execute("DELETE FROM _table_registry")
-            except Exception:
-                pass  # registry may not exist yet
-            conn.commit()
-        else:
-            for step_num in range(from_step + 1, 9):
-                for key in _STEP_META_KEYS.get(step_num, []):
+            if from_step == 0:
+                for key in get_all_meta_keys(conn):
                     conn.execute("DELETE FROM _meta WHERE key = ?", (key,))
-                for tbl in _STEP_TABLES.get(step_num, []):
+                tables = conn.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = 'main' AND table_name NOT LIKE '\\_%' ESCAPE '\\'"
+                ).fetchall()
+                for (tbl,) in tables:
                     conn.execute(f'DROP TABLE IF EXISTS "{tbl}"')
-            set_meta(conn, "step", from_step)
-            conn.commit()
+                try:
+                    regs = conn.execute("SELECT data_table, raw_table FROM _table_registry").fetchall()
+                    for dt, rt in regs:
+                        if dt:
+                            conn.execute(f'DROP TABLE IF EXISTS "{dt}"')
+                        if rt:
+                            conn.execute(f'DROP TABLE IF EXISTS "{rt}"')
+                    conn.execute("DELETE FROM _table_registry")
+                except Exception:
+                    pass  # registry may not exist yet
+                conn.commit()
+            else:
+                for step_num in range(from_step + 1, 9):
+                    for key in _STEP_META_KEYS.get(step_num, []):
+                        conn.execute("DELETE FROM _meta WHERE key = ?", (key,))
+                    for tbl in _STEP_TABLES.get(step_num, []):
+                        conn.execute(f'DROP TABLE IF EXISTS "{tbl}"')
+                set_meta(conn, "step", from_step)
+                conn.commit()
 
         return jsonify({"ok": True})
     except Exception as exc:

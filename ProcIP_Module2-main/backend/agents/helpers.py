@@ -9,77 +9,28 @@ import json
 import time
 import threading
 import pandas as pd
-import openai
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-try:
-    from portkey_ai import Portkey as _Portkey
-    _HAS_PORTKEY = True
-except ImportError:
-    _HAS_PORTKEY = False
+from portkey_ai import Portkey
+
+_DEFAULT_BASE_URL = "https://portkey.bain.dev/v1"
+_DEFAULT_MODEL = "@personal-openai/gpt-5.4"
 
 
 # ─── AI Client ────────────────────────────────────────────────────────────────
 
-def _resolve_provider_and_key(api_key=None):
-    """
-    Central provider + key resolution used by get_client and get_model.
-
-    Resolution order:
-      1. Read provider from app_state / env (default: portkey).
-      2. Resolve key from app_state / env if not explicitly provided.
-      3. If api_key starts with 'sk-', force provider to 'openai'.
-
-    Returns (provider, api_key).
-    """
-    provider = os.getenv('AI_PROVIDER', 'portkey').lower()
-
-    try:
-        from flask_app.state import app_state
-        provider = app_state.get('ai_provider', provider)
-        if not api_key:
-            api_key = app_state.get('openai_api_key')
-    except Exception:
-        pass
-
-    if not api_key:
-        if provider == 'portkey':
-            api_key = os.getenv('PORTKEY_API_KEY', '')
-        else:
-            api_key = os.getenv('OPENAI_API_KEY', '')
-
-    # Detect provider from key prefix — OpenAI keys start with 'sk-'
-    if api_key and api_key.startswith('sk-'):
-        provider = 'openai'
-
-    return provider, api_key or ''
-
-
 def get_client(api_key=None):
-    """Get an AI client (Portkey or OpenAI)."""
-    provider, api_key = _resolve_provider_and_key(api_key)
-
-    if not api_key:
-        raise ValueError("Missing API Key. Set it in .env or enter it in the app.")
-
-    if provider == 'portkey' and _HAS_PORTKEY:
-        base_url = os.getenv('PORTKEY_BASE_URL', 'https://portkey.bain.dev/v1')
-        try:
-            from flask_app.config import Config
-            base_url = Config.PORTKEY_BASE_URL
-        except Exception:
-            pass
-        return _Portkey(api_key=api_key, base_url=base_url)
-
-    return openai.OpenAI(api_key=api_key)
+    """Return a Portkey client, matching the pattern used by Modules 1 and 3."""
+    key = (api_key or os.getenv("PORTKEY_API_KEY", "")).strip()
+    if not key:
+        raise ValueError("Missing API Key. Set PORTKEY_API_KEY or pass api_key.")
+    base_url = os.getenv("PORTKEY_BASE_URL", _DEFAULT_BASE_URL)
+    return Portkey(api_key=key, base_url=base_url)
 
 
 def get_model(api_key=None):
-    """Get the correct model name for the resolved provider."""
-    provider, _ = _resolve_provider_and_key(api_key)
-    if provider == 'portkey':
-        return os.getenv('PORTKEY_MODEL', '@personal-openai/gpt-5.4')
-    return 'gpt-5.4'
+    """Return the Portkey model identifier."""
+    return os.getenv("PORTKEY_MODEL", _DEFAULT_MODEL)
 
 
 # ─── Cost Tracker ─────────────────────────────────────────────────────────────

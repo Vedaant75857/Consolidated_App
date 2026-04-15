@@ -479,9 +479,8 @@ A complete list of every Python function in the app, organised by module and ste
 | `delete_meta` | `db/meta_ops.py` | Removes a stored setting from the session. |
 | `sqlite_to_df` | `db/bridge.py` | Loads a SQLite table into a pandas DataFrame for agent processing. |
 | `df_to_sqlite` | `db/bridge.py` | Saves a pandas DataFrame to a DuckDB table using native zero-copy ingestion. All values are cast to text. |
-| `_resolve_provider_and_key` | `agents/helpers.py` | Determines which AI provider to use (Portkey or OpenAI) and finds the correct API key. |
-| `get_client` | `agents/helpers.py` | Creates the AI client connection using the resolved provider and key. |
-| `get_model` | `agents/helpers.py` | Returns the AI model name for the active provider. |
+| `get_client` | `agents/helpers.py` | Creates the Portkey AI client connection using the API key and server settings (same pattern as Modules 1 and 3). |
+| `get_model` | `agents/helpers.py` | Returns the Portkey model name to use for AI calls. |
 | `_batch_ai_mapping` | `agents/helpers.py` | Runs many AI mapping requests in parallel batches for speed. |
 | `_find_column` | `agents/helpers.py` | Searches column headers by keyword to find a specific column, with optional AI help for tricky cases. |
 | `identify_header_row` | `agents/helpers.py` | Scans the first few rows to guess which one is the actual header (by checking which row has the most non-empty cells). |

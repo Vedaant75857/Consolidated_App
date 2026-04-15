@@ -200,6 +200,7 @@ export default function DataQualityAssessment({
   const [selectedVersion, setSelectedVersion] = useState(latestVersion);
   const [sessionExpired, setSessionExpired] = useState(false);
   const [tableMissing, setTableMissing] = useState(false);
+  const skipRef = useRef(false);
 
   // Per-panel state
   const [dateState, setDateState] = useState<PanelState<DateResult>>({
@@ -243,11 +244,21 @@ export default function DataQualityAssessment({
     [isSingleTable, singleTableName],
   );
 
+  // ── Retry machinery for DuckDB WAL visibility race ─────────────────
+  const retryCountRef = useRef(0);
+  const MAX_TABLE_MISSING_RETRIES = 2;
+
   // ── Panel runners ────────────────────────────────────────────────────
 
   const checkSessionError = useCallback((err: any) => {
     const code = err?.code || "";
     if (code === ERROR_CODE_TABLE_MISSING) {
+      if (retryCountRef.current < MAX_TABLE_MISSING_RETRIES) {
+        skipRef.current = true;
+        setTableMissing(true);
+        return true;
+      }
+      skipRef.current = true;
       setTableMissing(true);
       return true;
     }
@@ -256,7 +267,7 @@ export default function DataQualityAssessment({
 
   const runDatePanel = useCallback(
     async (version: number, dateCol?: string) => {
-      if (sessionExpired || tableMissing) return;
+      if (sessionExpired || skipRef.current) return;
       setDateState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
@@ -285,12 +296,12 @@ export default function DataQualityAssessment({
         }
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, tableMissing, checkSessionError],
+    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError],
   );
 
   const runCurrencyPanel = useCallback(
     async (version: number) => {
-      if (sessionExpired || tableMissing) return;
+      if (sessionExpired || skipRef.current) return;
       setCurrencyState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
@@ -311,12 +322,12 @@ export default function DataQualityAssessment({
         }
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, tableMissing, checkSessionError],
+    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError],
   );
 
   const runPaymentPanel = useCallback(
     async (version: number) => {
-      if (sessionExpired || tableMissing) return;
+      if (sessionExpired || skipRef.current) return;
       setPaymentState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
@@ -337,12 +348,12 @@ export default function DataQualityAssessment({
         }
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, tableMissing, checkSessionError],
+    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError],
   );
 
   const runCountryPanel = useCallback(
     async (version: number) => {
-      if (sessionExpired || tableMissing) return;
+      if (sessionExpired || skipRef.current) return;
       setCountryState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
@@ -363,12 +374,12 @@ export default function DataQualityAssessment({
         }
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, tableMissing, checkSessionError],
+    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError],
   );
 
   const runSupplierPanel = useCallback(
     async (version: number) => {
-      if (sessionExpired || tableMissing) return;
+      if (sessionExpired || skipRef.current) return;
       setSupplierState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
@@ -389,11 +400,13 @@ export default function DataQualityAssessment({
         }
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, tableMissing, checkSessionError],
+    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError],
   );
 
   const runAllPanels = useCallback(
     (version: number) => {
+      skipRef.current = false;
+      setTableMissing(false);
       addLog("Data Quality", "info", "Running data quality assessment…");
       setAiLoading(true);
       setLoadingMessage("Running Data Quality Assessment…");
@@ -427,10 +440,23 @@ export default function DataQualityAssessment({
   useEffect(() => {
     if (!hasRunRef.current && sessionId && apiKey) {
       hasRunRef.current = true;
+      retryCountRef.current = 0;
       runAllPanels(selectedVersion);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Auto-retry when TABLE_MISSING — DuckDB WAL may not have flushed yet
+  useEffect(() => {
+    if (!tableMissing) return;
+    if (retryCountRef.current >= MAX_TABLE_MISSING_RETRIES) return;
+    retryCountRef.current += 1;
+    const timer = setTimeout(() => {
+      runAllPanels(selectedVersion);
+    }, 1500);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tableMissing]);
 
   const togglePanel = (id: string) =>
     setExpandedPanels((prev) => {

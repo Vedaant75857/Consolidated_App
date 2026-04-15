@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, XCircle, Loader2, ArrowRight } from "lucide-react";
 import type { ProcurementViewAvailability } from "../../types";
 
@@ -16,8 +16,11 @@ export default function ProcurementViewsStep({
   const [views, setViews] = useState<ProcurementViewAvailability[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const fetchedRef = useRef(false);
 
   useEffect(() => {
+    if (fetchedRef.current) return;
+    fetchedRef.current = true;
     let cancelled = false;
     setLoading(true);
     setError("");
@@ -34,6 +37,7 @@ export default function ProcurementViewsStep({
       })
       .catch((err) => {
         if (!cancelled) setError(err.message || "Failed to load procurement views");
+        fetchedRef.current = false;
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
