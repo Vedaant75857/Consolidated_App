@@ -2,6 +2,7 @@
 """PyInstaller spec for DataScopingTool — single-file EXE."""
 
 import os
+import certifi
 from PyInstaller.utils.hooks import collect_dynamic_libs, collect_data_files
 
 ROOT = os.path.abspath(".")
@@ -28,6 +29,9 @@ datas = [
 _fx_path = os.path.join(ROOT, "FX_rates_table.xlsx")
 if os.path.isfile(_fx_path):
     datas.append((_fx_path, "."))
+
+# Bundle certifi CA certificates so HTTPS (httpx / portkey) works in frozen mode
+datas.append((certifi.where(), "certifi"))
 
 # Collect DuckDB native libraries so the C-extension works inside the bundle
 _duckdb_bins = collect_dynamic_libs("duckdb")
@@ -80,6 +84,7 @@ hiddenimports = [
     "portkey_ai",
     "openai",
     "httpx",
+    "certifi",
     "langdetect",
     "rapidfuzz",
     "rapidfuzz.fuzz",

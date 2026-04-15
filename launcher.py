@@ -36,6 +36,13 @@ def _base_path() -> str:
 
 BASE = _base_path()
 
+# When frozen, point SSL at the bundled certifi CA bundle so httpx/portkey
+# can verify HTTPS certificates without relying on the system store.
+if getattr(sys, "frozen", False):
+    _cert = os.path.join(BASE, "certifi", "cacert.pem")
+    if os.path.isfile(_cert):
+        os.environ.setdefault("SSL_CERT_FILE", _cert)
+
 
 def _resolve(*parts: str) -> str:
     """Join *parts* onto BASE and return an absolute path."""

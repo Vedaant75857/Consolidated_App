@@ -212,7 +212,6 @@ def execute():
             headers={
                 "Cache-Control": "no-cache",
                 "X-Accel-Buffering": "no",
-                "Connection": "close",
             },
         )
     except ValueError as exc:
