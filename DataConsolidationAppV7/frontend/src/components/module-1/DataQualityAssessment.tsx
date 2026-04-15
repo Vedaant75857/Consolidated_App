@@ -1,6 +1,8 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
+  AlertTriangle,
+  ArrowRight,
   BarChart3,
   CalendarDays,
   ChevronDown,
@@ -11,7 +13,7 @@ import {
   RefreshCw,
   Users,
 } from "lucide-react";
-import { SurfaceCard, itemVariants } from "../common/ui";
+import { SurfaceCard, PrimaryButton, itemVariants } from "../common/ui";
 import {
   postDqaDate,
   postDqaCurrency,
@@ -126,7 +128,10 @@ interface DataQualityAssessmentProps {
   ) => void;
   setAiLoading: (v: boolean) => void;
   setLoadingMessage: (v: string) => void;
+  setStep: (s: number) => void;
 }
+
+const SESSION_EXPIRED_PATTERN = /not found in session/i;
 
 /* ── Helpers ───────────────────────────────────────────────────────────── */
 
@@ -184,6 +189,7 @@ export default function DataQualityAssessment({
   addLog,
   setAiLoading,
   setLoadingMessage,
+  setStep,
 }: DataQualityAssessmentProps) {
   const isSingleTable = !!singleTableName;
   const latestVersion =
@@ -192,6 +198,7 @@ export default function DataQualityAssessment({
       : 1;
 
   const [selectedVersion, setSelectedVersion] = useState(latestVersion);
+  const [sessionExpired, setSessionExpired] = useState(false);
 
   // Per-panel state
   const [dateState, setDateState] = useState<PanelState<DateResult>>({
@@ -237,8 +244,18 @@ export default function DataQualityAssessment({
 
   // ── Panel runners ────────────────────────────────────────────────────
 
+  const checkSessionError = useCallback((err: any) => {
+    const msg = err?.message || "";
+    if (SESSION_EXPIRED_PATTERN.test(msg)) {
+      setSessionExpired(true);
+      return true;
+    }
+    return false;
+  }, []);
+
   const runDatePanel = useCallback(
     async (version: number, dateCol?: string) => {
+      if (sessionExpired) return;
       setDateState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
@@ -258,18 +275,21 @@ export default function DataQualityAssessment({
           setSelectedDateColumn(data.selectedColumn);
         }
       } catch (err: any) {
-        setDateState({
-          loading: false,
-          error: err?.message || "Date analysis failed",
-          data: null,
-        });
+        if (!checkSessionError(err)) {
+          setDateState({
+            loading: false,
+            error: err?.message || "Date analysis failed",
+            data: null,
+          });
+        }
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey],
+    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError],
   );
 
   const runCurrencyPanel = useCallback(
     async (version: number) => {
+      if (sessionExpired) return;
       setCurrencyState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
@@ -281,18 +301,21 @@ export default function DataQualityAssessment({
         );
         setCurrencyState({ loading: false, error: null, data });
       } catch (err: any) {
-        setCurrencyState({
-          loading: false,
-          error: err?.message || "Currency analysis failed",
-          data: null,
-        });
+        if (!checkSessionError(err)) {
+          setCurrencyState({
+            loading: false,
+            error: err?.message || "Currency analysis failed",
+            data: null,
+          });
+        }
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey],
+    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError],
   );
 
   const runPaymentPanel = useCallback(
     async (version: number) => {
+      if (sessionExpired) return;
       setPaymentState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
@@ -304,18 +327,21 @@ export default function DataQualityAssessment({
         );
         setPaymentState({ loading: false, error: null, data });
       } catch (err: any) {
-        setPaymentState({
-          loading: false,
-          error: err?.message || "Payment terms analysis failed",
-          data: null,
-        });
+        if (!checkSessionError(err)) {
+          setPaymentState({
+            loading: false,
+            error: err?.message || "Payment terms analysis failed",
+            data: null,
+          });
+        }
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey],
+    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError],
   );
 
   const runCountryPanel = useCallback(
     async (version: number) => {
+      if (sessionExpired) return;
       setCountryState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
@@ -327,18 +353,21 @@ export default function DataQualityAssessment({
         );
         setCountryState({ loading: false, error: null, data });
       } catch (err: any) {
-        setCountryState({
-          loading: false,
-          error: err?.message || "Country/Region analysis failed",
-          data: null,
-        });
+        if (!checkSessionError(err)) {
+          setCountryState({
+            loading: false,
+            error: err?.message || "Country/Region analysis failed",
+            data: null,
+          });
+        }
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey],
+    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError],
   );
 
   const runSupplierPanel = useCallback(
     async (version: number) => {
+      if (sessionExpired) return;
       setSupplierState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
@@ -350,11 +379,13 @@ export default function DataQualityAssessment({
         );
         setSupplierState({ loading: false, error: null, data });
       } catch (err: any) {
-        setSupplierState({
-          loading: false,
-          error: err?.message || "Supplier analysis failed",
-          data: null,
-        });
+        if (!checkSessionError(err)) {
+          setSupplierState({
+            loading: false,
+            error: err?.message || "Supplier analysis failed",
+            data: null,
+          });
+        }
       }
     },
     [sessionId, apiKey, isSingleTable, getTableKey],
@@ -409,6 +440,30 @@ export default function DataQualityAssessment({
     });
 
   // ── Render ───────────────────────────────────────────────────────────
+
+  if (sessionExpired) {
+    return (
+      <motion.div variants={itemVariants} className="space-y-6">
+        <SurfaceCard title="Session Expired" icon={AlertTriangle}>
+          <div className="flex flex-col items-center text-center py-6 gap-4">
+            <AlertTriangle className="w-10 h-10 text-amber-500" />
+            <div>
+              <p className="text-sm font-semibold text-neutral-800 dark:text-neutral-200 mb-1">
+                Your session data was reset
+              </p>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400 max-w-md">
+                The server was restarted and the data tables are no longer available. Please go back to the Upload step and re-upload your files.
+              </p>
+            </div>
+            <PrimaryButton onClick={() => setStep(1)}>
+              <ArrowRight className="w-4 h-4 rotate-180" />
+              Back to Upload
+            </PrimaryButton>
+          </div>
+        </SurfaceCard>
+      </motion.div>
+    );
+  }
 
   return (
     <motion.div variants={itemVariants} className="space-y-6">

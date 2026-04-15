@@ -647,9 +647,15 @@ def _validate_ai_results(
     - Rejects bestMatch if the column name doesn't exist in the uploaded data
     - Rejects bestMatch if the column's inferred type doesn't match the field's expected type
     - If two fields claim the same column, the one with higher confidence keeps it
+
+    Column existence and conflict checks are case-insensitive so that
+    minor casing differences from the AI don't cause false rejections.
     """
     col_lookup = {c["name"]: c for c in available_columns}
-    valid_names = set(col_lookup.keys())
+    # Case-insensitive name resolution: lowered -> actual name
+    _name_lower_map: dict[str, str] = {
+        n.strip().lower(): n for n in col_lookup
+    }
 
     # Confidence ranking for conflict resolution
     conf_rank = {"high": 3, "medium": 2, "low": 1}
@@ -659,8 +665,9 @@ def _validate_ai_results(
         if not bm:
             continue
 
-        # Check column exists
-        if bm not in valid_names:
+        # Resolve to actual column name (case-insensitive)
+        actual = _name_lower_map.get(bm.strip().lower())
+        if actual is None:
             logger.warning(
                 "AI returned non-existent column '%s' for field %s — clearing",
                 bm, r["fieldKey"],
@@ -669,47 +676,54 @@ def _validate_ai_results(
             r["reasoning"] = f"(rejected: column '{bm}' not found) " + r.get("reasoning", "")
             continue
 
+        # Normalise to the real column name
+        r["bestMatch"] = actual
+
         # Check type compatibility
-        col_info = col_lookup.get(bm, {})
+        col_info = col_lookup.get(actual, {})
         col_type = col_info.get("inferredType", "string")
         field_type = r.get("expectedType", "string")
         if field_type == "numeric" and col_type != "numeric":
             logger.warning(
                 "Type mismatch for field %s: expected numeric, column '%s' is %s — clearing",
-                r["fieldKey"], bm, col_type,
+                r["fieldKey"], actual, col_type,
             )
             r["bestMatch"] = None
             r["reasoning"] = f"(rejected: type mismatch, need {field_type} got {col_type}) " + r.get("reasoning", "")
         elif field_type == "datetime" and col_type != "datetime":
             logger.warning(
                 "Type mismatch for field %s: expected datetime, column '%s' is %s — clearing",
-                r["fieldKey"], bm, col_type,
+                r["fieldKey"], actual, col_type,
             )
             r["bestMatch"] = None
             r["reasoning"] = f"(rejected: type mismatch, need {field_type} got {col_type}) " + r.get("reasoning", "")
 
     # Resolve duplicates: if multiple fields claim the same column, highest confidence wins
+    # Group case-insensitively so "Col A" and "col a" are treated as the same column.
     claim_map: dict[str, list[dict[str, Any]]] = {}
     for r in results:
         bm = r.get("bestMatch")
         if bm:
-            claim_map.setdefault(bm, []).append(r)
+            claim_map.setdefault(bm.strip().lower(), []).append(r)
 
-    for col_name, claimants in claim_map.items():
+    for _col_key, claimants in claim_map.items():
         if len(claimants) <= 1:
             continue
+        col_name = claimants[0]["bestMatch"]  # use actual-cased name for messages
         claimants.sort(key=lambda x: conf_rank.get(x.get("confidence", "medium"), 2), reverse=True)
         winner = claimants[0]
         for loser in claimants[1:]:
             # Try to reassign loser to its first valid alternative
             reassigned = False
             for alt in loser.get("alternatives", []):
-                if alt in valid_names and not any(
-                    r.get("bestMatch") == alt for r in results if r is not loser
+                resolved_alt = _name_lower_map.get(alt.strip().lower()) if alt else None
+                if resolved_alt and not any(
+                    (r.get("bestMatch") or "").strip().lower() == resolved_alt.strip().lower()
+                    for r in results if r is not loser
                 ):
-                    loser["bestMatch"] = alt
+                    loser["bestMatch"] = resolved_alt
                     loser["reasoning"] = (
-                        f"(reassigned from '{col_name}' to alt '{alt}' — "
+                        f"(reassigned from '{col_name}' to alt '{resolved_alt}' — "
                         f"'{col_name}' claimed by {winner['fieldKey']}) "
                         + loser.get("reasoning", "")
                     )
@@ -962,6 +976,13 @@ def build_typed_table(
     raw_df = pd.concat(frames, ignore_index=True)
     total_rows = len(raw_df)
 
+    # Case-insensitive lookup so that mapping values like
+    # "Total Amount paid in Reporting Currency" still match columns
+    # stored as "TOTAL AMOUNT PAID IN REPORTING CURRENCY" (from Module 1 export).
+    _col_lower_map: dict[str, str] = {
+        c.strip().lower(): c for c in raw_df.columns
+    }
+
     typed_df = pd.DataFrame(index=raw_df.index)
     cast_report: dict[str, Any] = {"total_rows": total_rows, "fields": {}}
 
@@ -970,7 +991,11 @@ def build_typed_table(
         source_col = mapping.get(fk)
         expected_type = field["expectedType"]
 
-        if not source_col or source_col not in raw_df.columns:
+        actual_col = (
+            _col_lower_map.get(source_col.strip().lower())
+            if source_col else None
+        )
+        if not actual_col:
             typed_df[fk] = None
             cast_report["fields"][fk] = {
                 "mapped": False,
@@ -982,7 +1007,7 @@ def build_typed_table(
             }
             continue
 
-        raw_col = raw_df[source_col].copy()
+        raw_col = raw_df[actual_col].copy()
 
         if expected_type == "numeric":
             cleaned = raw_col.astype(str).str.replace(r"[,$€£¥\s]", "", regex=True)

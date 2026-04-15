@@ -133,6 +133,8 @@ export default function Merging(props: MergingProps) {
 
   // --- Section A: Recommend Base ---
 
+  const [sessionExpired, setSessionExpired] = useState(false);
+
   const fetchRecommendation = useCallback(async () => {
     if (!sessionId || groupSchema.length === 0) return;
     setRecommendLoading(true);
@@ -150,6 +152,11 @@ export default function Merging(props: MergingProps) {
         throw new Error(errMsg);
       }
       const data = await res.json();
+      if (data.session_expired) {
+        setSessionExpired(true);
+        addLog("Merge", "error", "Session data was reset. Please re-upload your files.");
+        return;
+      }
       setMergeBaseRecommendation(data);
       if (data.recommended && !mergeBaseGroupId) {
         setMergeBaseGroupId(data.recommended);
@@ -749,26 +756,59 @@ export default function Merging(props: MergingProps) {
 
   const showSetup = !mergeExecuteResult;
 
+  if (sessionExpired) {
+    return (
+      <motion.div variants={itemVariants} className="space-y-6">
+        <SurfaceCard title="Session Expired" icon={AlertTriangle}>
+          <div className="flex flex-col items-center text-center py-6 gap-4">
+            <AlertTriangle className="w-10 h-10 text-amber-500" />
+            <div>
+              <p className="text-sm font-semibold text-neutral-800 dark:text-neutral-200 mb-1">
+                Your session data was reset
+              </p>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400 max-w-md">
+                The server was restarted and your workspace data is no longer available. Please go back to the Upload step and re-upload your files.
+              </p>
+            </div>
+            <PrimaryButton onClick={() => setStep(1)}>
+              <ArrowRight className="w-4 h-4 rotate-180" />
+              Back to Upload
+            </PrimaryButton>
+          </div>
+        </SurfaceCard>
+      </motion.div>
+    );
+  }
+
   return (
     <motion.div variants={itemVariants} className="space-y-6">
       {fullscreenOverlay}
 
       {showSetup && (
       <>
+      {/* Single table — nothing to merge */}
+      {!hasMultipleGroups && groupSchema.length === 1 && (
+        <SurfaceCard icon={CheckCircle2} title="Nothing to Merge">
+          <div className="flex flex-col items-center text-center py-4 gap-4">
+            <p className="text-sm text-neutral-600 dark:text-neutral-300 max-w-lg">
+              All your files were combined into one unified table during the Append step.
+              Merging is only needed when you have multiple separate tables to join together.
+            </p>
+            <PrimaryButton onClick={handleSkipMerge}>
+              Continue to Next Step
+              <ArrowRight className="w-4 h-4" />
+            </PrimaryButton>
+          </div>
+        </SurfaceCard>
+      )}
+
       {/* Section A: Base & Source Selection */}
+      {(hasMultipleGroups || groupSchema.length === 0) && (
       <SurfaceCard title="Base & Source Selection" icon={Sparkles}>
         {recommendLoading && (
           <div className="flex items-center gap-3 rounded-xl bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 px-4 py-3 text-sm text-blue-700 dark:text-blue-300 mb-4">
             <Loader2 className="w-4 h-4 animate-spin shrink-0" />
             <span className="text-xs">AI is analyzing your tables to recommend the best base table...</span>
-          </div>
-        )}
-        {!hasMultipleGroups && groupSchema.length === 1 && (
-          <div className="text-sm text-neutral-500 dark:text-neutral-400 mb-4">
-            Only one table available.{" "}
-            <button onClick={handleSkipMerge} className="text-red-600 dark:text-red-400 font-semibold hover:underline">
-              Skip Merge
-            </button>
           </div>
         )}
         {hasMultipleGroups && (
@@ -823,6 +863,7 @@ export default function Merging(props: MergingProps) {
           </>
         )}
       </SurfaceCard>
+      )}
 
       {/* Section B: Side-by-Side Preview */}
       {mergeBaseGroupId && mergeSourceGroupId && (

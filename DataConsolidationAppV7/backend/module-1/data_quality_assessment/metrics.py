@@ -47,6 +47,25 @@ _MONTHS_RE       = re.compile(r'(?i)^(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|
 _YEAR_RE = re.compile(r"((?:19|20)\d{2})")
 
 
+def find_column(available: set[str], candidates: list[str]) -> str | None:
+    """Return the real column name for the first candidate that matches (case-insensitive, stripped).
+
+    Args:
+        available: Column names actually present in the table.
+        candidates: Preferred column names in priority order.
+
+    Returns:
+        The actual column name from *available* that matches the first hit,
+        or ``None`` if nothing matches.
+    """
+    lookup = {c.strip().lower(): c for c in available}
+    for candidate in candidates:
+        real = lookup.get(candidate.strip().lower())
+        if real is not None:
+            return real
+    return None
+
+
 def _safe_pct(num: int, den: int) -> float:
     """Return percentage rounded to 2 decimals, 0.0 when denominator is 0."""
     if den == 0:

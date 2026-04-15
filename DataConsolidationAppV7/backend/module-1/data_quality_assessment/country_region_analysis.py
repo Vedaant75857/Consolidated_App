@@ -12,7 +12,7 @@ from typing import Any
 from shared.db import DuckDBConnection, quote_id, read_table_columns
 
 from .ai_prompts import generate_country_region_insight
-from .metrics import _non_null_condition
+from .metrics import _non_null_condition, find_column
 
 logger = logging.getLogger(__name__)
 
@@ -56,21 +56,15 @@ def run_country_region_analysis(
     """
     available = set(read_table_columns(conn, table_name))
 
-    # Country — pick the first available column
-    country_col: str | None = None
-    for c in COUNTRY_COLUMNS:
-        if c in available:
-            country_col = c
-            break
+    # Country — pick the first available column (case-insensitive)
+    country_col = find_column(available, COUNTRY_COLUMNS)
 
     country_values: list[str] | None = None
     if country_col:
         country_values = _unique_values(conn, table_name, country_col)
 
-    # Region
-    region_col: str | None = None
-    if REGION_COLUMN in available:
-        region_col = REGION_COLUMN
+    # Region (case-insensitive)
+    region_col = find_column(available, [REGION_COLUMN])
 
     region_values: list[str] | None = None
     if region_col:

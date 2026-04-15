@@ -12,7 +12,7 @@ from typing import Any
 from shared.db import DuckDBConnection, quote_id, read_table_columns
 
 from .ai_prompts import generate_payment_terms_insight
-from .metrics import _non_null_condition, _safe_pct
+from .metrics import _non_null_condition, _safe_pct, find_column
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +28,8 @@ _SPEND_PREFERENCE: list[str] = [
 
 
 def _pick_spend_column(available: set[str]) -> str | None:
-    """Return the highest-priority spend column present in the table."""
-    for c in _SPEND_PREFERENCE:
-        if c in available:
-            return c
-    return None
+    """Return the highest-priority spend column present in the table (case-insensitive)."""
+    return find_column(available, _SPEND_PREFERENCE)
 
 
 def _numeric_spend_expr(qs: str) -> str:
@@ -63,7 +60,8 @@ def run_payment_terms_analysis(
     """
     available = set(read_table_columns(conn, table_name))
 
-    if PAYMENT_TERMS_COLUMN not in available:
+    pt_col = find_column(available, [PAYMENT_TERMS_COLUMN])
+    if pt_col is None:
         return {
             "exists": False,
             "paymentTerms": [],
@@ -74,7 +72,7 @@ def run_payment_terms_analysis(
         }
 
     tbl = quote_id(table_name)
-    qpt = quote_id(PAYMENT_TERMS_COLUMN)
+    qpt = quote_id(pt_col)
     nn = _non_null_condition(qpt)
 
     spend_col = _pick_spend_column(available)

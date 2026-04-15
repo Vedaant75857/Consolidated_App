@@ -10,7 +10,7 @@ A complete list of every Python function in the app, organised by module and ste
 
 | Function | File | What it does |
 |----------|------|--------------|
-| `upload` | `routes/data_loading_routes.py` | Receives the uploaded files from the browser and loads them into the session database. |
+| `upload` | `routes/data_loading_routes.py` | Receives the uploaded files from the browser, loads them into the session database, and streams real-time progress events (SSE) back to the browser so the user can see which file is being processed. |
 | `delete_table_route` | `routes/data_loading_routes.py` | Removes a table from the session when the user clicks delete. |
 | `set_header_row` | `routes/data_loading_routes.py` | Changes which row is used as the column header for a table. |
 | `_rebuild_meta` | `routes/data_loading_routes.py` | Refreshes the session's summary information (like column counts and row stats) after something changes. |
@@ -25,7 +25,7 @@ A complete list of every Python function in the app, organised by module and ste
 | `_pad_row` | `data_loading/file_loader.py` | Makes a row the right width by adding empty cells or trimming extras so all rows match. |
 | `_load_excel_sheet` | `data_loading/file_loader.py` | Reads one sheet from an Excel file using DuckDB native ingestion for the raw table, then builds the data table from the raw table via SQL — no Python row iteration. |
 | `_load_csv` | `data_loading/file_loader.py` | Reads a CSV file using native DataFrame ingestion + SQL. Reads CSV once into memory, ingests natively, then builds the data table via SQL — no Python row loops. |
-| `load_zip_to_session` | `data_loading/file_loader.py` | Opens a ZIP file, finds all spreadsheets (.xlsx, .xlsm, .xlsb, .xltx, .xltm), CSVs, and nested ZIP files inside, and loads each one into the session database. Nested ZIPs are extracted one level deep. |
+| `load_zip_to_session` | `data_loading/file_loader.py` | Opens a ZIP file, finds all spreadsheets (.xlsx, .xlsm, .xlsb, .xltx, .xltm), CSVs, and nested ZIP files inside, and loads each one into the session database. Nested ZIPs are extracted one level deep. Accepts an optional progress callback that fires after each file is loaded so the upload route can stream per-file progress to the browser. |
 | `_build_columns_from_header` | `data_loading/file_loader.py` | Takes the chosen header row and builds a list of column names and their metadata. |
 | `rebuild_table_from_raw_table` | `data_loading/file_loader.py` | Rebuilds the working data table from scratch after the user changes the header row. |
 | `infer_file_type` | `data_loading/service.py` | Guesses whether a table came from a CSV, Excel (.xlsx, .xlsm, .xlsb, .xltx, .xltm), or other file type based on its name. |
@@ -172,7 +172,7 @@ A complete list of every Python function in the app, organised by module and ste
 | `_strip_file_ext` | `merging/guided_merge_service.py` | Removes the file extension from a name for cleaner display and comparison. |
 | `_normalize_col` | `merging/guided_merge_service.py` | Cleans up a column name so it can be compared to other column names reliably. |
 | `_norm_key_expr` | `merging/guided_merge_service.py` | Builds a database expression that normalises a join key for more accurate matching. |
-| `recommend_base_file` | `merging/guided_merge_service.py` | Scores each table to decide which one makes the best "base" for joining. |
+| `recommend_base_file` | `merging/guided_merge_service.py` | Scores each table to decide which one makes the best "base" for joining. Returns a graceful session_expired indicator instead of crashing when the session data is missing (e.g. after a server restart). |
 | `find_common_columns` | `merging/guided_merge_service.py` | Finds columns that exist in both tables and returns details about each for the join-key picker. |
 | `classify_single_column` | `merging/guided_merge_service.py` | Uses rules to classify what kind of data a column holds (identifier, category, amount, date, etc.). |
 | `classify_all_columns` | `merging/guided_merge_service.py` | Runs the column classifier on every column in a table at once. |
@@ -228,6 +228,7 @@ A complete list of every Python function in the app, organised by module and ste
 | `generate_payment_terms_insight` | `data_quality_assessment/ai_prompts.py` | Asks the AI to write a plain-English summary of the payment terms findings. |
 | `generate_country_region_insight` | `data_quality_assessment/ai_prompts.py` | Asks the AI to write a plain-English summary of the country/region findings. |
 | `generate_supplier_insight` | `data_quality_assessment/ai_prompts.py` | Asks the AI to write a plain-English summary of the supplier quality findings. |
+| `find_column` | `data_quality_assessment/metrics.py` | Given a list of possible column names and the set of columns actually in the table, finds the first match ignoring upper/lowercase differences and extra spaces. Used by all DQA panels so columns like "VENDOR NAME" still match "Vendor Name". |
 | `_safe_pct` | `data_quality_assessment/metrics.py` | Calculates a percentage safely, returning zero instead of crashing when the total is zero. |
 | `_non_null_condition` | `data_quality_assessment/metrics.py` | Creates a database condition that checks whether a cell has actual content (not blank or null). |
 | `compute_fill_rates` | `data_quality_assessment/metrics.py` | Calculates what percentage of each column is filled in (vs. empty). |

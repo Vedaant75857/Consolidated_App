@@ -17,6 +17,7 @@ from .metrics import (
     _safe_pct,
     compute_currency_metrics,
     compute_currency_quality_analysis,
+    find_column,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,12 +58,8 @@ def run_currency_analysis(
     available = set(read_table_columns(conn, table_name))
     total_rows = table_row_count(conn, table_name)
 
-    # Find the first available currency column
-    currency_col: str | None = None
-    for c in CURRENCY_COLUMNS:
-        if c in available:
-            currency_col = c
-            break
+    # Find the first available currency column (case-insensitive)
+    currency_col = find_column(available, CURRENCY_COLUMNS)
 
     if currency_col is None:
         return {
@@ -77,10 +74,11 @@ def run_currency_analysis(
     # Basic metrics (distinct count + code list)
     basic = compute_currency_metrics(conn, table_name, currency_col)
 
-    # Paired spend columns
-    pair = _CURRENCY_SPEND_PAIRS.get(currency_col, (None, None))
-    local_spend = pair[0] if pair[0] in available else None
-    reporting_spend = pair[1] if pair[1] in available else None
+    # Paired spend columns -- look up via the canonical key that matched
+    matched_key = find_column(set(_CURRENCY_SPEND_PAIRS.keys()), [currency_col])
+    pair = _CURRENCY_SPEND_PAIRS.get(matched_key, (None, None)) if matched_key else (None, None)
+    local_spend = find_column(available, [pair[0]]) if pair[0] else None
+    reporting_spend = find_column(available, [pair[1]]) if pair[1] else None
 
     # Detailed per-currency breakdown
     currency_table = compute_currency_quality_analysis(

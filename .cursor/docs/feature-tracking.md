@@ -22,6 +22,7 @@ The DataStitcher helps users combine multiple data files into one clean, merged 
 | 8 | ZIP packaging | When you drop multiple non-ZIP files, the app automatically zips them together (shows a "Zipping files…" spinner). ZIP files found inside a folder are automatically extracted — their contents are treated as individual files. |
 | 9 | API key entry | Type or paste your Portkey API key into a password field. This key is needed for AI-powered steps. |
 | 10 | Initialize workspace | Click "Initialize Workspace" to upload everything and move to Data Preview. The button is disabled while uploading or if no files are selected. |
+| 11 | Real-time upload progress | During the server processing phase, the overlay shows which file is currently being loaded (e.g. "Loading file 2 of 3") with the file name displayed below as a detail line. Progress updates stream from the server in real time. |
 
 ### Data Preview
 
@@ -150,7 +151,9 @@ The DataStitcher helps users combine multiple data files into one clean, merged 
 | 1 | AI base recommendation | When the step loads, the AI recommends which table to use as the "base" for joining. |
 | 2 | Choose base table | Pick the base table from a dropdown (shows name, row count, and column count). |
 | 3 | Choose source table | Pick the source table from a separate dropdown. |
-| 4 | Skip merge | Click "Skip merge entirely" if you don't want to join tables (e.g. only one group exists). |
+| 4 | Nothing to merge card | When only one table exists after appending, a clear card explains that all files were combined into one table and merging is not needed. Click "Continue to Next Step" to proceed. |
+| 4b | Skip merge | When multiple tables exist, click "Skip merge entirely" under the dropdowns to skip without joining. |
+| 4c | Session expired | If the server was restarted and session data is lost, a "Session Expired" card appears with a "Back to Upload" button instead of a confusing error message. |
 | 5 | Side-by-side column view | See columns from both tables displayed side by side with colour coding (identifiers, descriptors, metrics, keys, etc.). |
 | 6 | Pair join keys | Click key buttons above base columns, then matching source columns, to pair them as join keys. Key pairs appear as chips you can remove with X. |
 | 7 | Pull source columns | Click source column headers to "pull" them into the merged result. Pull chips appear and can be removed with X. |
@@ -192,6 +195,7 @@ The DataStitcher helps users combine multiple data files into one clean, merged 
 |---|---------|---------|
 | 1 | Choose merge version | If multiple merges were run, pick which version to assess from a dropdown. In single-table mode, the table is selected automatically. |
 | 2 | Re-run all | Click "Re-run All" to refresh every quality assessment at once. |
+| 2b | Session expired detection | If the data table is missing (e.g. after a server restart), a "Session Expired" card appears with a "Back to Upload" button instead of showing raw error messages in each panel. |
 | 3 | Date panel | Expand the "Date" panel to see date format distributions and timeline charts. If multiple date columns exist, pick which one to analyse from a dropdown. |
 | 4 | Currency panel | Expand the "Currency" panel to see which currencies appear, their distribution, and consistency metrics. |
 | 5 | Payment Terms panel | Expand the "Payment Terms" panel to see how payment terms are distributed across spend. |

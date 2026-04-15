@@ -84,9 +84,20 @@ def _parse_explain_plan(plan_rows: list) -> dict[str, Any]:
 def recommend_base_file(
     conn: DuckDBConnection, session_id: str, api_key: str | None
 ) -> dict[str, Any]:
+    """Recommend the best base table for merging.
+
+    Returns a dict with 'recommended', 'reasoning', 'rankings'.
+    If the session has no appended groups (e.g. after a server restart that
+    wiped the session DB), returns a structured error instead of raising.
+    """
     schema = get_meta(conn, "groupSchemaTableRows") or []
     if not schema:
-        raise ValueError("No appended groups found. Complete the append step first.")
+        return {
+            "recommended": None,
+            "reasoning": None,
+            "rankings": [],
+            "session_expired": True,
+        }
 
     if len(schema) == 1:
         g = schema[0]

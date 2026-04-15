@@ -5,6 +5,8 @@ import { useTheme } from "../common/ThemeProvider";
 interface LoadingOverlayProps {
   isLoading: boolean;
   message?: string;
+  /** Secondary detail line shown below the main message (e.g. file name) */
+  detail?: string;
   onCancel?: () => void;
   /** 0-100 upload progress; null/undefined = indeterminate spinner */
   progress?: number | null;
@@ -15,7 +17,7 @@ const LIGHT_BG =
 const DARK_BG =
   "linear-gradient(135deg, rgba(38,38,38,0.82) 0%, rgba(48,12,18,0.65) 100%)";
 
-export default function LoadingOverlay({ isLoading, message, onCancel, progress }: LoadingOverlayProps) {
+export default function LoadingOverlay({ isLoading, message, detail, onCancel, progress }: LoadingOverlayProps) {
   const { theme } = useTheme();
   if (!isLoading) return null;
 
@@ -75,6 +77,13 @@ export default function LoadingOverlay({ isLoading, message, onCancel, progress 
         >
           {message || "Processing\u2026"}
         </p>
+
+        {/* Detail sub-line (e.g. current file being processed) */}
+        {detail && (
+          <p className="text-xs text-neutral-500 dark:text-neutral-400 text-center truncate max-w-full -mt-2">
+            {detail}
+          </p>
+        )}
 
         {/* Upload progress bar */}
         {typeof progress === "number" && (

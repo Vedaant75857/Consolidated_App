@@ -41,6 +41,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("");
+  const [loadingDetail, setLoadingDetail] = useState("");
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [step, setStep] = useState(1);
@@ -515,6 +516,8 @@ export default function App() {
         const xhr = new XMLHttpRequest();
         xhr.open("POST", "/api/upload");
         xhr.timeout = 600000; // 10 minute timeout for large files
+
+        // --- Phase 1: track upload bytes (progress bar) ---
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) {
             setUploadProgress(Math.round((e.loaded / e.total) * 100));
@@ -524,12 +527,59 @@ export default function App() {
           setUploadProgress(null);
           setLoadingMessage("Processing and extracting your data…");
         };
+
+        // --- Phase 2: parse SSE progress events from the response stream ---
+        let sseOffset = 0; // track how far we've parsed in responseText
+        xhr.onprogress = () => {
+          const text = xhr.responseText;
+          if (!text || text.length <= sseOffset) return;
+
+          const newChunk = text.slice(sseOffset);
+          sseOffset = text.length;
+
+          const events = newChunk.split("\n\n");
+          for (const event of events) {
+            const dataLine = event.split("\n").find((l) => l.startsWith("data: "));
+            if (!dataLine) continue;
+            try {
+              const payload = JSON.parse(dataLine.slice(6));
+              if (payload.stage === "parsing") {
+                setLoadingMessage(`Extracting ${payload.total} files…`);
+                setLoadingDetail("");
+              } else if (payload.stage === "file") {
+                setLoadingMessage(`Loading file ${payload.current} of ${payload.total}…`);
+                setLoadingDetail(payload.name || "");
+              } else if (payload.stage === "committed") {
+                setLoadingMessage("Committed to database");
+                setLoadingDetail("");
+              } else if (payload.stage === "inventory") {
+                setLoadingMessage("Building table inventory…");
+                setLoadingDetail("");
+              }
+            } catch { /* ignore partial JSON */ }
+          }
+        };
+
         xhr.onload = () => {
-          try {
-            const json = JSON.parse(xhr.responseText);
-            if (xhr.status >= 400) reject(new Error(json.error || "Failed to upload file"));
-            else resolve(json);
-          } catch { reject(new Error("Invalid server response")); }
+          // Parse all SSE events and find the final "done" or "error" event
+          const events = xhr.responseText.split("\n\n");
+          for (const event of events) {
+            const dataLine = event.split("\n").find((l) => l.startsWith("data: "));
+            if (!dataLine) continue;
+            try {
+              const payload = JSON.parse(dataLine.slice(6));
+              if (payload.stage === "done" && payload.result) {
+                resolve(payload.result);
+                return;
+              }
+              if (payload.stage === "error") {
+                reject(new Error(payload.message || "Upload processing failed"));
+                return;
+              }
+            } catch { /* ignore malformed events */ }
+          }
+          // Fallback: no done event found
+          reject(new Error("Upload completed but no result received from server"));
         };
         xhr.onerror = () => reject(new Error("Network error during upload"));
         xhr.ontimeout = () => reject(new Error("Upload timed out — the file may be too large. Try uploading fewer files at once."));
@@ -555,6 +605,7 @@ export default function App() {
     } finally {
       setLoading(false);
       setLoadingMessage("");
+      setLoadingDetail("");
       setUploadProgress(null);
     }
   };
@@ -1824,6 +1875,7 @@ export default function App() {
                     addLog={addLog}
                     setAiLoading={setAiLoading}
                     setLoadingMessage={setLoadingMessage}
+                    setStep={setStep}
                   />
                 )}
 
@@ -1834,7 +1886,7 @@ export default function App() {
           </div>
         </div>
         <StatusLog entries={statusLog} onClear={() => setStatusLog([])} />
-        <LoadingOverlay isLoading={aiLoading || !!loadingMessage} message={loadingMessage} onCancel={aiLoading ? cancelAiRequest : undefined} progress={uploadProgress} />
+        <LoadingOverlay isLoading={aiLoading || !!loadingMessage} message={loadingMessage} detail={loadingDetail} onCancel={aiLoading ? cancelAiRequest : undefined} progress={uploadProgress} />
 
         {mergeOutputs.length > 0 && !outputsPanelOpen && step >= 6 && (
           <motion.button

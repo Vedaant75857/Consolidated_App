@@ -17,6 +17,7 @@ from .metrics import (
     _non_null_condition,
     _profile_dmy_mdy,
     _safe_pct,
+    find_column,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,28 +73,32 @@ def _find_available_date_columns(available: set[str]) -> list[str]:
 
 
 def _pick_spend_column(available: set[str]) -> tuple[str | None, bool]:
-    """Pick the best spend column.
+    """Pick the best spend column (case-insensitive).
 
     Returns:
         (column_name, is_reporting_currency)
     """
-    for c in _REPORTING_SPEND_COLS:
-        if c in available:
-            return c, True
-    for c in _LOCAL_SPEND_COLS:
-        if c in available:
-            return c, False
+    reporting = find_column(available, _REPORTING_SPEND_COLS)
+    if reporting is not None:
+        return reporting, True
+    local = find_column(available, _LOCAL_SPEND_COLS)
+    if local is not None:
+        return local, False
     return None, False
 
 
 def _pick_currency_code_column(
     spend_col: str | None, available: set[str]
 ) -> str | None:
-    """Return the currency code column paired with a local spend column."""
+    """Return the currency code column paired with a local spend column (case-insensitive)."""
     if spend_col is None:
         return None
-    code_col = _CURRENCY_CODE_FOR_SPEND.get(spend_col)
-    return code_col if code_col and code_col in available else None
+    # Match the actual spend column against canonical keys case-insensitively
+    matched_key = find_column(set(_CURRENCY_CODE_FOR_SPEND.keys()), [spend_col])
+    if not matched_key:
+        return None
+    code_col = _CURRENCY_CODE_FOR_SPEND[matched_key]
+    return find_column(available, [code_col])
 
 
 def _numeric_spend_expr(qs: str) -> str:
@@ -170,10 +175,13 @@ def _build_format_table(
     conn: DuckDBConnection,
     table_name: str,
     date_column: str,
-    has_file_name: bool,
+    file_name_col: str | None,
     sample_per_file: int = 100,
 ) -> tuple[list[dict[str, Any]], bool, str]:
     """Build per-file format detection table.
+
+    Args:
+        file_name_col: Resolved FILE_NAME column name, or None if absent.
 
     Returns:
         (format_entries, all_consistent, global_dominant_format)
@@ -185,7 +193,8 @@ def _build_format_table(
     entries: list[dict[str, Any]] = []
     all_formats: dict[str, int] = {}
 
-    if has_file_name:
+    if file_name_col:
+        qfn = quote_id(file_name_col)
         # Global sample for DMY / MDY profiling
         global_sample = conn.execute(
             f"SELECT {qc} AS v FROM {tbl} WHERE {nn} LIMIT 2000"
@@ -193,15 +202,15 @@ def _build_format_table(
         order = _profile_dmy_mdy([str(r["v"]) for r in global_sample])
 
         files = conn.execute(
-            f'SELECT DISTINCT "FILE_NAME" AS fn FROM {tbl} '
-            f"WHERE \"FILE_NAME\" IS NOT NULL AND TRIM(\"FILE_NAME\") != ''"
+            f"SELECT DISTINCT {qfn} AS fn FROM {tbl} "
+            f"WHERE {qfn} IS NOT NULL AND TRIM({qfn}) != ''"
         ).fetchall()
 
         for frow in files:
             fname = str(frow["fn"])
             sampled = conn.execute(
                 f"SELECT {qc} AS v FROM {tbl} "
-                f"WHERE \"FILE_NAME\" = ? AND {nn} LIMIT ?",
+                f"WHERE {qfn} = ? AND {nn} LIMIT ?",
                 (fname, sample_per_file),
             ).fetchall()
 
@@ -436,7 +445,7 @@ def run_date_analysis(
     """
     available = set(read_table_columns(conn, table_name))
     available_date_cols = _find_available_date_columns(available)
-    has_file_name = "FILE_NAME" in available
+    file_name_col = find_column(available, ["FILE_NAME"])
 
     if not available_date_cols:
         return {
@@ -448,12 +457,14 @@ def run_date_analysis(
             "aiInsight": "No date columns found in the dataset.",
         }
 
-    if date_column is None or date_column not in available:
+    if date_column is None or find_column(available, [date_column]) is None:
         date_column = available_date_cols[0]
+    else:
+        date_column = find_column(available, [date_column]) or available_date_cols[0]
 
     # ── Format detection ──────────────────────────────────────────────────
     format_table, all_consistent, dominant_format = _build_format_table(
-        conn, table_name, date_column, has_file_name,
+        conn, table_name, date_column, file_name_col,
     )
 
     # ── Spend pivot ───────────────────────────────────────────────────────

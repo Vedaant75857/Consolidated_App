@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 import time
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, Response, request, jsonify, stream_with_context
 
 from shared.db import (
     get_session_db,
@@ -50,39 +51,104 @@ def _rebuild_meta(conn, skip_distinct: bool = False):
 
 @data_loading_bp.route("/upload", methods=["POST"])
 def upload():
-    try:
-        f = request.files.get("file")
-        if not f:
-            return jsonify({"error": "No file uploaded."}), 400
+    """Stream upload progress as SSE events, with the final result in a 'done' event."""
+    f = request.files.get("file")
+    if not f:
+        return jsonify({"error": "No file uploaded."}), 400
 
-        t0 = time.perf_counter()
-        file_data = f.read()
-        logger.info("Upload: read %d bytes in %.1fs", len(file_data), time.perf_counter() - t0)
+    t0 = time.perf_counter()
+    file_data = f.read()
+    logger.info("Upload: read %d bytes in %.1fs", len(file_data), time.perf_counter() - t0)
 
-        session_id = str(int(time.time() * 1000)) + hex(random.getrandbits(32))[2:]
-        conn = get_session_db(session_id)
+    session_id = str(int(time.time() * 1000)) + hex(random.getrandbits(32))[2:]
 
-        t1 = time.perf_counter()
-        _raw_arrays, warnings = load_zip_to_session(conn, file_data)
-        logger.info("Upload: parsed ZIP into SQLite in %.1fs", time.perf_counter() - t1)
+    def _sse(payload: dict) -> str:
+        return f"data: {json.dumps(payload)}\n\n"
 
-        t2 = time.perf_counter()
-        inv = build_inventory_from_db(conn)
-        set_meta(conn, "inv", inv)
-        logger.info("Upload: built inventory (%d tables) in %.1fs", len(inv), time.perf_counter() - t2)
+    def _stream():
+        try:
+            yield _sse({"stage": "reading", "message": "Reading uploaded bytes…"})
 
-        # Defer the expensive filesPayload build — it's not needed for the
-        # upload response and will be computed on demand by later steps.
+            conn = get_session_db(session_id)
+            # Mutable container so the nested callback can stash total for us
+            totals = {"total": 0}
 
-        return jsonify({
-            "sessionId": session_id,
-            "inventory": inv,
-            "previews": {},
-            "warnings": warnings,
-        })
-    except Exception as exc:
-        logger.exception("Upload failed")
-        return jsonify({"error": str(exc)}), 500
+            def _on_progress(evt: dict) -> None:
+                """Bridge file_loader progress events into the SSE generator.
+
+                Because Python generators can't be ``yield``-ed from a callback,
+                we stash the event; the generator polls ``pending`` after each
+                blocking call.  For the initial zip_info we just save the total.
+                """
+                nonlocal pending
+                if evt.get("stage") == "zip_info":
+                    totals["total"] = evt.get("total", 0)
+                pending.append(evt)
+
+            pending: list[dict] = []
+
+            t1 = time.perf_counter()
+            _raw_arrays, warnings = load_zip_to_session(conn, file_data, on_progress=_on_progress)
+            logger.info("Upload: parsed ZIP in %.1fs", time.perf_counter() - t1)
+
+            # Flush all progress events collected during load_zip_to_session
+            for evt in pending:
+                stage = evt.get("stage")
+                if stage == "zip_info":
+                    yield _sse({
+                        "stage": "parsing",
+                        "total": evt.get("total", 0),
+                        "message": f"ZIP contains {evt.get('total', 0)} files",
+                    })
+                elif stage == "file_loaded":
+                    total = totals["total"]
+                    current = evt.get("current", 0)
+                    name = evt.get("name", "")
+                    short_name = name.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+                    elapsed = evt.get("elapsed", 0)
+                    yield _sse({
+                        "stage": "file",
+                        "current": current,
+                        "total": total,
+                        "name": short_name,
+                        "elapsed": elapsed,
+                        "message": f"Loaded {short_name} ({current}/{total})",
+                    })
+                elif stage == "committed":
+                    yield _sse({
+                        "stage": "committed",
+                        "message": f"Committed {evt.get('file_count', 0)} files to database",
+                    })
+
+            yield _sse({"stage": "inventory", "message": "Building table inventory…"})
+
+            t2 = time.perf_counter()
+            inv = build_inventory_from_db(conn)
+            set_meta(conn, "inv", inv)
+            logger.info("Upload: built inventory (%d tables) in %.1fs", len(inv), time.perf_counter() - t2)
+
+            yield _sse({
+                "stage": "done",
+                "result": {
+                    "sessionId": session_id,
+                    "inventory": inv,
+                    "previews": {},
+                    "warnings": warnings,
+                },
+            })
+        except Exception as exc:
+            logger.exception("Upload failed")
+            yield _sse({"stage": "error", "message": str(exc)})
+
+    return Response(
+        stream_with_context(_stream()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "close",
+        },
+    )
 
 
 @data_loading_bp.route("/get-preview", methods=["GET", "POST"])

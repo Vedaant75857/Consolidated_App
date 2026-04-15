@@ -8,7 +8,7 @@ import logging
 import os
 import time
 import zipfile
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 import pandas as pd
 
@@ -230,17 +230,32 @@ def _load_csv(
         warnings.append({"file": table_key, "message": str(e)})
 
 
-def load_zip_to_session(conn: DuckDBConnection, file_data: bytes) -> tuple[dict[str, list], list[dict]]:
+def load_zip_to_session(
+    conn: DuckDBConnection,
+    file_data: bytes,
+    on_progress: Callable[[dict], None] | None = None,
+) -> tuple[dict[str, list], list[dict]]:
     """Parse a ZIP archive and stream all files into the session DuckDB.
 
     Opens each Excel workbook exactly once and parses each file in a single
     pass.  All DB writes are batched into one commit at the end.
 
-    Returns ({}, warnings_list).  The first element is kept for interface
-    compatibility but is always empty (raw data lives in raw__* tables).
+    Args:
+        conn: DuckDB session connection.
+        file_data: Raw bytes of the uploaded file (ZIP or single file).
+        on_progress: Optional callback invoked with progress dicts at key
+            milestones (zip opened, each file loaded, commit done).
+
+    Returns:
+        ({}, warnings_list).  The first element is kept for interface
+        compatibility but is always empty (raw data lives in raw__* tables).
     """
     warnings: list[dict] = []
     file_count = 0
+
+    def _emit(payload: dict) -> None:
+        if on_progress is not None:
+            on_progress(payload)
 
     def _process_excel(data: bytes, name: str) -> None:
         """Load all sheets from an in-memory Excel workbook."""
@@ -254,25 +269,38 @@ def load_zip_to_session(conn: DuckDBConnection, file_data: bytes) -> tuple[dict[
                 )
         finally:
             excel_file.close()
-        logger.info("  Loaded Excel %s (%d sheets) in %.1fs", name, len(excel_file.sheet_names), time.perf_counter() - t)
+        elapsed = time.perf_counter() - t
+        logger.info("  Loaded Excel %s (%d sheets) in %.1fs", name, len(excel_file.sheet_names), elapsed)
+        nonlocal file_count
+        file_count += 1
+        _emit({"stage": "file_loaded", "name": name, "current": file_count, "elapsed": round(elapsed, 1)})
 
     with zipfile.ZipFile(io.BytesIO(file_data)) as zf:
         entries = [e for e in zf.infolist() if not e.is_dir()]
+        # Count only loadable entries to get an accurate total
+        loadable = [
+            e for e in entries
+            if e.filename.lower().endswith(_EXCEL_EXTS + (".csv", ".zip"))
+        ]
+        total = len(loadable)
         logger.info("ZIP contains %d file(s)", len(entries))
+        _emit({"stage": "zip_info", "total": total})
+
         for entry in entries:
             name = entry.filename
             lower = name.lower()
 
             if lower.endswith(_EXCEL_EXTS):
                 _process_excel(zf.read(name), name)
-                file_count += 1
 
             elif lower.endswith(".csv"):
                 t = time.perf_counter()
                 key = f"{name}::"
                 _load_csv(conn, key, zf.read(name), warnings, commit=False)
-                logger.info("  Loaded CSV %s in %.1fs", name, time.perf_counter() - t)
+                elapsed = time.perf_counter() - t
+                logger.info("  Loaded CSV %s in %.1fs", name, elapsed)
                 file_count += 1
+                _emit({"stage": "file_loaded", "name": name, "current": file_count, "elapsed": round(elapsed, 1)})
 
             elif lower.endswith(".zip"):
                 try:
@@ -287,20 +315,22 @@ def load_zip_to_session(conn: DuckDBConnection, file_data: bytes) -> tuple[dict[
 
                             if nested_lower.endswith(_EXCEL_EXTS):
                                 _process_excel(nested_zf.read(nested_name), full_key_prefix)
-                                file_count += 1
 
                             elif nested_lower.endswith(".csv"):
                                 t = time.perf_counter()
                                 key = f"{full_key_prefix}::"
                                 _load_csv(conn, key, nested_zf.read(nested_name), warnings, commit=False)
-                                logger.info("  Loaded nested CSV %s in %.1fs", nested_name, time.perf_counter() - t)
+                                elapsed = time.perf_counter() - t
+                                logger.info("  Loaded nested CSV %s in %.1fs", nested_name, elapsed)
                                 file_count += 1
+                                _emit({"stage": "file_loaded", "name": nested_name, "current": file_count, "elapsed": round(elapsed, 1)})
                 except Exception as e:
                     warnings.append({"file": name, "message": f"Failed to extract nested ZIP: {e}"})
 
     t_commit = time.perf_counter()
     conn.commit()
     logger.info("Committed %d file(s) to DuckDB in %.1fs", file_count, time.perf_counter() - t_commit)
+    _emit({"stage": "committed", "file_count": file_count})
     return {}, warnings
 
 

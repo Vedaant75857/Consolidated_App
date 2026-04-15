@@ -12,7 +12,7 @@ from typing import Any
 from shared.db import DuckDBConnection, quote_id, read_table_columns
 
 from .ai_prompts import generate_supplier_insight
-from .metrics import _non_null_condition, _safe_pct
+from .metrics import _non_null_condition, _safe_pct, find_column
 
 logger = logging.getLogger(__name__)
 
@@ -29,11 +29,8 @@ TOP_N = 1000
 
 
 def _pick_spend_column(available: set[str]) -> str | None:
-    """Return the highest-priority spend column present in the table."""
-    for c in _SPEND_PREFERENCE:
-        if c in available:
-            return c
-    return None
+    """Return the highest-priority spend column present in the table (case-insensitive)."""
+    return find_column(available, _SPEND_PREFERENCE)
 
 
 def _numeric_spend_expr(qs: str) -> str:
@@ -66,7 +63,8 @@ def run_supplier_analysis(
     """
     available = set(read_table_columns(conn, table_name))
 
-    if VENDOR_COLUMN not in available:
+    vendor_col = find_column(available, [VENDOR_COLUMN])
+    if vendor_col is None:
         return {
             "exists": False,
             "supplierCount": 0,
@@ -76,7 +74,7 @@ def run_supplier_analysis(
         }
 
     tbl = quote_id(table_name)
-    qv = quote_id(VENDOR_COLUMN)
+    qv = quote_id(vendor_col)
     nn = _non_null_condition(qv)
     spend_col = _pick_spend_column(available)
 
