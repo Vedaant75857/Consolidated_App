@@ -175,6 +175,10 @@ const ERROR_CODE_TABLE_MISSING = "TABLE_MISSING";
 
 function fmtSpend(val: number | null | undefined): string {
   if (val == null) return "N/A";
+  const abs = Math.abs(val);
+  if (abs >= 1_000_000_000) return (val / 1_000_000_000).toFixed(1) + "B";
+  if (abs >= 1_000_000) return (val / 1_000_000).toFixed(1) + "M";
+  if (abs >= 1_000) return (val / 1_000).toFixed(1) + "K";
   return Math.round(val).toLocaleString();
 }
 
@@ -239,6 +243,14 @@ export default function DataQualityAssessment({
   const [sessionExpired, setSessionExpired] = useState(false);
   const [tableMissing, setTableMissing] = useState(false);
   const skipRef = useRef(false);
+  const completedPanelsRef = useRef(0);
+
+  const markPanelComplete = useCallback(() => {
+    completedPanelsRef.current += 1;
+    setLoadingMessage(
+      `Data Quality Assessment… ${completedPanelsRef.current}/7 panels complete`,
+    );
+  }, [setLoadingMessage]);
 
   // Per-panel state
   const [dateState, setDateState] = useState<PanelState<DateResult>>({
@@ -338,9 +350,11 @@ export default function DataQualityAssessment({
             data: null,
           });
         }
+      } finally {
+        markPanelComplete();
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError],
+    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError, markPanelComplete],
   );
 
   const runCurrencyPanel = useCallback(
@@ -364,9 +378,11 @@ export default function DataQualityAssessment({
             data: null,
           });
         }
+      } finally {
+        markPanelComplete();
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError],
+    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError, markPanelComplete],
   );
 
   const runPaymentPanel = useCallback(
@@ -390,9 +406,11 @@ export default function DataQualityAssessment({
             data: null,
           });
         }
+      } finally {
+        markPanelComplete();
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError],
+    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError, markPanelComplete],
   );
 
   const runCountryPanel = useCallback(
@@ -416,9 +434,11 @@ export default function DataQualityAssessment({
             data: null,
           });
         }
+      } finally {
+        markPanelComplete();
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError],
+    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError, markPanelComplete],
   );
 
   const runSupplierPanel = useCallback(
@@ -442,9 +462,11 @@ export default function DataQualityAssessment({
             data: null,
           });
         }
+      } finally {
+        markPanelComplete();
       }
     },
-    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError],
+    [sessionId, apiKey, isSingleTable, getTableKey, sessionExpired, checkSessionError, markPanelComplete],
   );
 
   const runFillRatePanel = useCallback(
@@ -463,9 +485,11 @@ export default function DataQualityAssessment({
             data: null,
           });
         }
+      } finally {
+        markPanelComplete();
       }
     },
-    [sessionId, isSingleTable, getTableKey, sessionExpired, checkSessionError],
+    [sessionId, isSingleTable, getTableKey, sessionExpired, checkSessionError, markPanelComplete],
   );
 
   const runBifurcationPanel = useCallback(
@@ -484,18 +508,21 @@ export default function DataQualityAssessment({
             data: null,
           });
         }
+      } finally {
+        markPanelComplete();
       }
     },
-    [sessionId, isSingleTable, getTableKey, sessionExpired, checkSessionError],
+    [sessionId, isSingleTable, getTableKey, sessionExpired, checkSessionError, markPanelComplete],
   );
 
   const runAllPanels = useCallback(
     (version: number) => {
       skipRef.current = false;
+      completedPanelsRef.current = 0;
       setTableMissing(false);
       addLog("Data Quality", "info", "Running data quality assessment…");
       setAiLoading(true);
-      setLoadingMessage("Running Data Quality Assessment…");
+      setLoadingMessage("Data Quality Assessment… 0/7 panels complete");
 
       const promises = [
         runFillRatePanel(version),
@@ -822,6 +849,32 @@ function AiInsightBanner({ insight }: { insight: string }) {
   );
 }
 
+function SubSectionHeader({
+  title,
+  expanded,
+  onToggle,
+}: {
+  title: string;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      onClick={onToggle}
+      className="flex items-center justify-between w-full px-6 py-2 text-left border-t border-neutral-100 dark:border-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors"
+    >
+      <p className="text-[10px] uppercase tracking-wider font-semibold text-neutral-500 dark:text-neutral-400">
+        {title}
+      </p>
+      <ChevronDown
+        className={`w-3 h-3 text-neutral-400 transition-transform ${
+          expanded ? "" : "-rotate-90"
+        }`}
+      />
+    </button>
+  );
+}
+
 /* ══════════════════════════════════════════════════════════════════════════
    Panel 1 – Date Analysis
    ══════════════════════════════════════════════════════════════════════════ */
@@ -839,6 +892,9 @@ function DatePanel({
   selectedDateColumn: string | undefined;
   onDateColumnChange: (col: string) => void;
 }) {
+  const [showTotalSpend, setShowTotalSpend] = useState(true);
+  const [showPivotTable, setShowPivotTable] = useState(true);
+
   const d = state.data;
   const subtitle = d
     ? `${d.selectedColumn ?? "—"} · ${d.consistent ? "Consistent formats" : "Inconsistent formats detected"}`
@@ -947,33 +1003,68 @@ function DatePanel({
                     </div>
                   )}
 
-                  {/* Total spend summary */}
+                  {/* Total spend summary — collapsible */}
                   {d.totalSpendSummary && (
-                    <div className="px-6 py-3 border-t border-neutral-100 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-800/30">
-                      <p className="text-[10px] uppercase tracking-wider font-semibold text-neutral-500 dark:text-neutral-400 mb-1">
-                        Total Spend
-                      </p>
-                      <p className="text-sm font-semibold tabular-nums text-neutral-800 dark:text-neutral-200">
-                        {d.totalSpendSummary.type === "reporting"
-                          ? fmtSpend(d.totalSpendSummary.total ?? 0)
-                          : d.totalSpendSummary.currencies
-                              ?.map(
-                                (c) => `${fmtSpend(c.total)} ${c.code}`,
-                              )
-                              .join(", ") ?? "N/A"}
-                      </p>
-                    </div>
+                    <>
+                      <SubSectionHeader
+                        title="Total Spend"
+                        expanded={showTotalSpend}
+                        onToggle={() => setShowTotalSpend((v) => !v)}
+                      />
+                      <AnimatePresence initial={false}>
+                        {showTotalSpend && (
+                          <motion.div
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: "auto", opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+                            className="overflow-hidden"
+                          >
+                            <div className="px-6 py-3 bg-neutral-50/50 dark:bg-neutral-800/30">
+                              <p className="text-sm font-semibold tabular-nums text-neutral-800 dark:text-neutral-200">
+                                {d.totalSpendSummary.type === "reporting"
+                                  ? fmtSpend(d.totalSpendSummary.total ?? 0)
+                                  : d.totalSpendSummary.currencies
+                                      ?.map(
+                                        (c) => `${fmtSpend(c.total)} ${c.code}`,
+                                      )
+                                      .join(", ") ?? "N/A"}
+                              </p>
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </>
                   )}
 
-                  {/* Pivot table */}
+                  {/* Pivot table — collapsible */}
                   {d.pivotData?.feasible && (
-                    <div className="border-t border-neutral-100 dark:border-neutral-800">
-                      {d.pivotData.type === "reporting" ? (
-                        <ReportingPivotTable pivot={d.pivotData} />
-                      ) : (
-                        <CurrencyCrosstabTable pivot={d.pivotData} />
-                      )}
-                    </div>
+                    <>
+                      <SubSectionHeader
+                        title="Spend by Year & Month"
+                        expanded={showPivotTable}
+                        onToggle={() => setShowPivotTable((v) => !v)}
+                      />
+                      <AnimatePresence initial={false}>
+                        {showPivotTable && (
+                          <motion.div
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: "auto", opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+                            className="overflow-hidden"
+                          >
+                            <div>
+                              {d.pivotData.type === "reporting" ? (
+                                <ReportingPivotTable pivot={d.pivotData} />
+                              ) : (
+                                <CurrencyCrosstabTable pivot={d.pivotData} />
+                              )}
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </>
                   )}
                 </>
               )}

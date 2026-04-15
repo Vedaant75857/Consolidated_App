@@ -225,7 +225,7 @@ def read_table_columns(conn: DuckDBConnection, table_name: str) -> list[str]:
         return []
     rows = conn.execute(
         "SELECT column_name FROM information_schema.columns "
-        "WHERE table_name = ? ORDER BY ordinal_position",
+        "WHERE LOWER(table_name) = LOWER(?) ORDER BY ordinal_position",
         (table_name,),
     ).fetchall()
     return [r["column_name"] for r in rows]
@@ -237,7 +237,7 @@ def table_exists(conn: DuckDBConnection, table_name: str) -> bool:
     Uses DuckDB's information_schema instead of sqlite_master.
     """
     row = conn.execute(
-        "SELECT 1 FROM information_schema.tables WHERE table_name = ?",
+        "SELECT 1 FROM information_schema.tables WHERE LOWER(table_name) = LOWER(?)",
         (table_name,),
     ).fetchone()
     return row is not None

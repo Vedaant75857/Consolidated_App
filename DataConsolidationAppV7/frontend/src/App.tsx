@@ -79,8 +79,9 @@ export default function App() {
     prevStepRef.current = step;
   }, [step]);
 
-  // Safety net: auto-clear aiLoading if stuck for more than 5 minutes
-  const AI_LOADING_TIMEOUT_MS = 5 * 60 * 1000;
+  // Safety net: auto-clear aiLoading if stuck for more than 10 minutes
+  // Timer resets each time loadingMessage changes (e.g. progress counter updates)
+  const AI_LOADING_TIMEOUT_MS = 10 * 60 * 1000;
   useEffect(() => {
     if (!aiLoading) return;
     const timer = setTimeout(() => {
@@ -89,7 +90,7 @@ export default function App() {
       setLoadingMessage("");
     }, AI_LOADING_TIMEOUT_MS);
     return () => clearTimeout(timer);
-  }, [aiLoading]);
+  }, [aiLoading, loadingMessage]);
 
   // Step 2: Data Preview
   const [inventory, setInventory] = useState<any[]>([]);

@@ -94,8 +94,11 @@ def run_fill_rate_analysis(
         JSON-serialisable dict with ``columns``, ``spendType``, ``spendColumn``.
     """
     all_cols = read_table_columns(conn, table_name)
-    columns = [c for c in all_cols if c not in _SYSTEM_COLUMNS]
+    logger.info("Fill rate: table=%s, total_cols=%d", table_name, len(all_cols))
+    system_upper = {s.upper() for s in _SYSTEM_COLUMNS}
+    columns = [c for c in all_cols if c.upper() not in system_upper]
     if not columns:
+        logger.warning("Fill rate: 0 columns after filtering system columns from %d total", len(all_cols))
         return {"columns": [], "spendType": "none", "spendColumn": None}
 
     available = set(all_cols)

@@ -28,16 +28,18 @@ The payload includes:
 
 ### Instructions
 
-1. If formats are **inconsistent** across files, clearly state that **date
-   normalisation is required** before aggregation is reliable.  List which
-   files use which formats.
-2. If a `pivotData` table is provided, analyse it for:
-   - Seasonality patterns (months with significantly higher/lower spend)
-   - Year-over-year trends (growth, decline, stability)
-   - Data gaps (months or years with zero spend that might indicate missing
-     data)
-   - Any anomalies worth flagging
-3. Keep insights concise, actionable, and in bullet-point format.
+Respond with **exactly 2–3 short bullet points** (no more):
+
+1. If formats are **inconsistent** across files, state that **date
+   normalisation is required** and name which files differ. If consistent,
+   state so in one sentence.
+2. If `pivotData` is provided, note one key finding: seasonality, trend,
+   or data gap.
+3. Optionally add one sentence on an anomaly or recommendation.
+
+Keep the total response to 2–3 lines. Each bullet must be one sentence
+(under 30 words). Do NOT provide a full narrative, do NOT list every file
+individually.
 
 ### Output format
 
