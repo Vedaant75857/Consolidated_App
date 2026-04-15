@@ -2,6 +2,7 @@
 """PyInstaller spec for DataScopingTool — single-file EXE."""
 
 import os
+from PyInstaller.utils.hooks import collect_dynamic_libs, collect_data_files
 
 ROOT = os.path.abspath(".")
 
@@ -21,9 +22,17 @@ datas = [
     (os.path.join(ROOT, "SummarizationModule", "frontend", "dist"),
      os.path.join("SummarizationModule", "frontend", "dist")),
 
-    # FX reference workbook used by Module 2 currency conversion
-    (os.path.join(ROOT, "FX_rates_table.xlsx"), "."),
 ]
+
+# FX reference workbook used by Module 2 currency conversion (optional)
+_fx_path = os.path.join(ROOT, "FX_rates_table.xlsx")
+if os.path.isfile(_fx_path):
+    datas.append((_fx_path, "."))
+
+# Collect DuckDB native libraries so the C-extension works inside the bundle
+_duckdb_bins = collect_dynamic_libs("duckdb")
+_duckdb_data = collect_data_files("duckdb")
+datas.extend(_duckdb_data)
 
 # Backend Python source trees (PyInstaller needs them as data because we
 # load them dynamically via importlib at runtime).
@@ -36,6 +45,7 @@ backend_trees = [
 _SKIP_DIRS = {"__pycache__", ".venv", ".sessions", "sessions"}
 _SKIP_FILE_PREFIXES = (".env",)
 _SKIP_FILE_EXTENSIONS = {".sqlite", ".sqlite3", ".sqlite-journal",
+                         ".duckdb", ".wal",
                          ".log", ".pkl", ".pickle"}
 
 for src_rel, dst_rel in backend_trees:
@@ -83,7 +93,7 @@ hiddenimports = [
     "python_calamine",
     "engineio",
     "engineio.async_drivers",
-    "sqlite3",
+    "duckdb",
     "json",
     "csv",
     "logging",
@@ -103,7 +113,7 @@ a = Analysis(
         os.path.join(ROOT, "ProcIP_Module2-main", "backend"),
         os.path.join(ROOT, "SummarizationModule", "backend"),
     ],
-    binaries=[],
+    binaries=_duckdb_bins,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

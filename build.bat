@@ -28,7 +28,7 @@ if %errorlevel% neq 0 (
 :: -------------------------------------------------------------------
 :: Step 1 — Install Python build dependencies
 :: -------------------------------------------------------------------
-echo [1/5] Installing Python build dependencies ...
+echo [1/6] Installing Python build dependencies ...
 pip install -r requirements-build.txt
 if %errorlevel% neq 0 (
     echo ERROR: pip install failed.
@@ -41,9 +41,10 @@ if %errorlevel% neq 0 (
 ::          (with env vars pointing to backend ports)
 :: -------------------------------------------------------------------
 echo.
-echo [2/5] Building Landing Page frontend ...
+echo [2/6] Building Landing Page frontend ...
 cd landing-page
 call npm install
+set VITE_HOME_URL=http://localhost:3000
 set VITE_STITCHER_FE=http://localhost:3001
 set VITE_NORMALIZER_FE=http://localhost:5000
 set VITE_ANALYZER_FE=http://localhost:3005
@@ -60,9 +61,10 @@ cd ..
 ::          (same env vars so cross-module links resolve correctly)
 :: -------------------------------------------------------------------
 echo.
-echo [3/5] Building Module 1 (Data Stitcher) frontend ...
+echo [3/6] Building Module 1 (Data Stitcher) frontend ...
 cd DataConsolidationAppV7\frontend
 call npm install
+set VITE_HOME_URL=http://localhost:3000
 set VITE_STITCHER_FE=http://localhost:3001
 set VITE_NORMALIZER_FE=http://localhost:5000
 set VITE_ANALYZER_FE=http://localhost:3005
@@ -75,9 +77,10 @@ if %errorlevel% neq 0 (
 cd ..\..
 
 echo.
-echo [4/5] Building Module 2 (Data Normalizer) frontend ...
+echo [4/6] Building Module 2 (Data Normalizer) frontend ...
 cd ProcIP_Module2-main\frontend
 call npm install
+set VITE_HOME_URL=http://localhost:3000
 set VITE_STITCHER_FE=http://localhost:3001
 set VITE_NORMALIZER_FE=http://localhost:5000
 set VITE_ANALYZER_FE=http://localhost:3005
@@ -93,6 +96,7 @@ echo.
 echo [5/6] Building Module 3 (Spend Summarizer) frontend ...
 cd SummarizationModule\frontend
 call npm install
+set VITE_HOME_URL=http://localhost:3000
 set VITE_STITCHER_FE=http://localhost:3001
 set VITE_NORMALIZER_FE=http://localhost:5000
 set VITE_ANALYZER_FE=http://localhost:3005

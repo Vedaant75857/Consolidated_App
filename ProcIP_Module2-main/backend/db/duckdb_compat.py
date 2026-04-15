@@ -159,15 +159,10 @@ class DuckDBConnection:
 
     @staticmethod
     def _translate_sql(sql: str) -> str:
-        """Rewrite SQLite-specific SQL to DuckDB equivalents on the fly.
-
-        Handles:
-        - ``?``-style positional params → ``$1, $2, ...``
-        - ``INSERT OR REPLACE`` → DuckDB-compatible alternative
+        """Pass-through for now: DuckDB natively handles ``?`` positional
+        params and ``INSERT OR REPLACE`` (on tables with a PRIMARY KEY),
+        so no rewriting is required.
         """
-        # DuckDB supports ? positional parameters natively — no translation needed.
-        # INSERT OR REPLACE needs special handling for DuckDB.
-        # DuckDB supports INSERT OR REPLACE for tables with PKs.
         return sql
 
     @staticmethod

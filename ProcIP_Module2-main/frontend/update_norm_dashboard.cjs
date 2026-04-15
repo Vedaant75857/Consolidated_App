@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const targetFile = 'c:\\Users\\78464\\Downloads\\Consolidated_App\\ProcIP_Module2-main\\frontend\\src\\components\\module-2\\NormDashboard.tsx';
+const targetFile = path.join(__dirname, 'src', 'components', 'module-2', 'NormDashboard.tsx');
 let content = fs.readFileSync(targetFile, 'utf8');
 
 // 1. Add new states
