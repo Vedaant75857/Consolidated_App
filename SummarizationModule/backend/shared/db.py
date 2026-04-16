@@ -45,7 +45,7 @@ def get_session_lock(session_id: str) -> threading.RLock:
         return lock
 
 
-def _db_path(session_id: str) -> str:
+def db_path(session_id: str) -> str:
     safe = "".join(c for c in session_id if c.isalnum() or c in "-_")
     return os.path.join(SESSIONS_DIR, f"{safe}.duckdb")
 
@@ -72,7 +72,7 @@ def get_session_db(session_id: str) -> DuckDBConnection:
                 _db_cache.move_to_end(session_id, last=True)
                 return conn
 
-        path = _db_path(session_id)
+        path = db_path(session_id)
         conn = duckdb_connect(path)
         _ensure_meta(conn)
 
@@ -99,7 +99,7 @@ def close_session_db(session_id: str) -> None:
 
 
 def session_exists(session_id: str) -> bool:
-    return os.path.isfile(_db_path(session_id))
+    return os.path.isfile(db_path(session_id))
 
 
 def _ensure_meta(conn: DuckDBConnection):
@@ -144,7 +144,7 @@ def get_all_meta_keys(conn: DuckDBConnection) -> list[str]:
 def delete_session(session_id: str):
     """Close the connection and delete all session files (DB + WAL)."""
     close_session_db(session_id)
-    path = _db_path(session_id)
+    path = db_path(session_id)
     for suffix in ("", ".wal"):
         try:
             os.unlink(path + suffix)

@@ -13,10 +13,19 @@ from typing import Any
 import requests as _requests
 from openpyxl import Workbook
 
-from flask import Blueprint, Response, jsonify, request, stream_with_context
+from flask import Blueprint, Response, current_app, jsonify, request, stream_with_context
 
-NORMALIZER_BE = os.environ.get("NORMALIZER_BACKEND_URL", "http://localhost:5000")
-ANALYZER_BE = os.environ.get("ANALYZER_BACKEND_URL", "http://localhost:3005")
+
+def _normalizer_be() -> str:
+    """Resolve Normalizer backend URL from Flask app config (injected by launcher)."""
+    ports = current_app.config.get("RUNTIME_PORTS", {})
+    return f"http://localhost:{ports.get('normalizer', 5000)}"
+
+
+def _analyzer_be() -> str:
+    """Resolve Analyzer backend URL from Flask app config (injected by launcher)."""
+    ports = current_app.config.get("RUNTIME_PORTS", {})
+    return f"http://localhost:{ports.get('summarizer', 3005)}"
 
 from shared.db import (
     drop_table,
@@ -763,7 +772,7 @@ def transfer_to_normalizer():
         csv_bytes, filename = _read_version_csv(conn, version)
 
         resp = _requests.post(
-            f"{NORMALIZER_BE}/api/import-from-stitcher",
+            f"{_normalizer_be()}/api/import-from-stitcher",
             files={"file": (filename, io.BytesIO(csv_bytes), "text/csv")},
             timeout=120,
         )
@@ -777,11 +786,12 @@ def transfer_to_normalizer():
 
         normalizer_session_id = resp.json().get("sessionId", "")
         return jsonify({"ok": True, "normalizerSessionId": normalizer_session_id})
-    except _requests.exceptions.ConnectionError:
-        return jsonify({"ok": False, "error": "Cannot reach the Data Normalizer backend. Ensure it is running on port 5000."}), 502
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:
+        err_str = str(exc).lower()
+        if "connection" in err_str or "refused" in err_str or "httpconnectionpool" in err_str:
+            return jsonify({"ok": False, "error": "Cannot reach the Data Normalizer backend. Is it running?"}), 502
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
@@ -799,7 +809,7 @@ def transfer_to_analyzer():
         csv_bytes, filename = _read_version_csv(conn, version)
 
         resp = _requests.post(
-            f"{ANALYZER_BE}/api/import",
+            f"{_analyzer_be()}/api/import",
             files={"file": (filename, io.BytesIO(csv_bytes), "text/csv")},
             timeout=120,
         )
@@ -816,9 +826,10 @@ def transfer_to_analyzer():
         if not analyzer_session_id:
             return jsonify({"ok": False, "error": "Analyzer did not return a session ID"}), 502
         return jsonify({"ok": True, "analyzerSessionId": analyzer_session_id})
-    except _requests.exceptions.ConnectionError:
-        return jsonify({"ok": False, "error": "Cannot reach the Data Analyzer backend. Ensure it is running on port 3005."}), 502
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:
+        err_str = str(exc).lower()
+        if "connection" in err_str or "refused" in err_str or "httpconnectionpool" in err_str:
+            return jsonify({"ok": False, "error": "Cannot reach the Data Analyzer backend. Is it running?"}), 502
         return jsonify({"ok": False, "error": str(exc)}), 500

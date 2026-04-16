@@ -73,7 +73,7 @@ export async function confirmMapping(
   sessionId: string,
   mapping: Record<string, string | null>
 ) {
-  return post<{ castReport: CastReport }>("/confirm-mapping", {
+  return post<{ castReport: CastReport; procurementViews?: ProcurementViewAvailability[] }>("/confirm-mapping", {
     sessionId,
     mapping,
   });

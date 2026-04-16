@@ -752,6 +752,7 @@ def main():
         try:
             app = factory()
             _add_config_endpoint(app)
+            app.config['RUNTIME_PORTS'] = dict(_RUNTIME_PORTS)
         except Exception:
             log.exception("Failed to initialise %s", label)
             _safe_pause()

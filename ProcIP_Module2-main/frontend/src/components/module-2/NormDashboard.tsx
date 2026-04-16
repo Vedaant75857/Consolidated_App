@@ -17,7 +17,10 @@ import UnsupportedCurrencyPanel, {
 import type { LogEntry } from "../module-1/StatusLog";
 import { getConfig } from "../../runtimeConfig";
 
-const ANALYZER_FE = getConfig().summarizer ?? import.meta.env.VITE_ANALYZER_FE ?? "http://localhost:3004";
+/** Resolve at call time so the async config.json has loaded by the time the user clicks. */
+function getAnalyzerFE(): string {
+  return getConfig().summarizer ?? import.meta.env.VITE_ANALYZER_FE ?? "http://localhost:3005";
+}
 
 const OPERATIONS = [
   { id: "supplier_name", label: "Supplier Names", icon: Building2, desc: "Clean & deduplicate supplier names", loadingMsg: "Cleaning & deduplicating supplier names…" },
@@ -523,7 +526,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
   }, [log, setLoadingMessage, setLoadingOnCancel]);
 
 
-  // Send to Analyzer state
+  // Send to Summarizer state
   const [showAnalyzerConfirm, setShowAnalyzerConfirm] = useState(false);
   const [sendingToAnalyzer, setSendingToAnalyzer] = useState(false);
   const [analyzerSendResult, setAnalyzerSendResult] = useState<{ ok: boolean; message: string } | null>(null);
@@ -548,7 +551,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       if (!analyzerSessionId || typeof analyzerSessionId !== "string") {
         throw new Error("Transfer succeeded but no session ID was returned by the Summarizer.");
       }
-      const url = `${ANALYZER_FE}?sessionId=${encodeURIComponent(analyzerSessionId)}&source=normalizer&apiKey=${encodeURIComponent(apiKey)}`;
+      const url = `${getAnalyzerFE()}?sessionId=${encodeURIComponent(analyzerSessionId)}&source=normalizer&apiKey=${encodeURIComponent(apiKey)}`;
       window.open(url, "_blank");
       setAnalyzerSendResult({ ok: true, message: "Opened Spend Summarizer in a new tab" });
       log("success", "Data sent to Spend Summarizer successfully.");
@@ -1302,7 +1305,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                     className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors disabled:opacity-50"
                   >
                     {sendingToAnalyzer ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <BarChart3 className="w-3.5 h-3.5" />}
-                    Send to Analyzer
+                    Send to Summarizer
                   </button>
                 </div>
               )}

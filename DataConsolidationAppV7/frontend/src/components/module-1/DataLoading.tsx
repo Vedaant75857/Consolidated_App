@@ -861,13 +861,13 @@ export default function DataLoading({
                 <ArrowRight className="w-4 h-4" />
               </PrimaryButton>
             )}
-            <SecondaryButton
+            <PrimaryButton
               onClick={onProceedToAppend}
               disabled={loading}
             >
               {loading ? <Loader2 className="animate-spin w-4 h-4" /> : "Proceed to Append Strategy"}
               <ArrowRight className="w-4 h-4" />
-            </SecondaryButton>
+            </PrimaryButton>
           </div>
         </SurfaceCard>
       )}

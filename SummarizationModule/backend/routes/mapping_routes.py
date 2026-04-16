@@ -87,10 +87,15 @@ def procurement_views():
         if not session_id or not session_exists(session_id):
             return jsonify({"error": "Invalid session"}), 400
 
-        with get_session_lock(session_id):
-            conn = get_session_db(session_id)
-            mapping = get_meta(conn, "mapping")
+        conn = get_session_db(session_id)
 
+        # Read precomputed result (cached during /confirm-mapping)
+        views = get_meta(conn, "procurement_views")
+        if views:
+            return jsonify({"views": views})
+
+        # Fallback: compute on the fly if cache is missing
+        mapping = get_meta(conn, "mapping")
         if not mapping:
             return jsonify({"error": "No mapping found. Complete column mapping first."}), 400
 
@@ -120,6 +125,10 @@ def confirm_mapping():
             cast_report = build_typed_table(conn, mapping)
             set_meta(conn, "step", 4)
 
-        return jsonify({"castReport": cast_report})
+            # Precompute procurement view feasibility so step 7 is instant
+            proc_views = get_procurement_view_availability(mapping)
+            set_meta(conn, "procurement_views", proc_views)
+
+        return jsonify({"castReport": cast_report, "procurementViews": proc_views})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500

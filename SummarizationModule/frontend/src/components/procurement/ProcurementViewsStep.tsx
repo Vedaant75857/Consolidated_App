@@ -5,45 +5,62 @@ import type { ProcurementViewAvailability } from "../../types";
 interface Props {
   sessionId: string;
   onFetchViews: () => Promise<{ views: ProcurementViewAvailability[] }>;
+  cachedViews?: ProcurementViewAvailability[] | null;
   onGenerateEmail?: () => void;
+}
+
+function sortViews(views: ProcurementViewAvailability[]) {
+  return [...views].sort((a, b) => {
+    if (a.available && !b.available) return -1;
+    if (!a.available && b.available) return 1;
+    return 0;
+  });
 }
 
 export default function ProcurementViewsStep({
   sessionId,
   onFetchViews,
+  cachedViews,
   onGenerateEmail,
 }: Props) {
-  const [views, setViews] = useState<ProcurementViewAvailability[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [views, setViews] = useState<ProcurementViewAvailability[]>(
+    cachedViews ? sortViews(cachedViews) : []
+  );
+  const [loading, setLoading] = useState(!cachedViews);
   const [error, setError] = useState("");
-  const fetchedRef = useRef(false);
+  const fetchedRef = useRef(!!cachedViews);
 
   useEffect(() => {
+    // If we have cached views from /confirm-mapping, skip the fetch entirely
+    if (cachedViews && cachedViews.length > 0) {
+      setViews(sortViews(cachedViews));
+      setLoading(false);
+      fetchedRef.current = true;
+      return;
+    }
+
     if (fetchedRef.current) return;
     fetchedRef.current = true;
     let cancelled = false;
+
     setLoading(true);
     setError("");
     onFetchViews()
       .then((result) => {
         if (!cancelled) {
-          const sorted = [...result.views].sort((a, b) => {
-            if (a.available && !b.available) return -1;
-            if (!a.available && b.available) return 1;
-            return 0;
-          });
-          setViews(sorted);
+          setViews(sortViews(result.views));
+          setLoading(false);
         }
       })
       .catch((err) => {
-        if (!cancelled) setError(err.message || "Failed to load procurement views");
-        fetchedRef.current = false;
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setError(err.message || "Failed to load procurement views");
+          setLoading(false);
+          fetchedRef.current = false;
+        }
       });
     return () => { cancelled = true; };
-  }, [sessionId, onFetchViews]);
+  }, [sessionId, onFetchViews, cachedViews]);
 
   if (loading) {
     return (

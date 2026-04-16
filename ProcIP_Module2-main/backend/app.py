@@ -7,7 +7,7 @@ import io
 import re as _re
 import uuid
 import warnings
-from flask import Flask, request, jsonify, send_file, g
+from flask import Flask, current_app, request, jsonify, send_file, g
 from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS
 import pandas as pd
@@ -892,7 +892,10 @@ def run_normalization():
 
 # ── Import from DataStitcher ──────────────────────────────────────────────────
 
-ANALYZER_BE = os.environ.get("ANALYZER_BACKEND_URL", "http://localhost:3005")
+def _analyzer_be() -> str:
+    """Resolve Analyzer backend URL from Flask app config (injected by launcher)."""
+    ports = current_app.config.get("RUNTIME_PORTS", {})
+    return f"http://localhost:{ports.get('summarizer', 3005)}"
 
 
 @app.route('/api/import-from-stitcher', methods=['POST'])
@@ -956,7 +959,7 @@ def transfer_to_analyzer():
         fname = (filename.rsplit('.', 1)[0] + "_normalized.csv") if filename else "normalized_data.csv"
 
         resp = _requests.post(
-            f"{ANALYZER_BE}/api/import",
+            f"{_analyzer_be()}/api/import",
             files={"file": (fname, io.BytesIO(csv_bytes), "text/csv")},
             timeout=120,
         )
@@ -966,11 +969,12 @@ def transfer_to_analyzer():
 
         data = resp.json()
         return jsonify({"ok": True, "analyzerSessionId": data.get("sessionId")})
-    except _requests.exceptions.ConnectionError:
-        return jsonify({"ok": False, "error": "Cannot reach the Data Analyzer backend. Ensure it is running on port 3005."}), 502
     except Exception as e:
         import traceback
         traceback.print_exc()
+        err_str = str(e).lower()
+        if "connection" in err_str or "refused" in err_str or "httpconnectionpool" in err_str:
+            return jsonify({"ok": False, "error": "Cannot reach the Data Analyzer backend. Is it running?"}), 502
         return jsonify({"ok": False, "error": str(e)}), 500
 
 

@@ -10,49 +10,51 @@ import { getConfig } from "./runtimeConfig";
 
 /* ─── Data ────────────────────────────────────────────────────────── */
 
-const cfg = getConfig();
-
-const APPS = [
-  {
-    title: "Data Stitcher",
-    description:
-      "Consolidate and merge multiple data sources into a unified dataset. Upload, append, normalize headers, clean, and merge — all in one guided pipeline.",
-    url: cfg.stitcher ?? import.meta.env.VITE_STITCHER_FE ?? "http://localhost:3002",
-    icon: Database,
-    gradient: "from-red-600 to-rose-600",
-    shadowColor: "shadow-red-200/40 dark:shadow-red-900/30",
-    accentText: "text-red-600 dark:text-red-400",
-    accentBg: "bg-red-50 dark:bg-red-950/30",
-    accentRgb: "239, 68, 68",
-    tag: "Module 1",
-  },
-  {
-    title: "Data Normalizer",
-    description:
-      "Normalize supplier names, countries, dates, payment terms, regions, plants, and currencies with AI-powered transformations.",
-    url: cfg.normalizer ?? import.meta.env.VITE_NORMALIZER_FE ?? "http://localhost:3003",
-    icon: Layers,
-    gradient: "from-rose-600 to-red-700",
-    shadowColor: "shadow-rose-200/40 dark:shadow-rose-900/30",
-    accentText: "text-rose-600 dark:text-rose-400",
-    accentBg: "bg-rose-50 dark:bg-rose-950/30",
-    accentRgb: "225, 29, 72",
-    tag: "Module 2",
-  },
-  {
-    title: "Spend Summarizer",
-    description:
-      "Upload procurement data, map columns with AI, and generate interactive spend dashboards with charts, Pareto analysis, and exportable PDF reports.",
-    url: cfg.summarizer ?? import.meta.env.VITE_ANALYZER_FE ?? "http://localhost:3004",
-    icon: BarChart3,
-    gradient: "from-amber-600 to-orange-600",
-    shadowColor: "shadow-amber-200/40 dark:shadow-amber-900/30",
-    accentText: "text-amber-600 dark:text-amber-400",
-    accentBg: "bg-amber-50 dark:bg-amber-950/30",
-    accentRgb: "217, 119, 6",
-    tag: "Module 3",
-  },
-];
+/** Resolve URLs at call time so the async config.json has loaded before the user clicks. */
+function getApps() {
+  const cfg = getConfig();
+  return [
+    {
+      title: "Data Stitcher",
+      description:
+        "Consolidate and merge multiple data sources into a unified dataset. Upload, append, normalize headers, clean, and merge — all in one guided pipeline.",
+      url: cfg.stitcher ?? import.meta.env.VITE_STITCHER_FE ?? "http://localhost:3001",
+      icon: Database,
+      gradient: "from-red-600 to-rose-600",
+      shadowColor: "shadow-red-200/40 dark:shadow-red-900/30",
+      accentText: "text-red-600 dark:text-red-400",
+      accentBg: "bg-red-50 dark:bg-red-950/30",
+      accentRgb: "239, 68, 68",
+      tag: "Module 1",
+    },
+    {
+      title: "Data Normalizer",
+      description:
+        "Normalize supplier names, countries, dates, payment terms, regions, plants, and currencies with AI-powered transformations.",
+      url: cfg.normalizer ?? import.meta.env.VITE_NORMALIZER_FE ?? "http://localhost:5000",
+      icon: Layers,
+      gradient: "from-rose-600 to-red-700",
+      shadowColor: "shadow-rose-200/40 dark:shadow-rose-900/30",
+      accentText: "text-rose-600 dark:text-rose-400",
+      accentBg: "bg-rose-50 dark:bg-rose-950/30",
+      accentRgb: "225, 29, 72",
+      tag: "Module 2",
+    },
+    {
+      title: "Spend Summarizer",
+      description:
+        "Upload procurement data, map columns with AI, and generate interactive spend dashboards with charts, Pareto analysis, and exportable PDF reports.",
+      url: cfg.summarizer ?? import.meta.env.VITE_ANALYZER_FE ?? "http://localhost:3005",
+      icon: BarChart3,
+      gradient: "from-amber-600 to-orange-600",
+      shadowColor: "shadow-amber-200/40 dark:shadow-amber-900/30",
+      accentText: "text-amber-600 dark:text-amber-400",
+      accentBg: "bg-amber-50 dark:bg-amber-950/30",
+      accentRgb: "217, 119, 6",
+      tag: "Module 3",
+    },
+  ];
+}
 
 const ORBS = [
   {
@@ -96,7 +98,9 @@ const PARTICLES = Array.from({ length: 6 }, (_, i) => {
 
 /* ─── Card Component ──────────────────────────────────────────────── */
 
-function AppCard({ app, idx }: { app: (typeof APPS)[number]; idx: number }) {
+type AppEntry = ReturnType<typeof getApps>[number];
+
+function AppCard({ app, idx }: { app: AppEntry; idx: number }) {
   const cardRef = useRef<HTMLAnchorElement>(null);
   const mouseX = useMotionValue(0);
   const mouseY = useMotionValue(0);
@@ -399,7 +403,7 @@ export default function App() {
           className="w-full max-w-2xl space-y-6"
           style={{ perspective: 800 }}
         >
-          {APPS.map((app, idx) => (
+          {getApps().map((app, idx) => (
             <AppCard key={app.title} app={app} idx={idx} />
           ))}
         </div>

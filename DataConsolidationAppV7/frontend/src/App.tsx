@@ -54,11 +54,16 @@ export default function App() {
   const [statusLog, setStatusLog] = useState<LogEntry[]>([]);
   const logIdRef = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const dqaCancelRef = useRef<(() => void) | null>(null);
   const prevStepRef = useRef(step);
 
   const cancelAiRequest = useCallback(() => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
+    }
+    if (dqaCancelRef.current) {
+      dqaCancelRef.current();
+      dqaCancelRef.current = null;
     }
   }, []);
 
@@ -1885,6 +1890,7 @@ export default function App() {
                       setAiLoading={setAiLoading}
                       setLoadingMessage={setLoadingMessage}
                       setStep={setStep}
+                      cancelRef={dqaCancelRef}
                     />
                   </ErrorBoundary>
                 )}

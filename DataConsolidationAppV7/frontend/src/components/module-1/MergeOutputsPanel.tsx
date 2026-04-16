@@ -6,8 +6,13 @@ import type { MergeOutput } from "../../types";
 import TransferOverlay from "../common/TransferOverlay";
 import { getConfig } from "../../runtimeConfig";
 
-const NORMALIZER_FE = getConfig().normalizer ?? import.meta.env.VITE_NORMALIZER_FE ?? "http://localhost:3003";
-const ANALYZER_FE = getConfig().summarizer ?? import.meta.env.VITE_ANALYZER_FE ?? "http://localhost:3004";
+/** Resolve at call time so the async config.json has loaded by the time the user clicks. */
+function getNormalizerFE(): string {
+  return getConfig().normalizer ?? import.meta.env.VITE_NORMALIZER_FE ?? "http://localhost:5000";
+}
+function getAnalyzerFE(): string {
+  return getConfig().summarizer ?? import.meta.env.VITE_ANALYZER_FE ?? "http://localhost:3005";
+}
 
 type SelectionTarget = "analyzer" | "normalizer";
 
@@ -123,7 +128,7 @@ export default function MergeOutputsPanel({
       if (!analyzerSessionId || typeof analyzerSessionId !== "string") {
         throw new Error("Transfer succeeded but no session ID was returned by the Analyzer.");
       }
-      const url = `${ANALYZER_FE}?sessionId=${encodeURIComponent(analyzerSessionId)}&source=stitcher&apiKey=${encodeURIComponent(apiKey)}`;
+      const url = `${getAnalyzerFE()}?sessionId=${encodeURIComponent(analyzerSessionId)}&source=stitcher&apiKey=${encodeURIComponent(apiKey)}`;
       window.open(url, "_blank");
       setSendResult({ ok: true, message: "Opened Spend Summarizer in a new tab" });
       setSelectionTarget(null);
@@ -152,7 +157,7 @@ export default function MergeOutputsPanel({
       if (!res.ok || !data.ok) throw new Error(data.error || "Transfer failed");
 
       const normalizerSessionId: string = data.normalizerSessionId || "";
-      const url = `${NORMALIZER_FE}?imported=true&source=stitcher&apiKey=${encodeURIComponent(apiKey)}${normalizerSessionId ? `&sessionId=${encodeURIComponent(normalizerSessionId)}` : ""}`;
+      const url = `${getNormalizerFE()}?imported=true&source=stitcher&apiKey=${encodeURIComponent(apiKey)}${normalizerSessionId ? `&sessionId=${encodeURIComponent(normalizerSessionId)}` : ""}`;
       window.open(url, "_blank");
       setSendResult({ ok: true, message: "Opened Data Normalizer in a new tab" });
       setSelectionTarget(null);

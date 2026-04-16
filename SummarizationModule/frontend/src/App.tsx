@@ -23,6 +23,7 @@ import type {
   CastReport,
   ViewConfig,
   EmailContext,
+  ProcurementViewAvailability,
 } from "./types";
 import {
   getSessionState,
@@ -111,6 +112,7 @@ export default function App() {
   const [previews, setPreviews] = useState<Record<string, PreviewData>>({});
   const [uploadWarnings, setUploadWarnings] = useState<UploadWarning[]>([]);
   const [castReport, setCastReport] = useState<CastReport | null>(null);
+  const [cachedProcurementViews, setCachedProcurementViews] = useState<ProcurementViewAvailability[] | null>(null);
   const [availableViews, setAvailableViews] = useState<ViewDefinition[]>([]);
   const [viewResults, setViewResults] = useState<ViewResult[]>([]);
   const [savedAiMappings, setSavedAiMappings] = useState<AIMapping[] | null>(null);
@@ -470,6 +472,7 @@ export default function App() {
         setConfirmedMapping(mapping);
         const result = await confirmMapping(sessionId, mapping);
         setCastReport(result.castReport);
+        if (result.procurementViews) setCachedProcurementViews(result.procurementViews);
         const viewsResult = await getAvailableViews(sessionId);
         setAvailableViews(viewsResult.views);
         setStep(4);
@@ -925,6 +928,7 @@ export default function App() {
                       <ProcurementViewsStep
                         sessionId={sessionId}
                         onFetchViews={handleFetchProcurementViews}
+                        cachedViews={cachedProcurementViews}
                         onGenerateEmail={apiKey.trim() ? handleOpenEmailModal : undefined}
                       />
                     )}

@@ -601,6 +601,51 @@ export default function Merging(props: MergingProps) {
           <Minimize2 className="w-4 h-4" /> Close
         </button>
       </div>
+      {/* Legend + Keys + Pull in full screen */}
+      <div className="px-6 pt-4 shrink-0 space-y-3">
+        {!columnsLoading && allBaseColumns.length > 0 && (
+          <div className="flex flex-wrap items-center gap-3 text-[10px]">
+            <span className="font-semibold text-neutral-400 uppercase tracking-wider">Legend (directional only):</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-emerald-500" /> Identifier (high)</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-amber-500" /> Descriptor (medium)</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-red-500" /> Metric/Weak (low/never)</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-neutral-400" /> Unclassified</span>
+            <span className="flex items-center gap-1 ml-2 pl-2 border-l border-neutral-200 dark:border-neutral-700">
+              <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded border-2 bg-red-500 border-red-500 text-white"><Key className="w-2 h-2" /></span> Key
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded border-2 bg-blue-500 border-blue-500 text-white"><Download className="w-2 h-2" /></span> Pull
+            </span>
+            {mergeCommonColumns.length > 0 && (
+              <span className="flex items-center gap-1">
+                <Link2 className="w-3 h-3 text-neutral-500" /> Common column
+              </span>
+            )}
+          </div>
+        )}
+        {mergeSelectedKeys.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            <span className="text-[10px] font-semibold text-neutral-400 uppercase tracking-wider self-center mr-1">Keys:</span>
+            {mergeSelectedKeys.map((kp, i) => (
+              <span key={i} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 text-xs font-semibold text-red-700 dark:text-red-300">
+                <Key className="w-3 h-3" />
+                {kp.base_col} ↔ {kp.source_col}
+              </span>
+            ))}
+          </div>
+        )}
+        {mergePullColumns.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            <span className="text-[10px] font-semibold text-neutral-400 uppercase tracking-wider self-center mr-1">Pull:</span>
+            {mergePullColumns.map((col) => (
+              <span key={col} className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 text-[11px] font-medium text-blue-700 dark:text-blue-300">
+                <Download className="w-2.5 h-2.5" />
+                {col}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
       <div className="flex-1 grid grid-cols-2 gap-4 p-6 overflow-hidden">
         {renderTable("base", true)}
         {renderTable("source", true)}

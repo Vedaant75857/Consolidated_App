@@ -167,6 +167,7 @@ interface DataQualityAssessmentProps {
   setAiLoading: (v: boolean) => void;
   setLoadingMessage: (v: string) => void;
   setStep: (s: number) => void;
+  cancelRef?: React.MutableRefObject<(() => void) | null>;
 }
 
 const ERROR_CODE_TABLE_MISSING = "TABLE_MISSING";
@@ -232,6 +233,7 @@ export default function DataQualityAssessment({
   setAiLoading,
   setLoadingMessage,
   setStep,
+  cancelRef,
 }: DataQualityAssessmentProps) {
   const isSingleTable = !!singleTableName;
   const latestVersion =
@@ -570,6 +572,26 @@ export default function DataQualityAssessment({
       setLoadingMessage,
     ],
   );
+
+  const cancelAssessment = useCallback(() => {
+    setRunningAssessment(false);
+    setAiLoading(false);
+    setLoadingMessage("");
+    setDateState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
+    setCurrencyState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
+    setPaymentState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
+    setCountryState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
+    setSupplierState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
+    setFillRateState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
+    setBifurcationState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
+    addLog("Data Quality", "info", "Assessment cancelled by user.");
+  }, [setAiLoading, setLoadingMessage, addLog]);
+
+  // Register cancel function so the parent LoadingOverlay can invoke it
+  useEffect(() => {
+    if (cancelRef) cancelRef.current = cancelAssessment;
+    return () => { if (cancelRef) cancelRef.current = null; };
+  }, [cancelRef, cancelAssessment]);
 
   useEffect(() => {
     if (!hasRunRef.current && sessionId && apiKey) {
