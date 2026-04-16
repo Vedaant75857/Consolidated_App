@@ -1,5 +1,5 @@
 """
-DataScopingTool — single-process launcher.
+DataScopingTool -- single-process launcher.
 
 Starts all three Flask module backends and a landing-page static server,
 then opens the user's default browser.  Designed to run both in development
@@ -42,7 +42,7 @@ def _base_path() -> str:
     """Root directory of the application.
 
     In one-folder frozen mode ``sys._MEIPASS`` points to the folder that
-    contains the EXE and all unpacked data — no temp extraction involved.
+    contains the EXE and all unpacked data -- no temp extraction involved.
     In development it is simply the directory containing this file.
     """
     if getattr(sys, "frozen", False):
@@ -59,7 +59,7 @@ def _resolve(*parts: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Logging — console + rotating file  (Step 2)
+# Logging -- console + rotating file  (Step 2)
 # ---------------------------------------------------------------------------
 
 # Place logs next to the EXE (user-visible) rather than inside _internal.
@@ -111,7 +111,7 @@ def _setup_ssl():
         os.environ["SSL_CERT_FILE"] = bundled_cert
         log.info("SSL: using bundled certifi at %s", bundled_cert)
     else:
-        log.warning("SSL: no CA bundle found — HTTPS calls may fail")
+        log.warning("SSL: no CA bundle found -- HTTPS calls may fail")
 
 
 if getattr(sys, "frozen", False):
@@ -151,7 +151,7 @@ def _validate_resources() -> bool:
     return all_ok
 
 # ---------------------------------------------------------------------------
-# Static-file serving helper  (Step 7 — 404 for missing assets)
+# Static-file serving helper  (Step 7 -- 404 for missing assets)
 # ---------------------------------------------------------------------------
 
 _ASSET_EXTENSIONS = frozenset([
@@ -190,7 +190,7 @@ def _add_static_serving(app, dist_folder: str, name_prefix: str):
         return send_from_directory(dist_folder, "index.html")
 
 # ---------------------------------------------------------------------------
-# Port helpers  (Step 6 — dynamic port fallback)
+# Port helpers  (Step 6 -- dynamic port fallback)
 # ---------------------------------------------------------------------------
 
 def _port_available(port: int) -> bool:
@@ -215,12 +215,12 @@ def _pick_port(preferred: int, label: str, scan_range: int = 10) -> int:
                 log.warning("%s: preferred port %d busy, using %d instead",
                             label, preferred, candidate)
             return candidate
-    log.error("No free port found for %s (tried %d–%d)",
+    log.error("No free port found for %s (tried %d-%d)",
               label, preferred, preferred + scan_range)
     return -1
 
 
-# Actual runtime ports — filled during startup, read by /config.json
+# Actual runtime ports -- filled during startup, read by /config.json
 _RUNTIME_PORTS: dict[str, int] = {}
 
 # ---------------------------------------------------------------------------
@@ -241,7 +241,7 @@ def _add_config_endpoint(app):
         })
 
 # ---------------------------------------------------------------------------
-# Import isolation  (Step 8 — hardened)
+# Import isolation  (Step 8 -- hardened)
 #
 # All three module backends have local packages with identical top-level
 # names (shared, routes, db, services, etc.).  The aliasing system below
@@ -275,7 +275,7 @@ class _ModuleRedirectFinder:
             return None
         aliased = f"{alias}.{fullname}"
         if aliased in sys.modules:
-            log.debug("Import redirect: %s → %s", fullname, aliased)
+            log.debug("Import redirect: %s -> %s", fullname, aliased)
             return self
         return None
 
@@ -284,13 +284,13 @@ class _ModuleRedirectFinder:
             return sys.modules[fullname]
         alias = self._caller_alias()
         if alias is None:
-            log.debug("Import redirect failed — no caller alias for %s", fullname)
+            log.debug("Import redirect failed -- no caller alias for %s", fullname)
             raise ImportError(fullname)
         aliased = f"{alias}.{fullname}"
         mod = sys.modules.get(aliased)
         if mod is None:
             raise ImportError(fullname)
-        log.debug("Import redirect loaded: %s → %s", fullname, aliased)
+        log.debug("Import redirect loaded: %s -> %s", fullname, aliased)
         sys.modules[fullname] = mod
         return mod
 
@@ -491,9 +491,9 @@ def _run_server(app, port: int, label: str):
 
 SERVICES = [
     (_create_landing_app,  3000, "Landing Page",              "home"),
-    (_create_module1_app,  3001, "Module 1 — Data Stitcher",  "stitcher"),
-    (_create_module2_app,  5000, "Module 2 — Data Normalizer", "normalizer"),
-    (_create_module3_app,  3005, "Module 3 — Spend Summarizer", "summarizer"),
+    (_create_module1_app,  3001, "Module 1 -- Data Stitcher",  "stitcher"),
+    (_create_module2_app,  5000, "Module 2 -- Data Normalizer", "normalizer"),
+    (_create_module3_app,  3005, "Module 3 -- Spend Summarizer", "summarizer"),
 ]
 
 _HEALTH_PATHS: dict[int, str] = {}
@@ -533,7 +533,7 @@ _shutdown_lock = threading.Lock()
 
 
 def _cleanup():
-    """Shared cleanup logic — safe to call multiple times."""
+    """Shared cleanup logic -- safe to call multiple times."""
     global _shutdown_done
     with _shutdown_lock:
         if _shutdown_done:
@@ -691,24 +691,24 @@ def _run_diagnostics():
 
 def main():
     parser = argparse.ArgumentParser(
-        description="DataScopingTool — launch all services")
+        description="DataScopingTool -- launch all services")
     parser.add_argument(
         "--diagnostics", action="store_true",
         help="Run health checks and exit without launching the app")
     args = parser.parse_args()
 
-    log.info("Starting DataScopingTool — Python %s, frozen=%s, base=%s",
+    log.info("Starting DataScopingTool -- Python %s, frozen=%s, base=%s",
              sys.version, getattr(sys, "frozen", False), BASE)
     log.info("Log file: %s", _LOG_FILE)
 
     if args.diagnostics:
         sys.exit(_run_diagnostics())
 
-    print(r"""
-    ╔══════════════════════════════════════════╗
-    ║        DataScopingTool  v1.0             ║
-    ║  Starting all services — please wait…    ║
-    ╚══════════════════════════════════════════╝
+    print("""
+    ===================================================
+           DataScopingTool  v1.0
+      Starting all services -- please wait...
+    ===================================================
     """)
     print(f"  Log file: {_LOG_FILE}\n")
 
@@ -788,7 +788,7 @@ def main():
 
     if stalled:
         for port in stalled:
-            log.warning("  %s (port %d) slow — retrying (60 s more) ...",
+            log.warning("  %s (port %d) slow -- retrying (60 s more) ...",
                         port_to_label.get(port, "Unknown"), port)
         stalled = _wait_for_health(list(stalled), timeout=60)
 
@@ -807,7 +807,7 @@ def main():
     # --- Open browser ---
     home_port = _RUNTIME_PORTS.get("home", 3000)
     url = f"http://localhost:{home_port}"
-    log.info("Opening %s in your browser…", url)
+    log.info("Opening %s in your browser...", url)
     try:
         webbrowser.open(url)
     except Exception:
@@ -831,7 +831,7 @@ def main():
                         log.warning("Server thread '%s' is no longer alive",
                                     t.name)
     except KeyboardInterrupt:
-        log.info("Shutting down…")
+        log.info("Shutting down...")
         _cleanup()
 
 

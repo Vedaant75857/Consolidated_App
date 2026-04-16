@@ -17,16 +17,16 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
-where python >nul 2>&1
+py -3.11 --version >nul 2>&1
 if %errorlevel% neq 0 (
-    echo ERROR: Python is not installed or not on PATH.
+    echo ERROR: Python 3.11 is not installed or not found by the py launcher.
     echo        Install it from https://python.org/ and try again.
     pause
     exit /b 1
 )
 
 :: Verify Python version >= 3.11
-for /f "tokens=2 delims= " %%v in ('python --version 2^>^&1') do set PY_VER=%%v
+for /f "tokens=2 delims= " %%v in ('py -3.11 --version 2^>^&1') do set PY_VER=%%v
 for /f "tokens=1,2 delims=." %%a in ("!PY_VER!") do (
     set PY_MAJOR=%%a
     set PY_MINOR=%%b
@@ -51,7 +51,7 @@ if !NODE_MAJOR! lss 18 (
 echo   Node !NODE_RAW! OK
 
 :: Verify 64-bit Python
-python -c "import struct; exit(0 if struct.calcsize('P')*8==64 else 1)" 2>nul
+py -3.11 -c "import struct; exit(0 if struct.calcsize('P')*8==64 else 1)" 2>nul
 if %errorlevel% neq 0 (
     echo ERROR: 64-bit Python required. Current Python appears to be 32-bit.
     pause & exit /b 1
@@ -82,7 +82,7 @@ echo   All frontend lockfiles present
 :: -------------------------------------------------------------------
 echo.
 echo [1/9] Installing Python build dependencies ...
-pip install -r requirements-build.txt
+py -3.11 -m pip install -r requirements-build.txt
 if %errorlevel% neq 0 (
     echo ERROR: pip install failed.
     pause
@@ -180,7 +180,7 @@ cd ..\..
 :: -------------------------------------------------------------------
 echo.
 echo [6/9] Packaging with PyInstaller (this may take several minutes) ...
-python -m PyInstaller --clean --noconfirm DataScopingTool.spec
+py -3.11 -m PyInstaller --clean --noconfirm DataScopingTool.spec
 if %errorlevel% neq 0 (
     echo ERROR: PyInstaller build failed.
     pause
@@ -196,7 +196,7 @@ echo [7/9] Writing build metadata ...
 for /f "tokens=*" %%g in ('git rev-parse --short HEAD 2^>nul') do set GIT_SHA=%%g
 if "!GIT_SHA!"=="" set GIT_SHA=unknown
 
-for /f "tokens=*" %%t in ('python -c "from datetime import datetime,timezone;print(datetime.now(timezone.utc).isoformat())"') do set BUILD_TIME=%%t
+for /f "tokens=*" %%t in ('py -3.11 -c "from datetime import datetime,timezone;print(datetime.now(timezone.utc).isoformat())"') do set BUILD_TIME=%%t
 
 for /f "tokens=*" %%n in ('node --version 2^>^&1') do set NODE_FULL=%%n
 
