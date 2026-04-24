@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
-  Database, AlertCircle, RefreshCw, CheckCircle2, KeyRound,
+  AlertCircle, RefreshCw, CheckCircle2, KeyRound,
   Building2, Globe, Calendar, DollarSign, MapPin,
-  ClipboardList, Download, Sun, Moon, ArrowLeft,
+  ClipboardList, Download, Sun, Moon, ArrowLeft, Layers,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import DataLoading from "./components/module-1/DataLoading";
@@ -12,6 +12,7 @@ import LoadingOverlay from "./components/module-2/LoadingOverlay";
 import StepChangeWarningDialog from "./components/module-2/StepChangeWarningDialog";
 import StatusLog, { type LogEntry } from "./components/module-1/StatusLog";
 import { useTheme } from "./components/common/ThemeProvider";
+import { StepHero } from "./components/common/ui";
 import { getConfig } from "./runtimeConfig";
 
 /* ── Normalization sub-step definitions (mirrored in sidebar + NormDashboard) ── */
@@ -313,7 +314,7 @@ export default function App() {
   return (
     <div className={`h-screen flex flex-col overflow-hidden ${theme}`}>
       {/* Back to Home bar */}
-      <div className="h-10 bg-white dark:bg-neutral-900 border-b border-neutral-200 dark:border-neutral-800 flex items-center px-4 shrink-0 z-50">
+      <div className="h-10 bg-white/90 dark:bg-neutral-900/90 backdrop-blur-sm border-b border-neutral-200/80 dark:border-neutral-700/80 flex items-center px-4 shrink-0 z-50">
         <a
           href={getConfig().home ?? import.meta.env.VITE_HOME_URL ?? "http://localhost:3000"}
           className="flex items-center gap-2 text-xs font-medium text-neutral-500 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
@@ -323,42 +324,24 @@ export default function App() {
         </a>
       </div>
 
-      <div className="flex flex-1 bg-neutral-100 dark:bg-neutral-950 font-sans text-neutral-900 dark:text-neutral-100 selection:bg-red-200 dark:selection:bg-red-900/40 overflow-hidden">
+      <div className="flex flex-1 bg-gradient-to-br from-neutral-50 via-white to-neutral-100 dark:from-neutral-950 dark:via-neutral-900 dark:to-neutral-950 font-sans text-neutral-900 dark:text-neutral-100 selection:bg-red-200 dark:selection:bg-red-900/40 overflow-hidden relative">
 
       {/* ═══════════ LEFT SIDEBAR ═══════════ */}
-      <aside className="w-[280px] bg-white dark:bg-neutral-900 border-r border-neutral-200 dark:border-neutral-800 flex flex-col h-full flex-shrink-0 relative z-20 shadow-sm">
+      <aside className="w-72 bg-white/90 dark:bg-neutral-900/90 backdrop-blur-xl border-r border-neutral-200/80 dark:border-neutral-700/80 flex flex-col h-full flex-shrink-0 relative z-20">
 
         {/* ─ Brand header ─ */}
-        <div className="p-5 flex items-center gap-3 border-b border-neutral-100 dark:border-neutral-800">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-600 to-red-700 flex items-center justify-center shadow-lg shadow-red-600/20 text-white shrink-0">
-            <Database className="w-4 h-4" />
+        <div className="p-6 flex items-center gap-3 border-b border-neutral-200/80 dark:border-neutral-700/80">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-red-600 to-rose-600 flex items-center justify-center shadow-md shadow-red-200/40 text-white shrink-0">
+            <Layers className="w-5 h-5" />
           </div>
           <div className="min-w-0">
-            <h1 className="text-sm font-bold tracking-tight text-neutral-900 dark:text-white leading-tight">Data Normalizer</h1>
-            <p className="text-[10px] font-semibold uppercase tracking-widest text-red-600 dark:text-red-400">Processing Engine</p>
+            <h1 className="text-lg font-semibold tracking-tight text-neutral-900 dark:text-white">Data Normalizer</h1>
+            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 font-medium tracking-wide">Processing engine</p>
           </div>
-          <motion.button
-            whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}
-            onClick={toggleTheme}
-            className="ml-auto p-2 rounded-xl bg-neutral-100 dark:bg-neutral-800 text-neutral-500 hover:text-neutral-900 dark:hover:text-white transition-colors"
-            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-          >
-            <AnimatePresence mode="wait" initial={false}>
-              {theme === "dark" ? (
-                <motion.span key="sun" initial={{ rotate: -90, opacity: 0 }} animate={{ rotate: 0, opacity: 1 }} exit={{ rotate: 90, opacity: 0 }} transition={{ duration: 0.2 }}>
-                  <Sun className="w-4 h-4" />
-                </motion.span>
-              ) : (
-                <motion.span key="moon" initial={{ rotate: 90, opacity: 0 }} animate={{ rotate: 0, opacity: 1 }} exit={{ rotate: -90, opacity: 0 }} transition={{ duration: 0.2 }}>
-                  <Moon className="w-4 h-4" />
-                </motion.span>
-              )}
-            </AnimatePresence>
-          </motion.button>
         </div>
 
         {/* ─ Workflow nav ─ */}
-        <div className="flex-1 overflow-y-auto px-4 py-5">
+        <div className="flex-1 overflow-y-auto px-4 py-3">
           <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-400 dark:text-neutral-500 font-semibold mb-4 px-2">
             Workflow
           </p>
@@ -479,10 +462,38 @@ export default function App() {
 
       {/* ═══════════ MAIN CONTENT ═══════════ */}
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden relative z-10">
+        {/* Decorative background blurs */}
+        <div className="pointer-events-none absolute -top-40 -right-40 h-[600px] w-[600px] rounded-full bg-red-100/40 dark:bg-red-950/20 blur-3xl" />
+        <div className="pointer-events-none absolute -bottom-60 -left-40 h-[500px] w-[500px] rounded-full bg-rose-100/30 dark:bg-rose-950/15 blur-3xl" />
 
         {/* Scrollable content area */}
         <div className="flex-1 overflow-y-auto p-8">
           <div className="max-w-6xl mx-auto space-y-6">
+
+            {/* Theme toggle */}
+            <div className="flex justify-end gap-2">
+              <motion.button
+                whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+                onClick={toggleTheme}
+                className="p-2.5 rounded-xl bg-white/80 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700 shadow-sm backdrop-blur-sm text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white transition-colors"
+                title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+              >
+                <AnimatePresence mode="wait" initial={false}>
+                  {theme === "dark" ? (
+                    <motion.span key="sun" initial={{ rotate: -90, opacity: 0 }} animate={{ rotate: 0, opacity: 1 }} exit={{ rotate: 90, opacity: 0 }} transition={{ duration: 0.2 }}>
+                      <Sun className="w-4 h-4" />
+                    </motion.span>
+                  ) : (
+                    <motion.span key="moon" initial={{ rotate: 90, opacity: 0 }} animate={{ rotate: 0, opacity: 1 }} exit={{ rotate: -90, opacity: 0 }} transition={{ duration: 0.2 }}>
+                      <Moon className="w-4 h-4" />
+                    </motion.span>
+                  )}
+                </AnimatePresence>
+              </motion.button>
+            </div>
+
+            {/* StepHero banner */}
+            <StepHero step={step} isAi={SIDEBAR_STEPS.find(s => s.num === step)?.ai} />
 
             {/* Error banner */}
             <AnimatePresence>

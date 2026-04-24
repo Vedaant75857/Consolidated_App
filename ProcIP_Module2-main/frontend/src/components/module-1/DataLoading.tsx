@@ -249,14 +249,14 @@ export default function DataLoading({
           </div>
         </div>
 
-        <div className="space-y-2">
-          <label className="flex items-center gap-2 text-xs uppercase tracking-[0.16em] text-neutral-400 font-semibold">
-            <KeyRound className="w-4 h-4" /> OpenAI API Key
+        <div className="space-y-2 rounded-2xl bg-neutral-50/80 dark:bg-neutral-800/40 p-4">
+          <label className="flex items-center gap-2 text-xs uppercase tracking-[0.16em] text-neutral-400 dark:text-neutral-500 font-semibold">
+            <KeyRound className="w-4 h-4" /> Portkey API Key
           </label>
           <input
             type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)}
             placeholder="Paste your API key here"
-            className="w-full px-4 py-2.5 text-sm border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-red-500"
+            className="w-full px-4 py-2.5 text-sm border border-neutral-200 dark:border-neutral-700 rounded-xl bg-white dark:bg-neutral-900 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent placeholder:text-neutral-400 dark:placeholder:text-neutral-500 transition-shadow"
           />
         </div>
       </div>

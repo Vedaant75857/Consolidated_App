@@ -129,7 +129,15 @@ export default function MergeOutputsPanel({
         throw new Error("Transfer succeeded but no session ID was returned by the Analyzer.");
       }
       const url = `${getAnalyzerFE()}?sessionId=${encodeURIComponent(analyzerSessionId)}&source=stitcher&apiKey=${encodeURIComponent(apiKey)}`;
-      window.open(url, "_blank");
+      // Navigate via a dynamically created <a> link to open in new tab
+      // without triggering the popup blocker (anchor clicks are trusted).
+      const a = document.createElement("a");
+      a.href = url;
+      a.target = "_blank";
+      a.rel = "noopener";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
       setSendResult({ ok: true, message: "Opened Spend Summarizer in a new tab" });
       setSelectionTarget(null);
       setSelectedVersion(null);
@@ -158,7 +166,13 @@ export default function MergeOutputsPanel({
 
       const normalizerSessionId: string = data.normalizerSessionId || "";
       const url = `${getNormalizerFE()}?imported=true&source=stitcher&apiKey=${encodeURIComponent(apiKey)}${normalizerSessionId ? `&sessionId=${encodeURIComponent(normalizerSessionId)}` : ""}`;
-      window.open(url, "_blank");
+      const a = document.createElement("a");
+      a.href = url;
+      a.target = "_blank";
+      a.rel = "noopener";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
       setSendResult({ ok: true, message: "Opened Data Normalizer in a new tab" });
       setSelectionTarget(null);
       setSelectedVersion(null);

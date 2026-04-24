@@ -14,20 +14,30 @@
   to { transform: rotate(360deg); }
 }
 
+/* Arrow nudge on CTA button hover — targets last SVG child (typically ArrowRight icon) */
+.group\/btn > svg:last-child,
+.group\/btn > .arrow-nudge {
+  transition: transform 0.2s ease;
+}
+.group\/btn:hover > svg:last-child,
+.group\/btn:hover > .arrow-nudge {
+  transform: translateX(3px);
+}
+
 @theme {
-  --color-primary: #CC0000;
-  --color-primary-hover: #A30000;
-  --color-primary-light: #FEE2E2;
-  --color-primary-50: #FFF5F5;
-  --color-primary-100: #FED7D7;
-  --color-primary-200: #FEB2B2;
-  --color-primary-300: #FC8181;
-  --color-primary-400: #F56565;
-  --color-primary-500: #CC0000;
-  --color-primary-600: #A30000;
-  --color-primary-700: #8B0000;
-  --color-primary-800: #6B0000;
-  --color-primary-900: #4A0000;
+  --color-primary: #dc2626;
+  --color-primary-hover: #b91c1c;
+  --color-primary-light: #fee2e2;
+  --color-primary-50: #fef2f2;
+  --color-primary-100: #fee2e2;
+  --color-primary-200: #fecaca;
+  --color-primary-300: #fca5a5;
+  --color-primary-400: #f87171;
+  --color-primary-500: #ef4444;
+  --color-primary-600: #dc2626;
+  --color-primary-700: #b91c1c;
+  --color-primary-800: #991b1b;
+  --color-primary-900: #7f1d1d;
 
   --color-surface: #FFFFFF;
   --color-surface-secondary: #F9FAFB;
@@ -56,7 +66,7 @@ html.dark body {
 }
 
 :root {
-  --chart-1: #CC0000;
+  --chart-1: #dc2626;
   --chart-2: #E53E3E;
   --chart-3: #FC8181;
   --chart-4: #FEB2B2;

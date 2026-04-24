@@ -573,10 +573,41 @@ export default function DataQualityAssessment({
     ],
   );
 
+  // ── Single-panel re-run (no global overlay / counter) ──────────────
+  const rerunDateAbortRef = useRef<AbortController | null>(null);
+
+  const rerunDatePanelOnly = useCallback(
+    async (version: number, dateCol: string) => {
+      // Cancel any previous single-panel re-run
+      if (rerunDateAbortRef.current) rerunDateAbortRef.current.abort();
+      const ac = new AbortController();
+      rerunDateAbortRef.current = ac;
+
+      setDateState({ loading: true, error: null, data: null });
+      try {
+        const tn = isSingleTable ? "" : tableNameForVersion(version);
+        const data = await withRetry(() =>
+          postDqaDate(sessionId, apiKey, tn, dateCol, getTableKey()),
+        );
+        if (ac.signal.aborted) return;
+        setDateState({ loading: false, error: null, data });
+      } catch (err: any) {
+        if (ac.signal.aborted) return;
+        setDateState({
+          loading: false,
+          error: err?.message || "Date analysis failed",
+          data: null,
+        });
+      }
+    },
+    [sessionId, apiKey, isSingleTable, getTableKey],
+  );
+
   const cancelAssessment = useCallback(() => {
     setRunningAssessment(false);
     setAiLoading(false);
     setLoadingMessage("");
+    if (rerunDateAbortRef.current) rerunDateAbortRef.current.abort();
     setDateState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
     setCurrencyState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
     setPaymentState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
@@ -752,7 +783,7 @@ export default function DataQualityAssessment({
         selectedDateColumn={selectedDateColumn}
         onDateColumnChange={(col) => {
           setSelectedDateColumn(col);
-          runDatePanel(selectedVersion, col);
+          rerunDatePanelOnly(selectedVersion, col);
         }}
       />
 

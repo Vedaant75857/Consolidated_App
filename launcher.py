@@ -480,7 +480,7 @@ def _run_server(app, port: int, label: str):
     Binds to 127.0.0.1 only so Windows Firewall never prompts the user.
     """
     try:
-        srv = create_server(app, host="127.0.0.1", port=port)
+        srv = create_server(app, host="127.0.0.1", port=port, channel_timeout=600)
         _servers.append(srv)
         log.info("%s ready on http://localhost:%d", label, port)
         srv.run()

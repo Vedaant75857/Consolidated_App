@@ -78,13 +78,13 @@ export function SurfaceCard({
   return (
     <motion.div
       variants={itemVariants}
-      className={`rounded-2xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-700 dark:bg-neutral-900 ${className}`}
+      className={`rounded-3xl border border-neutral-200 bg-white shadow-md shadow-neutral-200/50 dark:shadow-neutral-950/30 dark:border-neutral-700 dark:bg-neutral-900 transition-shadow duration-300 hover:shadow-lg hover:shadow-neutral-300/50 dark:hover:shadow-neutral-950/40 ${className}`}
     >
       {(title || right) && (
         <div className="flex items-start justify-between gap-4 px-6 pt-6 pb-0">
           <div className="min-w-0">
             <h3 className="text-lg font-semibold tracking-tight text-neutral-900 dark:text-white flex items-center gap-2">
-              {Icon && <Icon className="w-5 h-5 text-primary shrink-0" />}
+              {Icon && <Icon className="w-5 h-5 text-red-600 shrink-0" />}
               {title}
             </h3>
             {subtitle && (
@@ -119,11 +119,11 @@ export function PrimaryButton({
   return (
     <motion.button
       type={type}
-      whileHover={disabled ? undefined : { y: -1, scale: 1.01 }}
-      whileTap={disabled ? undefined : { scale: 0.98 }}
+      whileHover={disabled ? undefined : { y: -2, scale: 1.02 }}
+      whileTap={disabled ? undefined : { scale: 0.97 }}
       onClick={onClick}
       disabled={disabled}
-      className={`inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-primary/20 transition-colors hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none ${className}`}
+      className={`group/btn inline-flex items-center justify-center gap-2 rounded-xl bg-red-600 px-6 py-3 text-sm font-bold text-white shadow-lg shadow-red-300/40 dark:shadow-red-900/40 transition-all duration-200 hover:bg-red-700 hover:shadow-xl hover:shadow-red-400/30 dark:hover:shadow-red-900/50 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none ${className}`}
     >
       {children}
     </motion.button>

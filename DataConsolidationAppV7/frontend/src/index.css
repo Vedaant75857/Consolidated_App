@@ -14,6 +14,16 @@
   to { transform: rotate(360deg); }
 }
 
+/* Arrow nudge on CTA button hover — targets last SVG child (typically ArrowRight icon) */
+.group\/btn > svg:last-child,
+.group\/btn > .arrow-nudge {
+  transition: transform 0.2s ease;
+}
+.group\/btn:hover > svg:last-child,
+.group\/btn:hover > .arrow-nudge {
+  transform: translateX(3px);
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

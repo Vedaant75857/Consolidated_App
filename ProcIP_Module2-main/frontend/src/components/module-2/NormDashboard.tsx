@@ -552,7 +552,15 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
         throw new Error("Transfer succeeded but no session ID was returned by the Summarizer.");
       }
       const url = `${getAnalyzerFE()}?sessionId=${encodeURIComponent(analyzerSessionId)}&source=normalizer&apiKey=${encodeURIComponent(apiKey)}`;
-      window.open(url, "_blank");
+      // Navigate via a dynamically created <a> link to open in new tab
+      // without triggering the popup blocker (anchor clicks are trusted).
+      const a = document.createElement("a");
+      a.href = url;
+      a.target = "_blank";
+      a.rel = "noopener";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
       setAnalyzerSendResult({ ok: true, message: "Opened Spend Summarizer in a new tab" });
       log("success", "Data sent to Spend Summarizer successfully.");
     } catch (err: any) {

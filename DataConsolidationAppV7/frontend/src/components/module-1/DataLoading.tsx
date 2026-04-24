@@ -650,7 +650,7 @@ export default function DataLoading({
               </div>
             </div>
 
-            <div className="space-y-2">
+            <div className="space-y-2 rounded-2xl bg-neutral-50/80 dark:bg-neutral-800/40 p-4 -mx-0">
               <label className="flex items-center gap-2 text-xs uppercase tracking-[0.16em] text-neutral-400 dark:text-neutral-500 font-semibold">
                 <KeyRound className="w-4 h-4" />
                 Portkey API Key

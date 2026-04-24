@@ -55,7 +55,7 @@ export function SurfaceCard({ title, subtitle, icon: Icon, right, children, clas
   return (
     <motion.div
       variants={itemVariants}
-      className={`rounded-3xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-700 dark:bg-neutral-900 ${className}`}
+      className={`rounded-3xl border border-neutral-200 bg-white shadow-md shadow-neutral-200/50 dark:shadow-neutral-950/30 dark:border-neutral-700 dark:bg-neutral-900 transition-shadow duration-300 hover:shadow-lg hover:shadow-neutral-300/50 dark:hover:shadow-neutral-950/40 ${className}`}
     >
       {(title || right) && (
         <div className="flex items-start justify-between gap-4 px-6 pt-6 pb-0">
@@ -120,13 +120,9 @@ export function EmptyState({ icon: Icon, title, description, action }: EmptyStat
 /* ─── StepHero ─── */
 
 const STEP_META: Record<number, { title: string; description: string }> = {
-  1: { title: "Upload + Settings", description: "Start by uploading your data files and configuring your API key." },
-  2: { title: "Data Preview", description: "Review extracted tables, adjust headers, and remove unwanted files." },
-  3: { title: "Append Strategy", description: "Group related tables for stacking into unified datasets." },
-  4: { title: "Header Normalisation", description: "Map each table's columns to the standard procurement schema." },
-  5: { title: "Data Cleaning", description: "Clean and prepare individual tables before grouping." },
-  6: { title: "Merge", description: "Select join keys and merge your tables with guided column matching." },
-  7: { title: "Merge Results", description: "Review merge quality and download your unified dataset." },
+  1: { title: "Upload Data", description: "Upload a ZIP archive, folder, or Excel sheet to begin." },
+  2: { title: "Data Preview", description: "Review extracted tables and verify your data before normalization." },
+  3: { title: "Normalization", description: "Normalize supplier names, countries, dates, currencies, and more with AI-powered transformations." },
 };
 
 interface StepHeroProps {
@@ -136,7 +132,7 @@ interface StepHeroProps {
   isAi?: boolean;
 }
 
-export function StepHero({ step, displayStep, totalSteps = 9, isAi }: StepHeroProps) {
+export function StepHero({ step, displayStep, totalSteps = 3, isAi }: StepHeroProps) {
   const meta = STEP_META[step] || { title: `Step ${step}`, description: "" };
   const shownStep = displayStep ?? step;
   return (
@@ -150,7 +146,7 @@ export function StepHero({ step, displayStep, totalSteps = 9, isAi }: StepHeroPr
       <div className="flex items-start justify-between gap-6">
         <div className="min-w-0">
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-red-200">
-            Data pipeline assistant
+            Data Normalizer
           </p>
           <h2 className="mt-2 text-2xl font-semibold tracking-tight">{meta.title}</h2>
           <p className="mt-2 max-w-2xl text-sm text-red-50/90 leading-relaxed">{meta.description}</p>
@@ -208,11 +204,11 @@ export function PrimaryButton({ children, onClick, disabled, className = "", typ
   return (
     <motion.button
       type={type}
-      whileHover={disabled ? undefined : { y: -1, scale: 1.01 }}
-      whileTap={disabled ? undefined : { scale: 0.98 }}
+      whileHover={disabled ? undefined : { y: -2, scale: 1.02 }}
+      whileTap={disabled ? undefined : { scale: 0.97 }}
       onClick={onClick}
       disabled={disabled}
-      className={`inline-flex items-center justify-center gap-2 rounded-xl bg-red-600 px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-red-200 dark:shadow-red-900/30 transition-colors hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none ${className}`}
+      className={`group/btn inline-flex items-center justify-center gap-2 rounded-xl bg-red-600 px-6 py-3 text-sm font-bold text-white shadow-lg shadow-red-300/40 dark:shadow-red-900/40 transition-all duration-200 hover:bg-red-700 hover:shadow-xl hover:shadow-red-400/30 dark:hover:shadow-red-900/50 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none ${className}`}
     >
       {children}
     </motion.button>
@@ -272,7 +268,7 @@ export function SecondaryButton({ children, onClick, disabled, className = "" }:
       whileTap={disabled ? undefined : { scale: 0.98 }}
       onClick={onClick}
       disabled={disabled}
-      className={`inline-flex items-center justify-center gap-2 rounded-xl border border-neutral-200 bg-white px-5 py-2.5 text-sm font-bold text-neutral-700 shadow-sm transition-colors hover:bg-neutral-50 disabled:opacity-50 disabled:cursor-not-allowed dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700 ${className}`}
+      className={`inline-flex items-center justify-center gap-2 rounded-xl border border-neutral-200 bg-white px-5 py-2.5 text-sm font-bold text-neutral-700 shadow-md shadow-neutral-200/40 dark:shadow-neutral-950/20 transition-all duration-200 hover:bg-neutral-50 hover:shadow-lg hover:shadow-neutral-300/40 disabled:opacity-50 disabled:cursor-not-allowed dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700 ${className}`}
     >
       {children}
     </motion.button>
