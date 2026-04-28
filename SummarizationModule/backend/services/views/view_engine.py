@@ -107,19 +107,23 @@ def get_available_views(mapping: dict[str, str | None]) -> list[dict[str, Any]]:
 def _load_analysis_df(conn: DuckDBConnection) -> pd.DataFrame:
     """Load analysis_data with proper type coercion for all expected column types."""
     df = conn._conn.execute("SELECT * FROM analysis_data").df()
-    if "invoice_date" in df.columns:
-        df["invoice_date"] = pd.to_datetime(df["invoice_date"], errors="coerce")
-    for col in ["total_spend", "local_spend", "price_per_uom", "invoice_line_qty"]:
+    datetime_cols = [
+        "invoice_date", "contract_end_date", "contract_start_date",
+        "goods_receipt_date", "po_document_date", "invoice_due_date",
+        "payment_date",
+    ]
+    for col in datetime_cols:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors="coerce")
+    for col in ["total_spend", "local_spend", "price_per_uom", "quantity"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-    # Ensure string columns are actually strings (not numeric/object) for .str operations
     string_cols = [
         "supplier", "currency", "country", "vendor_country", "business_unit",
-        "l1", "l2", "l3", "plant_code", "plant_name", "contract_id",
+        "l1", "l2", "l3", "l4", "plant_code", "plant_name", "contract_id",
         "contract_indicator", "contract_status", "payment_terms",
-        "invoice_number", "invoice_po_number", "invoice_line_qty_uom",
-        "invoice_description", "po_description", "material_description",
-        "gl_account_description", "po_material_number",
+        "invoice_number", "invoice_po_number", "uom", "region",
+        "description", "po_material_description", "po_material_number",
     ]
     for col in string_cols:
         if col in df.columns:

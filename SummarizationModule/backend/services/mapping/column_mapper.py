@@ -1,7 +1,15 @@
+"""Column mapping service for Module 3 (Spend Summarizer).
+
+Maps uploaded column headers to 32 standard procurement fields using:
+  1. Deterministic exact / alias matching (fast, no AI)
+  2. Single-batch AI call for any remaining unmatched fields
+
+Then builds a typed ``analysis_data`` table with enforced column types.
+"""
+
+import json
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
 from typing import Any
 
 import pandas as pd
@@ -10,11 +18,12 @@ from shared.ai_client import call_ai_json
 from shared.db import set_meta
 from shared.duckdb_compat import DuckDBConnection
 from services.upload.file_loader import _get_registry
+from services.mapping.date_parser import parse_date_column
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# 31 Standard Fields (sorted alphabetically by displayName)
+# 32 Standard Procurement Fields
 # ---------------------------------------------------------------------------
 
 STANDARD_FIELDS: list[dict[str, Any]] = [
@@ -24,27 +33,7 @@ STANDARD_FIELDS: list[dict[str, Any]] = [
         "expectedType": "string",
         "description": "Organisational business unit or division",
         "aliases": ["BU", "Division", "Business Area"],
-    },
-    {
-        "fieldKey": "l1",
-        "displayName": "Category Level 1",
-        "expectedType": "string",
-        "description": "Top-level procurement category (broadest, fewest distinct values)",
-        "aliases": ["Spend Classification Level 1", "L1", "Category 1"],
-    },
-    {
-        "fieldKey": "l2",
-        "displayName": "Category Level 2",
-        "expectedType": "string",
-        "description": "Second-level procurement category",
-        "aliases": ["Spend Classification Level 2", "L2", "Category 2"],
-    },
-    {
-        "fieldKey": "l3",
-        "displayName": "Category Level 3",
-        "expectedType": "string",
-        "description": "Third-level procurement category (most granular)",
-        "aliases": ["Spend Classification Level 3", "L3", "Category 3"],
+        "hint": "Look for BU, division, business area. Not plant or cost center.",
     },
     {
         "fieldKey": "contract_end_date",
@@ -52,6 +41,7 @@ STANDARD_FIELDS: list[dict[str, Any]] = [
         "expectedType": "datetime",
         "description": "Date the contract expires or ends",
         "aliases": ["Contract Expiry Date", "Contract Expiration"],
+        "hint": "Contract expiry/end. Not invoice date, PO date, or payment date.",
     },
     {
         "fieldKey": "contract_id",
@@ -59,6 +49,7 @@ STANDARD_FIELDS: list[dict[str, Any]] = [
         "expectedType": "string",
         "description": "Unique identifier for the contract",
         "aliases": ["Contract Number", "Contract Ref", "Agreement ID"],
+        "hint": "Alphanumeric contract identifier. Not PO number or invoice number.",
     },
     {
         "fieldKey": "contract_indicator",
@@ -66,6 +57,7 @@ STANDARD_FIELDS: list[dict[str, Any]] = [
         "expectedType": "string",
         "description": "Flag or code indicating whether a contract exists",
         "aliases": ["Contract Flag", "Has Contract", "Contract Y/N"],
+        "hint": "Y/N or short code flag for contract existence.",
     },
     {
         "fieldKey": "contract_start_date",
@@ -73,6 +65,7 @@ STANDARD_FIELDS: list[dict[str, Any]] = [
         "expectedType": "datetime",
         "description": "Date the contract became effective",
         "aliases": ["Contract Effective Date", "Contract Begin Date"],
+        "hint": "Contract start/effective date. Not PO date or invoice date.",
     },
     {
         "fieldKey": "contract_status",
@@ -80,6 +73,19 @@ STANDARD_FIELDS: list[dict[str, Any]] = [
         "expectedType": "string",
         "description": "Current status of the contract (active, expired, etc.)",
         "aliases": ["Contract State", "Agreement Status"],
+        "hint": "Values like Active, Expired, Pending, Terminated.",
+    },
+    {
+        "fieldKey": "description",
+        "displayName": "Description",
+        "expectedType": "string",
+        "description": "Free-text description of the line item, material, or service",
+        "aliases": [
+            "Invoice Description", "Material Description",
+            "GL Account Description", "Item Description", "Line Description",
+            "PO Material Description", "Product Description", "Service Description",
+        ],
+        "hint": "Any free-text description column describing what was purchased.",
     },
     {
         "fieldKey": "goods_receipt_date",
@@ -87,6 +93,7 @@ STANDARD_FIELDS: list[dict[str, Any]] = [
         "expectedType": "datetime",
         "description": "Date goods were received or delivery was confirmed",
         "aliases": ["GR Date", "Delivery Date", "Receipt Date"],
+        "hint": "Goods receipt/delivery date. Not invoice or PO date.",
     },
     {
         "fieldKey": "invoice_date",
@@ -94,27 +101,15 @@ STANDARD_FIELDS: list[dict[str, Any]] = [
         "expectedType": "datetime",
         "description": "Date of invoice or transaction",
         "aliases": ["Inv Date", "Billing Date", "Transaction Date"],
+        "hint": "Invoice/billing/transaction date. Not payment, PO, delivery, or due date.",
     },
     {
-        "fieldKey": "invoice_line_qty",
-        "displayName": "Invoice Line Number Quantity",
-        "expectedType": "numeric",
-        "description": "Quantity on the invoice line item",
-        "aliases": ["Invoice Quantity", "Line Qty", "Billed Quantity"],
-    },
-    {
-        "fieldKey": "invoice_line_qty_uom",
-        "displayName": "Invoice Line Number Quantity UOM",
-        "expectedType": "string",
-        "description": "Unit of measure for the invoice line quantity",
-        "aliases": ["Invoice UOM", "Line UOM", "Quantity Unit"],
-    },
-    {
-        "fieldKey": "currency",
-        "displayName": "Invoice Currency",
-        "expectedType": "string",
-        "description": "ISO 4217 currency code of the local/original invoice",
-        "aliases": ["Local Currency Code", "Currency Code", "CCY"],
+        "fieldKey": "invoice_due_date",
+        "displayName": "Invoice Due Date",
+        "expectedType": "datetime",
+        "description": "Date by which the invoice must be paid",
+        "aliases": ["Due Date", "Payment Due Date", "Inv Due Date"],
+        "hint": "When payment is due. Not invoice date or payment date.",
     },
     {
         "fieldKey": "invoice_number",
@@ -122,6 +117,7 @@ STANDARD_FIELDS: list[dict[str, Any]] = [
         "expectedType": "string",
         "description": "Unique invoice document identifier",
         "aliases": ["Invoice No", "Invoice #", "Invoice ID", "Inv Number"],
+        "hint": "Invoice identifier. Not PO number or contract ID.",
     },
     {
         "fieldKey": "invoice_po_number",
@@ -129,6 +125,15 @@ STANDARD_FIELDS: list[dict[str, Any]] = [
         "expectedType": "string",
         "description": "Purchase order number referenced on the invoice",
         "aliases": ["PO Number", "PO #", "Purchase Order Number", "PO Ref"],
+        "hint": "PO number on the invoice. Not invoice number or contract ID.",
+    },
+    {
+        "fieldKey": "payment_date",
+        "displayName": "Payment Date",
+        "expectedType": "datetime",
+        "description": "Date the payment was made",
+        "aliases": ["Pay Date", "Date Paid", "Clearing Date"],
+        "hint": "Actual payment/clearing date. Not invoice date or due date.",
     },
     {
         "fieldKey": "payment_terms",
@@ -136,6 +141,7 @@ STANDARD_FIELDS: list[dict[str, Any]] = [
         "expectedType": "string",
         "description": "Payment terms code or description (e.g. NET30, NET60)",
         "aliases": ["Pay Terms", "Terms of Payment", "Payment Condition"],
+        "hint": "Values like NET30, NET60, 2/10 NET 30.",
     },
     {
         "fieldKey": "plant_code",
@@ -143,13 +149,15 @@ STANDARD_FIELDS: list[dict[str, Any]] = [
         "expectedType": "string",
         "description": "Code identifying the plant or facility",
         "aliases": ["Plant ID", "Plant No", "Facility Code", "Site Code"],
+        "hint": "Short code for plant/facility. Not plant name.",
     },
     {
         "fieldKey": "country",
         "displayName": "Plant Country",
         "expectedType": "string",
         "description": "Country of the company or plant",
-        "aliases": ["Country", "Company Country"],
+        "aliases": ["Country", "Company Country", "Plant Country"],
+        "hint": "Plant/company country. NOT vendor/supplier country.",
     },
     {
         "fieldKey": "plant_name",
@@ -157,6 +165,7 @@ STANDARD_FIELDS: list[dict[str, Any]] = [
         "expectedType": "string",
         "description": "Name of the plant or facility",
         "aliases": ["Plant Description", "Facility Name", "Site Name"],
+        "hint": "Free-text plant/facility name. Not plant code or vendor name.",
     },
     {
         "fieldKey": "po_document_date",
@@ -164,34 +173,7 @@ STANDARD_FIELDS: list[dict[str, Any]] = [
         "expectedType": "datetime",
         "description": "Date the purchase order document was created",
         "aliases": ["PO Date", "Order Date", "Purchase Order Date"],
-    },
-    {
-        "fieldKey": "invoice_description",
-        "displayName": "Invoice Description",
-        "expectedType": "string",
-        "description": "Free-text description from the invoice line item",
-        "aliases": ["Invoice Desc", "Invoice Line Description", "Invoice Text", "Inv Description"],
-    },
-    {
-        "fieldKey": "po_description",
-        "displayName": "PO Description",
-        "expectedType": "string",
-        "description": "Description of the purchase order line item",
-        "aliases": ["PO Desc", "Purchase Order Description", "PO Line Description", "PO Text", "PO Material Description"],
-    },
-    {
-        "fieldKey": "material_description",
-        "displayName": "Material Description",
-        "expectedType": "string",
-        "description": "Description of the material or item",
-        "aliases": ["Material Desc", "Item Description", "Material Text", "Product Description"],
-    },
-    {
-        "fieldKey": "gl_account_description",
-        "displayName": "GL Account Description",
-        "expectedType": "string",
-        "description": "Description of the General Ledger account",
-        "aliases": ["GL Desc", "GL Description", "General Ledger Description", "Account Description", "GL Account Desc"],
+        "hint": "PO creation date. Not invoice date or goods receipt date.",
     },
     {
         "fieldKey": "po_material_number",
@@ -199,6 +181,18 @@ STANDARD_FIELDS: list[dict[str, Any]] = [
         "expectedType": "string",
         "description": "Material or item number on the purchase order",
         "aliases": ["Material Number", "Material Code", "Item Number", "Material ID"],
+        "hint": "Alphanumeric material/item code. Not PO number or invoice number.",
+    },
+    {
+        "fieldKey": "po_material_description",
+        "displayName": "PO Material Description",
+        "expectedType": "string",
+        "description": "Description of the material on the purchase order",
+        "aliases": [
+            "PO Description", "Purchase Order Description",
+            "PO Line Description", "PO Text",
+        ],
+        "hint": "PO-level material/item description. Distinct from generic Description.",
     },
     {
         "fieldKey": "price_per_uom",
@@ -206,13 +200,58 @@ STANDARD_FIELDS: list[dict[str, Any]] = [
         "expectedType": "numeric",
         "description": "Unit price per unit of measure",
         "aliases": ["Unit Price", "Price per Unit", "PO Unit Price"],
+        "hint": "Per-unit price. Not total spend or local spend (those are line totals).",
     },
     {
-        "fieldKey": "total_spend",
-        "displayName": "Total Amount paid in Reporting Currency",
+        "fieldKey": "quantity",
+        "displayName": "Quantity",
         "expectedType": "numeric",
-        "description": "Monetary spend amount converted/normalized to a single reporting currency",
-        "aliases": ["Total Spend (USD)", "Total Spend", "Reporting Currency Amount"],
+        "description": "Quantity ordered or invoiced",
+        "aliases": [
+            "Invoice Line Number Quantity", "Invoice Quantity",
+            "Line Qty", "Billed Quantity", "Order Quantity", "Qty",
+        ],
+        "hint": "Numeric quantity. Not price or spend amount.",
+    },
+    {
+        "fieldKey": "region",
+        "displayName": "Region",
+        "expectedType": "string",
+        "description": "Geographic region (e.g. NA, EMEA, APAC, LATAM)",
+        "aliases": ["Geographic Region", "Sales Region", "Market Region"],
+        "hint": "High-level region. Values like NA, EMEA, APAC, LATAM.",
+    },
+    {
+        "fieldKey": "l1",
+        "displayName": "Spend Classification Level 1",
+        "expectedType": "string",
+        "description": "Top-level procurement category (broadest, fewest distinct values)",
+        "aliases": ["Category Level 1", "L1", "Category 1", "Segment"],
+        "hint": "Broadest category, typically 5-20 distinct values. Fewer than L2/L3.",
+    },
+    {
+        "fieldKey": "l2",
+        "displayName": "Spend Classification Level 2",
+        "expectedType": "string",
+        "description": "Second-level procurement category",
+        "aliases": ["Category Level 2", "L2", "Category 2", "Family", "Sub-category"],
+        "hint": "Mid-level category, typically 20-80 distinct values.",
+    },
+    {
+        "fieldKey": "l3",
+        "displayName": "Spend Classification Level 3",
+        "expectedType": "string",
+        "description": "Third-level procurement category",
+        "aliases": ["Category Level 3", "L3", "Category 3", "Class", "Commodity"],
+        "hint": "Granular category, typically 100+ distinct values. More than L1/L2.",
+    },
+    {
+        "fieldKey": "l4",
+        "displayName": "Spend Classification Level 4",
+        "expectedType": "string",
+        "description": "Fourth-level procurement category (most granular)",
+        "aliases": ["Category Level 4", "L4", "Category 4", "Sub-class"],
+        "hint": "Most granular category level. More distinct values than L3.",
     },
     {
         "fieldKey": "local_spend",
@@ -220,6 +259,34 @@ STANDARD_FIELDS: list[dict[str, Any]] = [
         "expectedType": "numeric",
         "description": "Spend amount in the original/local invoice currency",
         "aliases": ["Local Spend Amount", "Local Spend", "Invoice Amount"],
+        "hint": "ORIGINAL invoice amount in vendor's local currency. Values may vary wildly in magnitude. Never same as Total Spend.",
+    },
+    {
+        "fieldKey": "currency",
+        "displayName": "Local Currency Code",
+        "expectedType": "string",
+        "description": "ISO currency code of the invoice/local spend (e.g. USD, EUR, GBP)",
+        "aliases": ["Currency", "Invoice Currency", "Currency Code", "Local Currency"],
+        "hint": "Short 3-letter ISO codes like USD, EUR, GBP, INR. NOT country names.",
+    },
+    {
+        "fieldKey": "total_spend",
+        "displayName": "Total Amount paid in Reporting Currency",
+        "expectedType": "numeric",
+        "description": "Monetary spend amount converted/normalized to a single reporting currency",
+        "aliases": ["Total Spend (USD)", "Total Spend", "Reporting Currency Amount"],
+        "hint": "CONVERTED/NORMALIZED amount, usually USD. If only one spend column, assign here. Never same as Local Spend.",
+    },
+    {
+        "fieldKey": "uom",
+        "displayName": "Unit of Measurement",
+        "expectedType": "string",
+        "description": "Unit of measure for the quantity",
+        "aliases": [
+            "Invoice Line Number Quantity UOM", "UOM", "Invoice UOM",
+            "Line UOM", "Quantity Unit", "Unit of Measure",
+        ],
+        "hint": "Short codes like EA, KG, LB, PC, L, M. NOT currency codes.",
     },
     {
         "fieldKey": "vendor_country",
@@ -227,6 +294,7 @@ STANDARD_FIELDS: list[dict[str, Any]] = [
         "expectedType": "string",
         "description": "Country of the vendor/supplier",
         "aliases": ["Supplier Country", "Vendor Nation"],
+        "hint": "Vendor/supplier country. NOT plant/company country.",
     },
     {
         "fieldKey": "supplier",
@@ -234,273 +302,32 @@ STANDARD_FIELDS: list[dict[str, Any]] = [
         "expectedType": "string",
         "description": "Vendor/supplier entity name",
         "aliases": ["Supplier Name", "Supplier", "Vendor"],
+        "hint": "Company names (Inc., Ltd., GmbH). Not buyer, cost center, or plant name.",
     },
 ]
 
-# ---------------------------------------------------------------------------
-# Per-field disambiguation hints for AI mapping
-# ---------------------------------------------------------------------------
-
-PER_FIELD_HINTS: dict[str, str] = {
-    "total_spend": """TOTAL SPEND (REPORTING CURRENCY) vs LOCAL SPEND:
-- This is the CONVERTED/NORMALIZED amount in a single reporting currency (usually USD).
-  Look for columns with "USD", "dollar", "converted", "normalized", "standard",
-  "reporting currency", or "Total Amount paid in Reporting Currency" in the name.
-- Sample values are typically all in the same magnitude/scale since they share one currency.
-- If only ONE numeric spend column exists, assign it here.
-- This should NEVER be the same column as Local Spend.""",
-
-    "local_spend": """LOCAL SPEND vs TOTAL SPEND:
-- This is the ORIGINAL invoice amount in the vendor's local currency.
-  Look for columns with "local", "original", "invoice value", "native",
-  "LC", "LCY", or "Total Amount paid in Local Currency" in the name.
-- Sample values may vary wildly in magnitude (e.g. 100 USD vs 10,000 JPY vs 85 EUR).
-- This should NEVER be the same column as Total Spend / Reporting Currency Amount.""",
-
-    "invoice_date": """INVOICE DATE vs OTHER DATES:
-- The date the invoice was issued or received. Look for "invoice date", "inv date",
-  "billing date", "transaction date".
-- DO NOT confuse with: "payment date", "PO date", "delivery date", "receipt date",
-  "due date", "posting date", "contract date", "goods receipt date".
-- If ambiguous, prefer the column closest to "invoice" or "transaction" in name.""",
-
-    "supplier": """VENDOR/SUPPLIER NAME:
-- The vendor/seller/provider entity. Look for "vendor", "supplier", "seller",
-  "provider", "payee", "creditor", "Vendor Name" in the name.
-- Samples look like company names: "Inc.", "Ltd.", "LLC", "GmbH", "Corp.".
-- DO NOT confuse with buyer/requestor, cost center, plant, material description.""",
-
-    "country": """PLANT/COMPANY COUNTRY:
-- The country of the company or plant (NOT the vendor/supplier country).
-  Look for "plant country", "company country", or unqualified "country".
-- Sample values are country names or ISO codes ("US", "DE", "USA").
-- DO NOT confuse with "vendor country" / "supplier country" (that's a separate field).""",
-
-    "vendor_country": """VENDOR/SUPPLIER COUNTRY:
-- The country of the vendor or supplier. Look for "vendor country",
-  "supplier country" in the name.
-- Sample values are country names or ISO codes.
-- DO NOT confuse with "plant country" / "company country" (that's a separate field).""",
-
-    "l1": """CATEGORY LEVEL 1 (HIERARCHY):
-- Broadest procurement category with fewest distinct values (typically 5-20).
-  Look for "L1", "level 1", "category 1", "segment", "Spend Classification Level 1".
-- Examples: "Direct Materials", "Indirect Spend", "Services", "IT".
-- Count distinct sample values: fewer = L1, more = L2/L3.""",
-
-    "l2": """CATEGORY LEVEL 2 (HIERARCHY):
-- Second-level category with moderate distinct values (typically 20-80).
-  Look for "L2", "level 2", "category 2", "family", "sub-category".
-- Sits between L1 (broad) and L3 (granular).""",
-
-    "l3": """CATEGORY LEVEL 3 (HIERARCHY):
-- Most granular procurement category with most distinct values.
-  Look for "L3", "level 3", "category 3", "class", "commodity", "sub-class".
-- More distinct values than L1 or L2.""",
-
-    "currency": """INVOICE CURRENCY:
-- ISO 4217 currency code of the local/original invoice. Look for "currency",
-  "ccy", "curr", "FX", "invoice currency", "local currency".
-- Sample values are 3-letter codes: "USD", "EUR", "GBP", "JPY".
-- DO NOT confuse with country codes, UOM codes, or payment terms.""",
-
-    "business_unit": """BUSINESS UNIT:
-- The organisational business unit or division. Look for "business unit",
-  "BU", "division", "business area", "segment".
-- DO NOT confuse with: plant name/code (facility), cost center, department.""",
-
-    "contract_end_date": """CONTRACT END DATE:
-- The date the contract expires. Look for "contract end", "contract expiry",
-  "contract expiration", "agreement end date".
-- DO NOT confuse with: invoice date, PO date, goods receipt date, payment date.""",
-
-    "contract_id": """CONTRACT ID:
-- Unique identifier for the contract. Look for "contract ID", "contract number",
-  "contract ref", "agreement ID", "contract #".
-- Usually alphanumeric codes. DO NOT confuse with PO number or invoice number.""",
-
-    "contract_indicator": """CONTRACT INDICATOR:
-- A flag or code indicating whether a contract exists. Look for "contract indicator",
-  "contract flag", "has contract", "contract Y/N".
-- Values might be "Y"/"N", "Yes"/"No", or short codes.""",
-
-    "contract_start_date": """CONTRACT START DATE:
-- The date the contract became effective. Look for "contract start",
-  "contract effective date", "agreement start", "contract begin".
-- DO NOT confuse with: PO date, invoice date, goods receipt date.""",
-
-    "contract_status": """CONTRACT STATUS:
-- Current status of the contract. Look for "contract status", "agreement status",
-  "contract state".
-- Values like "Active", "Expired", "Pending", "Terminated".""",
-
-    "goods_receipt_date": """GOODS RECEIPT DATE:
-- The date goods were received. Look for "goods receipt date", "GR date",
-  "delivery date", "receipt date".
-- DO NOT confuse with: invoice date, PO date, contract date, payment date.""",
-
-    "invoice_line_qty": """INVOICE LINE QUANTITY:
-- The quantity on the invoice line item. Look for "invoice line quantity",
-  "line qty", "billed quantity", "invoice quantity".
-- This is numeric. DO NOT confuse with PO quantity or price.""",
-
-    "invoice_line_qty_uom": """INVOICE LINE QUANTITY UOM:
-- Unit of measure for the invoice line quantity. Look for "UOM", "unit of measure",
-  "quantity unit", "invoice UOM".
-- Values like "EA", "KG", "LB", "PC", "L", "M". Short codes, NOT currency codes.""",
-
-    "invoice_number": """INVOICE NUMBER:
-- Unique invoice document identifier. Look for "invoice number", "invoice no",
-  "invoice #", "invoice ID", "inv number".
-- Alphanumeric codes. DO NOT confuse with PO number or contract ID.""",
-
-    "invoice_po_number": """INVOICE PO NUMBER:
-- The purchase order number referenced on the invoice. Look for "PO number",
-  "purchase order number", "PO #", "PO ref", "invoice PO number".
-- DO NOT confuse with invoice number or contract ID.""",
-
-    "payment_terms": """PAYMENT TERMS:
-- Payment terms code or description. Look for "payment terms", "pay terms",
-  "terms of payment", "payment condition".
-- Values like "NET30", "NET60", "2/10 NET 30", "Due on Receipt".""",
-
-    "plant_code": """PLANT CODE:
-- Code identifying the plant or facility. Look for "plant code", "plant ID",
-  "plant no", "facility code", "site code".
-- Short alphanumeric codes. DO NOT confuse with plant name or company code.""",
-
-    "plant_name": """PLANT NAME:
-- Name of the plant or facility. Look for "plant name", "plant description",
-  "facility name", "site name".
-- Free-text names. DO NOT confuse with plant code, company name, or vendor name.""",
-
-    "po_document_date": """PO DOCUMENT DATE:
-- The date the purchase order was created. Look for "PO date", "PO document date",
-  "order date", "purchase order date".
-- DO NOT confuse with: invoice date, goods receipt date, contract date.""",
-
-    "invoice_description": """INVOICE DESCRIPTION:
-- Free-text description from the invoice line item. Look for "invoice description",
-  "invoice line description", "invoice text", "inv description".
-- DO NOT confuse with PO description, material description, or GL account description.
-- Typically contains what was billed on the invoice line.""",
-
-    "po_description": """PO DESCRIPTION:
-- Description of the purchase order line item. Look for "PO description",
-  "purchase order description", "PO line description", "PO text",
-  "PO material description".
-- DO NOT confuse with invoice description, material description, or GL account description.
-- Describes what was ordered on the PO.""",
-
-    "material_description": """MATERIAL DESCRIPTION:
-- Description of the material or item (master data). Look for "material description",
-  "item description", "material text", "product description".
-- DO NOT confuse with invoice description, PO description, or GL account description.
-- Often a master-data description tied to a material/item number.""",
-
-    "gl_account_description": """GL ACCOUNT DESCRIPTION:
-- Description of the General Ledger account. Look for "GL description",
-  "GL account description", "general ledger description", "account description".
-- DO NOT confuse with invoice description, PO description, or material description.
-- Values are typically accounting category names like "Office Supplies", "Travel Expenses".""",
-
-    "po_material_number": """PO MATERIAL NUMBER:
-- Material or item number on the PO. Look for "material number", "material code",
-  "item number", "material ID", "PO material number".
-- Alphanumeric codes. DO NOT confuse with PO number or invoice number.""",
-
-    "price_per_uom": """PRICE PER UOM:
-- Unit price per unit of measure. Look for "unit price", "price per unit",
-  "price per UOM", "PO unit price".
-- Numeric. DO NOT confuse with total spend or local spend (those are line totals).""",
+# Lookup helpers built once at import time
+_FIELD_BY_KEY: dict[str, dict[str, Any]] = {
+    f["fieldKey"]: f for f in STANDARD_FIELDS
+}
+_DATETIME_FIELD_KEYS: set[str] = {
+    f["fieldKey"] for f in STANDARD_FIELDS if f["expectedType"] == "datetime"
 }
 
 # ---------------------------------------------------------------------------
-# Per-field AI prompt template
+# Deterministic exact / alias matching
 # ---------------------------------------------------------------------------
-
-_SINGLE_FIELD_SYSTEM_PROMPT = """You are a senior procurement data analyst mapping columns from an uploaded dataset to standard procurement fields.
-
-TARGET FIELD TO MAP:
-- Name: {display_name}
-- Expected data type: {expected_type}
-- Description: {description}
-
-ALL STANDARD FIELDS BEING MAPPED (so you know what else exists — do NOT pick a column that clearly belongs to a different field):
-{all_fields_list}
-
-DISAMBIGUATION HINTS FOR THIS FIELD:
-{hints}
-
-EACH COLUMN IN THE INPUT HAS:
-- "name": the column header from the uploaded file
-- "samples": up to 30 distinct non-empty sample values
-- "inferredType": pre-computed type based on the actual data ("numeric", "datetime", or "string")
-- "distinctCount": number of unique non-empty values across the dataset
-- "nullRate": fraction of rows that are null/empty (0.0 = fully populated, 1.0 = all empty)
-- "totalRows": total row count
-
-MATCHING RULES (follow strictly):
-1. TYPE COMPATIBILITY IS MANDATORY:
-   - If this field expects "numeric", the column's inferredType MUST be "numeric". Do NOT map a string or datetime column.
-   - If this field expects "datetime", the column's inferredType MUST be "datetime". Do NOT map a numeric or string column.
-   - If this field expects "string", any inferredType is acceptable.
-2. Use distinctCount to disambiguate hierarchy levels: L1 typically has 5-20 distinct values, L2 has 20-80, L3 has 100+.
-3. Use column NAME as the primary signal. If the name clearly matches another standard field better, return null for this one.
-4. Use sample VALUES to confirm the match — do they look like what this field should contain?
-5. If no column is a confident match, return null. A wrong match is worse than no match.
-
-RESPONSE FORMAT (strict JSON):
-{{"bestMatch": "<exact column name from the list or null>", "alternatives": ["<up to 2 column names>"], "confidence": "high|medium|low", "reasoning": "<brief explanation>"}}
-
-CRITICAL: bestMatch MUST be the EXACT column name string from the input, or null. Do not invent or modify column names."""
-
-# ---------------------------------------------------------------------------
-# Deterministic exact-match pass
-# ---------------------------------------------------------------------------
-
-
-def _tokenize(name: str) -> set[str]:
-    """Split a name into lowercase tokens for fuzzy comparison."""
-    return set(re.split(r"[\s_\-./]+", name.strip().lower())) - {"", "the", "of", "in", "a"}
-
-
-def _fuzzy_score(col_name: str, field: dict[str, Any]) -> float:
-    """Score how well a column name matches a field (0.0 to 1.0).
-
-    Checks displayName, aliases, and fieldKey using token overlap.
-    """
-    col_tokens = _tokenize(col_name)
-    if not col_tokens:
-        return 0.0
-
-    best = 0.0
-    candidates = [field["displayName"], field["fieldKey"].replace("_", " ")]
-    candidates.extend(field.get("aliases", []))
-
-    for candidate in candidates:
-        cand_tokens = _tokenize(candidate)
-        if not cand_tokens:
-            continue
-        overlap = len(col_tokens & cand_tokens)
-        score = overlap / max(len(col_tokens), len(cand_tokens))
-        # Bonus for substring containment
-        col_lower = col_name.strip().lower()
-        cand_lower = candidate.strip().lower()
-        if cand_lower in col_lower or col_lower in cand_lower:
-            score = max(score, 0.7)
-        best = max(best, score)
-
-    return best
 
 
 def deterministic_match(
     columns: list[dict[str, Any]],
 ) -> tuple[dict[str, str], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Match uploaded columns to standard fields by exact name, then fuzzy tokens.
+    """Match uploaded columns to standard fields by exact name or alias.
 
-    Pass 1: Exact case-insensitive match on displayName and aliases.
-    Pass 2: Fuzzy token-overlap match (score >= 0.6) for remaining columns/fields.
+    Case-insensitive comparison against each field's displayName and aliases.
+
+    Args:
+        columns: List of column info dicts with at least a ``name`` key.
 
     Returns:
         (matched, unmatched_fields, unmatched_columns) where matched is
@@ -508,239 +335,78 @@ def deterministic_match(
     """
     lookup: dict[str, str] = {}
     for field in STANDARD_FIELDS:
-        lookup[field["displayName"].lower()] = field["fieldKey"]
+        lookup[field["displayName"].strip().lower()] = field["fieldKey"]
         for alias in field.get("aliases", []):
-            lower_alias = alias.lower()
-            if lower_alias not in lookup:
-                lookup[lower_alias] = field["fieldKey"]
+            key = alias.strip().lower()
+            if key not in lookup:
+                lookup[key] = field["fieldKey"]
 
     matched: dict[str, str] = {}
-    consumed_columns: set[str] = set()
+    consumed: set[str] = set()
 
-    # Pass 1: exact match
     for col in columns:
         col_lower = col["name"].strip().lower()
         if col_lower in lookup:
             fk = lookup[col_lower]
             if fk not in matched:
                 matched[fk] = col["name"]
-                consumed_columns.add(col["name"])
-
-    # Pass 2: fuzzy match for remaining
-    matched_keys = set(matched.keys())
-    remaining_fields = [f for f in STANDARD_FIELDS if f["fieldKey"] not in matched_keys]
-    remaining_cols = [c for c in columns if c["name"] not in consumed_columns]
-
-    FUZZY_THRESHOLD = 0.6
-    for field in remaining_fields:
-        best_col = None
-        best_score = 0.0
-        for col in remaining_cols:
-            if col["name"] in consumed_columns:
-                continue
-            # Check type compatibility for fuzzy matches
-            col_type = col.get("inferredType", "string")
-            field_type = field["expectedType"]
-            if field_type == "numeric" and col_type != "numeric":
-                continue
-            if field_type == "datetime" and col_type != "datetime":
-                continue
-            score = _fuzzy_score(col["name"], field)
-            if score > best_score:
-                best_score = score
-                best_col = col
-        if best_col and best_score >= FUZZY_THRESHOLD:
-            matched[field["fieldKey"]] = best_col["name"]
-            consumed_columns.add(best_col["name"])
+                consumed.add(col["name"])
 
     matched_keys = set(matched.keys())
     unmatched_fields = [f for f in STANDARD_FIELDS if f["fieldKey"] not in matched_keys]
-    unmatched_columns = [c for c in columns if c["name"] not in consumed_columns]
-
+    unmatched_columns = [c for c in columns if c["name"] not in consumed]
     return matched, unmatched_fields, unmatched_columns
 
 
 # ---------------------------------------------------------------------------
-# Parallel per-field AI mapping
+# Single-batch AI mapping
 # ---------------------------------------------------------------------------
 
+_BATCH_SYSTEM_PROMPT = """You are a senior procurement data analyst. Map uploaded dataset columns to standard procurement fields.
 
-def _build_all_fields_list() -> str:
-    """One-line-per-field summary for the AI prompt so it knows what else is being mapped."""
+STANDARD FIELDS TO MAP (only map these — do NOT invent new fields):
+{fields_block}
+
+MATCHING RULES:
+1. TYPE COMPATIBILITY IS MANDATORY:
+   - "numeric" fields must map to columns with inferredType "numeric"
+   - "datetime" fields must map to columns with inferredType "datetime"
+   - "string" fields accept any inferredType
+2. Use column NAME as the primary signal, SAMPLE VALUES to confirm.
+3. Use distinctCount to disambiguate category levels: L1 ~5-20, L2 ~20-80, L3 ~100+, L4 even more.
+4. Each column can be assigned to AT MOST ONE field. Never map the same column to two fields.
+5. If no column is a confident match for a field, map it to null.
+6. A wrong match is worse than no match.
+
+RESPONSE FORMAT (strict JSON, no markdown fences):
+Return a JSON object mapping each fieldKey to the exact column name string or null:
+{{"fieldKey1": "exact column name", "fieldKey2": null, ...}}"""
+
+
+def _build_fields_block(fields: list[dict[str, Any]]) -> str:
+    """Build the fields description for the AI prompt."""
     lines = []
-    for f in STANDARD_FIELDS:
-        lines.append(f"- {f['displayName']} ({f['expectedType']}): {f['description']}")
+    for f in fields:
+        hint = f.get("hint", "")
+        lines.append(
+            f'- {f["fieldKey"]} | "{f["displayName"]}" | {f["expectedType"]} | '
+            f'{f["description"]}. {hint}'
+        )
     return "\n".join(lines)
 
 
-_ALL_FIELDS_LIST = _build_all_fields_list()
-
-
-def _ai_map_single_field(
-    field: dict[str, Any],
-    columns: list[dict[str, Any]],
-    api_key: str,
-) -> dict[str, Any]:
-    """Send a focused AI call for a single standard field with enriched context."""
-    hints = PER_FIELD_HINTS.get(field["fieldKey"], "No specific hints for this field.")
-    system_prompt = _SINGLE_FIELD_SYSTEM_PROMPT.format(
-        display_name=field["displayName"],
-        expected_type=field["expectedType"],
-        description=field["description"],
-        hints=hints,
-        all_fields_list=_ALL_FIELDS_LIST,
-    )
-    user_payload = {
-        "columns": [
-            {
-                "name": c["name"],
-                "samples": c.get("sampleValues", [])[:30],
-                "inferredType": c.get("inferredType", "string"),
-                "distinctCount": c.get("distinctCount", 0),
-                "nullRate": c.get("nullRate", 0.0),
-                "totalRows": c.get("totalRows", 0),
-            }
-            for c in columns
-        ],
-    }
-    try:
-        result = call_ai_json(system_prompt, user_payload, api_key=api_key)
-    except Exception as exc:
-        logger.warning("AI mapping failed for %s: %s", field["fieldKey"], exc)
-        return {
-            "fieldKey": field["fieldKey"],
-            "bestMatch": None,
-            "alternatives": [],
-            "confidence": "low",
-            "reasoning": f"AI call failed: {exc}",
-            "expectedType": field["expectedType"],
+def _build_columns_payload(columns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build the column info payload for the AI prompt."""
+    return [
+        {
+            "name": c["name"],
+            "samples": c.get("sampleValues", [])[:20],
+            "inferredType": c.get("inferredType", "string"),
+            "distinctCount": c.get("distinctCount", 0),
+            "nullRate": round(c.get("nullRate", 0.0), 3),
         }
-
-    bm = result.get("bestMatch")
-    if isinstance(bm, dict):
-        bm = bm.get("column") or bm.get("name") or None
-
-    alts = result.get("alternatives", [])
-    if not isinstance(alts, list):
-        alts = []
-    alts = [
-        (a.get("column") or a.get("name") or "") if isinstance(a, dict) else str(a)
-        for a in alts
+        for c in columns
     ]
-
-    return {
-        "fieldKey": field["fieldKey"],
-        "bestMatch": bm,
-        "alternatives": alts,
-        "confidence": result.get("confidence", "medium"),
-        "reasoning": result.get("reasoning", ""),
-        "expectedType": field["expectedType"],
-    }
-
-
-def _validate_ai_results(
-    results: list[dict[str, Any]],
-    available_columns: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Post-AI validation: check column existence, type compatibility, and resolve conflicts.
-
-    - Rejects bestMatch if the column name doesn't exist in the uploaded data
-    - Rejects bestMatch if the column's inferred type doesn't match the field's expected type
-    - If two fields claim the same column, the one with higher confidence keeps it
-
-    Column existence and conflict checks are case-insensitive so that
-    minor casing differences from the AI don't cause false rejections.
-    """
-    col_lookup = {c["name"]: c for c in available_columns}
-    # Case-insensitive name resolution: lowered -> actual name
-    _name_lower_map: dict[str, str] = {
-        n.strip().lower(): n for n in col_lookup
-    }
-
-    # Confidence ranking for conflict resolution
-    conf_rank = {"high": 3, "medium": 2, "low": 1}
-
-    for r in results:
-        bm = r.get("bestMatch")
-        if not bm:
-            continue
-
-        # Resolve to actual column name (case-insensitive)
-        actual = _name_lower_map.get(bm.strip().lower())
-        if actual is None:
-            logger.warning(
-                "AI returned non-existent column '%s' for field %s — clearing",
-                bm, r["fieldKey"],
-            )
-            r["bestMatch"] = None
-            r["reasoning"] = f"(rejected: column '{bm}' not found) " + r.get("reasoning", "")
-            continue
-
-        # Normalise to the real column name
-        r["bestMatch"] = actual
-
-        # Check type compatibility
-        col_info = col_lookup.get(actual, {})
-        col_type = col_info.get("inferredType", "string")
-        field_type = r.get("expectedType", "string")
-        if field_type == "numeric" and col_type != "numeric":
-            logger.warning(
-                "Type mismatch for field %s: expected numeric, column '%s' is %s — clearing",
-                r["fieldKey"], actual, col_type,
-            )
-            r["bestMatch"] = None
-            r["reasoning"] = f"(rejected: type mismatch, need {field_type} got {col_type}) " + r.get("reasoning", "")
-        elif field_type == "datetime" and col_type != "datetime":
-            logger.warning(
-                "Type mismatch for field %s: expected datetime, column '%s' is %s — clearing",
-                r["fieldKey"], actual, col_type,
-            )
-            r["bestMatch"] = None
-            r["reasoning"] = f"(rejected: type mismatch, need {field_type} got {col_type}) " + r.get("reasoning", "")
-
-    # Resolve duplicates: if multiple fields claim the same column, highest confidence wins
-    # Group case-insensitively so "Col A" and "col a" are treated as the same column.
-    claim_map: dict[str, list[dict[str, Any]]] = {}
-    for r in results:
-        bm = r.get("bestMatch")
-        if bm:
-            claim_map.setdefault(bm.strip().lower(), []).append(r)
-
-    for _col_key, claimants in claim_map.items():
-        if len(claimants) <= 1:
-            continue
-        col_name = claimants[0]["bestMatch"]  # use actual-cased name for messages
-        claimants.sort(key=lambda x: conf_rank.get(x.get("confidence", "medium"), 2), reverse=True)
-        winner = claimants[0]
-        for loser in claimants[1:]:
-            # Try to reassign loser to its first valid alternative
-            reassigned = False
-            for alt in loser.get("alternatives", []):
-                resolved_alt = _name_lower_map.get(alt.strip().lower()) if alt else None
-                if resolved_alt and not any(
-                    (r.get("bestMatch") or "").strip().lower() == resolved_alt.strip().lower()
-                    for r in results if r is not loser
-                ):
-                    loser["bestMatch"] = resolved_alt
-                    loser["reasoning"] = (
-                        f"(reassigned from '{col_name}' to alt '{resolved_alt}' — "
-                        f"'{col_name}' claimed by {winner['fieldKey']}) "
-                        + loser.get("reasoning", "")
-                    )
-                    reassigned = True
-                    break
-            if not reassigned:
-                loser["bestMatch"] = None
-                loser["reasoning"] = (
-                    f"(conflict: '{col_name}' claimed by {winner['fieldKey']} with higher confidence) "
-                    + loser.get("reasoning", "")
-                )
-            logger.info(
-                "Conflict on column '%s': %s wins over %s",
-                col_name, winner["fieldKey"], loser["fieldKey"],
-            )
-
-    return results
 
 
 def ai_map_columns(
@@ -748,7 +414,17 @@ def ai_map_columns(
     unmatched_columns: list[dict[str, Any]],
     api_key: str,
 ) -> list[dict[str, Any]]:
-    """Map unmatched fields to columns using parallel per-field AI calls with validation."""
+    """Map unmatched fields to columns with a single batch AI call.
+
+    Args:
+        unmatched_fields: Standard field dicts that weren't matched deterministically.
+        unmatched_columns: Column info dicts that weren't consumed by exact matching.
+        api_key: Portkey API key.
+
+    Returns:
+        List of mapping result dicts (one per unmatched field) with keys:
+        fieldKey, bestMatch, alternatives, confidence, reasoning, expectedType.
+    """
     if not unmatched_fields or not unmatched_columns:
         return [
             {
@@ -762,186 +438,145 @@ def ai_map_columns(
             for f in unmatched_fields
         ]
 
-    results: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=min(8, len(unmatched_fields))) as executor:
-        futures = {
-            executor.submit(
-                _ai_map_single_field, field, unmatched_columns, api_key
-            ): field["fieldKey"]
-            for field in unmatched_fields
-        }
-        for future in as_completed(futures):
-            try:
-                results.append(future.result())
-            except Exception as exc:
-                fk = futures[future]
-                logger.error("AI mapping thread failed for %s: %s", fk, exc)
-                results.append({
-                    "fieldKey": fk,
-                    "bestMatch": None,
-                    "alternatives": [],
-                    "confidence": "low",
-                    "reasoning": f"Thread error: {exc}",
-                    "expectedType": next(
-                        (f["expectedType"] for f in unmatched_fields if f["fieldKey"] == fk),
-                        "string",
-                    ),
-                })
+    system_prompt = _BATCH_SYSTEM_PROMPT.format(
+        fields_block=_build_fields_block(unmatched_fields),
+    )
+    user_payload = {"columns": _build_columns_payload(unmatched_columns)}
 
-    results = _validate_ai_results(results, unmatched_columns)
+    try:
+        raw_result = call_ai_json(system_prompt, user_payload, api_key=api_key)
+    except Exception as exc:
+        logger.warning("Batch AI mapping failed: %s", exc)
+        return [
+            {
+                "fieldKey": f["fieldKey"],
+                "bestMatch": None,
+                "alternatives": [],
+                "confidence": "low",
+                "reasoning": f"AI call failed: {exc}",
+                "expectedType": f["expectedType"],
+            }
+            for f in unmatched_fields
+        ]
+
+    if not isinstance(raw_result, dict):
+        logger.warning("AI returned non-dict result: %s", type(raw_result))
+        raw_result = {}
+
+    # Case-insensitive column name resolution
+    col_name_lower: dict[str, str] = {
+        c["name"].strip().lower(): c["name"] for c in unmatched_columns
+    }
+    col_info_by_name: dict[str, dict[str, Any]] = {
+        c["name"]: c for c in unmatched_columns
+    }
+
+    # Resolve AI results and validate types
+    resolved: dict[str, str | None] = {}
+    for f in unmatched_fields:
+        fk = f["fieldKey"]
+        ai_pick = raw_result.get(fk)
+
+        if not ai_pick or not isinstance(ai_pick, str):
+            resolved[fk] = None
+            continue
+
+        actual = col_name_lower.get(ai_pick.strip().lower())
+        if actual is None:
+            logger.warning("AI returned non-existent column '%s' for %s", ai_pick, fk)
+            resolved[fk] = None
+            continue
+
+        # Type compatibility check
+        col_type = col_info_by_name.get(actual, {}).get("inferredType", "string")
+        field_type = f["expectedType"]
+        if field_type == "numeric" and col_type != "numeric":
+            logger.warning("Type mismatch for %s: need numeric, got %s", fk, col_type)
+            resolved[fk] = None
+            continue
+        if field_type == "datetime" and col_type != "datetime":
+            logger.warning("Type mismatch for %s: need datetime, got %s", fk, col_type)
+            resolved[fk] = None
+            continue
+
+        resolved[fk] = actual
+
+    # Resolve duplicate claims: if two fields map to the same column, keep the first
+    claimed: dict[str, str] = {}  # column_lower -> fieldKey that claimed it
+    for fk, col in resolved.items():
+        if col is None:
+            continue
+        col_key = col.strip().lower()
+        if col_key in claimed:
+            logger.info(
+                "Conflict: %s and %s both claim '%s' — keeping %s",
+                claimed[col_key], fk, col, claimed[col_key],
+            )
+            resolved[fk] = None
+        else:
+            claimed[col_key] = fk
+
+    # Build result list
+    results = []
+    for f in unmatched_fields:
+        fk = f["fieldKey"]
+        bm = resolved.get(fk)
+        results.append({
+            "fieldKey": fk,
+            "bestMatch": bm,
+            "alternatives": [],
+            "confidence": "medium" if bm else "low",
+            "reasoning": raw_result.get(f"{fk}_reasoning", "AI batch mapping"),
+            "expectedType": f["expectedType"],
+        })
     return results
+
+
+# ---------------------------------------------------------------------------
+# Type casting helpers
+# ---------------------------------------------------------------------------
+
+
+def _cast_numeric(series: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """Cast a series to numeric, stripping currency symbols.
+
+    Returns:
+        (typed_series, failure_series) where failure_series contains original
+        values that couldn't be parsed.
+    """
+    cleaned = series.astype(str).str.replace(r"[,$€£¥\s]", "", regex=True)
+    typed = pd.to_numeric(cleaned, errors="coerce")
+    non_blank = series.notna() & (series.astype(str).str.strip() != "")
+    failures = series[typed.isna() & non_blank]
+    return typed, failures
+
+
+def _cast_datetime(series: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """Cast a series to datetime using the date_parser module.
+
+    Returns:
+        (typed_series, failure_series).
+    """
+    typed = parse_date_column(series)
+    non_blank = series.notna() & (series.astype(str).str.strip() != "")
+    failures = series[typed.isna() & non_blank]
+    return typed, failures
+
+
+def _cast_string(series: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """Cast a series to clean strings.
+
+    Returns:
+        (typed_series, empty failure_series).
+    """
+    typed = series.astype(str).str.strip()
+    typed = typed.replace({"nan": "", "None": "", "NULL": "", "<NA>": ""})
+    return typed, pd.Series([], dtype=str)
 
 
 # ---------------------------------------------------------------------------
 # build_typed_table
 # ---------------------------------------------------------------------------
-
-_DATETIME_FIELD_KEYS = {
-    f["fieldKey"] for f in STANDARD_FIELDS if f["expectedType"] == "datetime"
-}
-
-# ---------------------------------------------------------------------------
-# Date format detection helpers (adapted from Module 2 normalization engine)
-# ---------------------------------------------------------------------------
-
-_EXCEL_EPOCH = datetime(1899, 12, 30)
-_CURRENT_YEAR = datetime.today().year
-
-_MONTH_MAP = {
-    "jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,
-    "jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12,
-    "january":1,"february":2,"march":3,"april":4,"june":6,
-    "july":7,"august":8,"september":9,"october":10,"november":11,"december":12,
-}
-
-_ORDINAL_RE   = re.compile(r'(\d+)(st|nd|rd|th)\b', re.IGNORECASE)
-_COMPACT_8_RE = re.compile(r'^\d{8}$')
-_YEAR_ONLY_RE = re.compile(r'^\d{4}$')
-_TIME_RE      = re.compile(r'\s+\d{1,2}:\d{2}(:\d{2})?(\s*(AM|PM))?$', re.IGNORECASE)
-_ISO_T_RE     = re.compile(r'T\d{2}:\d{2}(:\d{2})?(\..*?)?(Z|[+-]\d{2}:\d{2})?$', re.IGNORECASE)
-
-_DMY_MASKS = ['%d-%m-%Y','%d-%b-%Y','%d-%B-%Y','%d-%m-%y','%d-%b-%y','%d-%B-%y','%Y-%m-%d','%y-%m-%d']
-_MDY_MASKS = ['%m-%d-%Y','%b-%d-%Y','%B-%d-%Y','%m-%d-%y','%b-%d-%y','%B-%d-%y','%Y-%m-%d','%y-%m-%d']
-
-
-def _excel_serial(serial):
-    """Convert an Excel serial number to a datetime."""
-    try:
-        return _EXCEL_EPOCH + timedelta(days=float(serial))
-    except Exception:
-        return None
-
-
-def _date_preprocess(raw):
-    """Clean a raw date string: strip time, ordinals, unify separators."""
-    s = _ISO_T_RE.sub('', str(raw).strip()).strip()
-    s = _TIME_RE.sub('', s).strip()
-    s = _ORDINAL_RE.sub(r'\1', s)
-    return re.sub(r'[/\.\s,]+', '-', s).strip('-')
-
-
-def _parse_partial_date(s):
-    """Handle year-only or month-year partial dates."""
-    if _YEAR_ONLY_RE.match(s):
-        return datetime(int(s), 1, 1)
-    parts = s.split('-')
-    if len(parts) == 2:
-        a, b = parts[0].strip(), parts[1].strip()
-        if a.lower() in _MONTH_MAP and b.isdigit() and len(b) == 4:
-            return datetime(int(b), _MONTH_MAP[a.lower()], 1)
-        if b.lower() in _MONTH_MAP and a.isdigit() and len(a) == 4:
-            return datetime(int(a), _MONTH_MAP[b.lower()], 1)
-        if a.isdigit() and b.lower() in _MONTH_MAP:
-            return datetime(_CURRENT_YEAR, _MONTH_MAP[b.lower()], int(a))
-        if b.isdigit() and a.lower() in _MONTH_MAP:
-            return datetime(_CURRENT_YEAR, _MONTH_MAP[a.lower()], int(b))
-    return None
-
-
-def _try_date_masks(s, masks):
-    """Try parsing with a list of strptime masks."""
-    for fmt in masks:
-        try:
-            return datetime.strptime(s, fmt)
-        except ValueError:
-            continue
-    return None
-
-
-def _profile_date_series(series):
-    """Profile a series to determine DMY vs MDY order."""
-    score_dmy = score_mdy = 0
-    months_re = re.compile(r'(?i)^(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)')
-    for val in series.dropna():
-        if isinstance(val, (int, float)) and not isinstance(val, bool):
-            continue
-        s = str(val).strip()
-        if _COMPACT_8_RE.match(s):
-            continue
-        s = re.sub(r'[/\.\s,]+', '-', _ISO_T_RE.sub('', _TIME_RE.sub('', s).strip()).strip())
-        parts = s.split('-')
-        if len(parts) < 2:
-            continue
-        p0, p1 = parts[0], parts[1]
-        try:
-            if int(p0) > 12: score_dmy += 1
-        except ValueError:
-            pass
-        try:
-            if int(p1) > 12: score_mdy += 1
-        except ValueError:
-            pass
-        if months_re.match(p0): score_mdy += 1
-        if months_re.match(p1): score_dmy += 1
-    return 'MDY' if score_mdy > score_dmy else 'DMY'
-
-
-def _parse_one_date(raw, masks):
-    """Parse a single raw value through a multi-gate pipeline."""
-    # Gate 1 — Excel serial (numeric type)
-    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-        return _excel_serial(raw)
-    s = str(raw).strip()
-    if not s or s.lower() in ('nan', 'none', 'nat', ''):
-        return None
-    # Gate 1b — Excel serial as string (e.g. '45734' from dtype=str loading)
-    if re.match(r'^\d{5}$', s):
-        serial = int(s)
-        if 18000 <= serial <= 73050:
-            return _excel_serial(serial)
-    # Gate 2 — Compact 8-digit
-    if _COMPACT_8_RE.match(s):
-        for fmt in ('%Y%m%d',
-                    '%d%m%Y' if masks is _DMY_MASKS else '%m%d%Y',
-                    '%m%d%Y' if masks is _DMY_MASKS else '%d%m%Y'):
-            try:
-                return datetime.strptime(s, fmt)
-            except ValueError:
-                continue
-    # Gate 3 — Pre-process
-    clean = _date_preprocess(s)
-    # Gate 4 — ISO year-first fast path
-    if re.match(r'^\d{4}-\d{1,2}-\d{1,2}$', clean):
-        try:
-            return datetime.strptime(clean, '%Y-%m-%d')
-        except ValueError:
-            pass
-    # Gate 5 — Format masks
-    result = _try_date_masks(clean, masks)
-    if result:
-        return result
-    # Gate 6 — Partial date
-    result = _parse_partial_date(clean)
-    if result:
-        return result
-    # Gate 7 — Pandas mixed fallback
-    try:
-        ts = pd.to_datetime(clean, dayfirst=(masks is _DMY_MASKS), format='mixed', errors='coerce')
-        if pd.notna(ts):
-            return ts.to_pydatetime()
-    except Exception:
-        pass
-    return None
 
 
 def build_typed_table(
@@ -949,9 +584,13 @@ def build_typed_table(
 ) -> dict[str, Any]:
     """Build the ``analysis_data`` table with enforced types.
 
+    Concatenates all session data tables, maps columns according to the
+    confirmed mapping, casts each to its expected type, and stores the
+    result as ``analysis_data`` in the session database.
+
     Args:
-        conn: Session database connection
-        mapping: dict of fieldKey -> sourceColumnName (or None if unmapped)
+        conn: Session database connection.
+        mapping: {fieldKey: sourceColumnName | None}.
 
     Returns:
         Cast report with per-field stats.
@@ -967,8 +606,7 @@ def build_typed_table(
                 df = df.drop(columns=["RECORD_ID"])
             frames.append(df)
         except Exception as exc:
-            logger.warning("Failed to load table '%s' for typed table build: %s", tname, exc)
-            continue
+            logger.warning("Failed to load table '%s': %s", tname, exc)
 
     if not frames:
         raise ValueError("No data tables found in session")
@@ -976,15 +614,19 @@ def build_typed_table(
     raw_df = pd.concat(frames, ignore_index=True)
     total_rows = len(raw_df)
 
-    # Case-insensitive lookup so that mapping values like
-    # "Total Amount paid in Reporting Currency" still match columns
-    # stored as "TOTAL AMOUNT PAID IN REPORTING CURRENCY" (from Module 1 export).
-    _col_lower_map: dict[str, str] = {
+    # Case-insensitive column lookup
+    col_lower_map: dict[str, str] = {
         c.strip().lower(): c for c in raw_df.columns
     }
 
     typed_df = pd.DataFrame(index=raw_df.index)
     cast_report: dict[str, Any] = {"total_rows": total_rows, "fields": {}}
+
+    casters = {
+        "numeric": _cast_numeric,
+        "datetime": _cast_datetime,
+        "string": _cast_string,
+    }
 
     for field in STANDARD_FIELDS:
         fk = field["fieldKey"]
@@ -992,62 +634,38 @@ def build_typed_table(
         expected_type = field["expectedType"]
 
         actual_col = (
-            _col_lower_map.get(source_col.strip().lower())
+            col_lower_map.get(source_col.strip().lower())
             if source_col else None
         )
+
         if not actual_col:
             typed_df[fk] = None
             cast_report["fields"][fk] = {
-                "mapped": False,
-                "sourceColumn": None,
-                "validRows": 0,
-                "nullRows": total_rows,
-                "parseRate": 0.0,
-                "sampleFailures": [],
+                "mapped": False, "sourceColumn": None,
+                "validRows": 0, "nullRows": total_rows,
+                "parseRate": 0.0, "sampleFailures": [],
             }
             continue
 
-        raw_col = raw_df[actual_col].copy()
+        caster = casters.get(expected_type, _cast_string)
+        typed_col, failures = caster(raw_df[actual_col].copy())
 
-        if expected_type == "numeric":
-            cleaned = raw_col.astype(str).str.replace(r"[,$€£¥\s]", "", regex=True)
-            typed_col = pd.to_numeric(cleaned, errors="coerce")
-            failures = raw_col[typed_col.isna() & raw_col.notna() & (raw_col.astype(str).str.strip() != "")]
-            valid = int(typed_col.notna().sum())
-            typed_df[fk] = typed_col
-
-        elif expected_type == "datetime":
-            # Profile the column to detect DMY vs MDY format
-            order = _profile_date_series(raw_col)
-            masks = _DMY_MASKS if order == "DMY" else _MDY_MASKS
-            # Parse each value through the format-aware multi-gate pipeline
-            parsed = raw_col.apply(lambda v: _parse_one_date(v, masks))
-            typed_col = pd.to_datetime(parsed, errors="coerce")
-            failures = raw_col[typed_col.isna() & raw_col.notna() & (raw_col.astype(str).str.strip() != "")]
-            valid = int(typed_col.notna().sum())
-            typed_df[fk] = typed_col
-
-        else:  # string
-            typed_col = raw_col.astype(str).str.strip()
-            typed_col = typed_col.replace({"nan": "", "None": "", "NULL": "", "<NA>": ""})
-            failures = pd.Series([], dtype=str)
+        if expected_type == "string":
             valid = int((typed_col != "").sum())
-            typed_df[fk] = typed_col
+        else:
+            valid = int(typed_col.notna().sum())
 
-        null_count = total_rows - valid
-        parse_rate = round(valid / total_rows * 100, 2) if total_rows > 0 else 0.0
-        sample_fails = failures.head(5).tolist() if len(failures) > 0 else []
-
+        typed_df[fk] = typed_col
         cast_report["fields"][fk] = {
             "mapped": True,
             "sourceColumn": source_col,
             "validRows": valid,
-            "nullRows": null_count,
-            "parseRate": parse_rate,
-            "sampleFailures": [str(s) for s in sample_fails],
+            "nullRows": total_rows - valid,
+            "parseRate": round(valid / total_rows * 100, 2) if total_rows else 0.0,
+            "sampleFailures": [str(s) for s in failures.head(5).tolist()],
         }
 
-    # Store ALL datetime columns as ISO strings for database portability
+    # Store datetime columns as ISO strings for DB portability
     for dt_fk in _DATETIME_FIELD_KEYS:
         if dt_fk in typed_df.columns:
             dt_col = typed_df[dt_fk]
@@ -1056,6 +674,7 @@ def build_typed_table(
                 typed_df[dt_fk] = dt_col.dt.strftime("%Y-%m-%dT%H:%M:%S")
                 typed_df.loc[nat_mask, dt_fk] = None
 
+    # Persist analysis_data table
     conn._conn.register("_temp_df", typed_df)
     try:
         conn.execute('DROP TABLE IF EXISTS "analysis_data"')
@@ -1066,7 +685,7 @@ def build_typed_table(
         except Exception:
             pass
 
-    # Critical null audit (only total_spend + invoice_date)
+    # Critical null audit (total_spend + invoice_date)
     mask = pd.Series(False, index=typed_df.index)
     if "total_spend" in typed_df.columns:
         mask = mask | typed_df["total_spend"].isna()

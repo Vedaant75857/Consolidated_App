@@ -560,21 +560,21 @@ A complete list of every Python function in the app, organised by module and ste
 
 | Function | File | What it does |
 |----------|------|--------------|
-| `map_columns` | `routes/mapping_routes.py` | Receives the "Detect Columns" request, runs deterministic matching then AI mapping, and returns suggestions. |
-| `confirm_mapping` | `routes/mapping_routes.py` | Saves the user's confirmed field-to-column mapping, builds the typed analysis table, and returns a cast report. |
-| `deterministic_match` | `services/mapping/column_mapper.py` | Matches upload columns to standard fields using exact name comparison first, then a fuzzy token-based matching pass that scores similarity and checks type compatibility. |
-| `_tokenize` | `services/mapping/column_mapper.py` | Breaks a column name into lowercase words for fuzzy comparison (splits on spaces, underscores, and camelCase). |
-| `_fuzzy_score` | `services/mapping/column_mapper.py` | Scores how similar a column name is to a standard field name using token overlap and substring checks. |
-| `_ai_map_single_field` | `services/mapping/column_mapper.py` | Asks the AI to suggest the best column match for one standard procurement field, sending column statistics (type, null rate, distinct count) for better accuracy. |
-| `ai_map_columns` | `services/mapping/column_mapper.py` | Runs AI mapping in parallel for all fields that couldn't be matched automatically, then validates results to resolve conflicts and check column existence. |
-| `_validate_ai_results` | `services/mapping/column_mapper.py` | Checks AI mapping results for conflicts (two fields claiming the same column), verifies column existence, and checks type compatibility. Reassigns conflicting columns by confidence. |
-| `_excel_serial` | `services/mapping/column_mapper.py` | Converts an Excel serial number into a proper date (same logic as Module 2). |
-| `_date_preprocess` | `services/mapping/column_mapper.py` | Cleans up a raw date string before trying to parse it. |
-| `_parse_partial_date` | `services/mapping/column_mapper.py` | Handles incomplete dates like just a year or month-year. |
-| `_try_date_masks` | `services/mapping/column_mapper.py` | Tries known date formats one by one until one works. |
-| `_profile_date_series` | `services/mapping/column_mapper.py` | Examines sample dates to guess if the data uses day-first or month-first ordering. |
-| `_parse_one_date` | `services/mapping/column_mapper.py` | Full date parser for one value — tries every method to turn it into a proper date. |
+| `map_columns` | `routes/mapping_routes.py` | Receives the "Detect Columns" request, runs deterministic matching then a single-batch AI call for unmatched fields, and returns suggestions. |
+| `confirm_mapping` | `routes/mapping_routes.py` | Saves the user's confirmed field-to-column mapping, builds the typed analysis table, precomputes feasibility, and returns a cast report. |
+| `deterministic_match` | `services/mapping/column_mapper.py` | Matches upload columns to the 32 standard procurement fields using exact name and alias comparison (case-insensitive). |
+| `ai_map_columns` | `services/mapping/column_mapper.py` | Sends all unmatched fields and unmatched columns to the AI in a single batch call, validates type compatibility, resolves duplicate claims, and returns mapping results. |
+| `_cast_numeric` | `services/mapping/column_mapper.py` | Converts a column to numbers, stripping currency symbols and commas. Reports which values couldn't be parsed. |
+| `_cast_datetime` | `services/mapping/column_mapper.py` | Converts a column to dates using the date_parser module. Reports which values couldn't be parsed. |
+| `_cast_string` | `services/mapping/column_mapper.py` | Cleans a column to trimmed strings, replacing null-like values with empty strings. |
 | `build_typed_table` | `services/mapping/column_mapper.py` | Creates the unified "analysis_data" table by pulling mapped columns from all source tables, converting types, and reporting what worked. |
+| `_excel_serial` | `services/mapping/date_parser.py` | Converts an Excel serial number into a proper date. |
+| `_date_preprocess` | `services/mapping/date_parser.py` | Cleans up a raw date string before trying to parse it. |
+| `_parse_partial_date` | `services/mapping/date_parser.py` | Handles incomplete dates like just a year or month-year. |
+| `_try_date_masks` | `services/mapping/date_parser.py` | Tries known date formats one by one until one works. |
+| `_profile_date_series` | `services/mapping/date_parser.py` | Examines sample dates to guess if the data uses day-first or month-first ordering. |
+| `_parse_one_date` | `services/mapping/date_parser.py` | Full date parser for one value — tries every method to turn it into a proper date. |
+| `parse_date_column` | `services/mapping/date_parser.py` | Profiles a column for date order (DMY/MDY) and parses every value to a datetime. |
 
 ### Spend Quality Assessment
 
@@ -597,12 +597,13 @@ A complete list of every Python function in the app, organised by module and ste
 | `_generate_description_insight` | `services/spend_quality_assessment/description_quality.py` | Asks the AI to assess description quality — are they specific enough? Do they contain useful detail? |
 | `run_description_quality_analysis` | `services/spend_quality_assessment/description_quality.py` | Runs the full description quality check across all description columns. |
 
-### Procurement Views
+### Analysis Feasibility
 
 | Function | File | What it does |
 |----------|------|--------------|
-| `procurement_views` | `routes/mapping_routes.py` | Returns which advanced procurement analyses the data can support based on which columns were mapped. |
-| `get_procurement_view_availability` | `services/procurement_views/procurement_views.py` | Checks each registered procurement view and reports whether it's available or which required columns are missing. |
+| `procurement_views` | `routes/mapping_routes.py` | Returns analysis feasibility results — which Spend X-ray dashboards and Category Navigator levers the data can support based on which columns were mapped. |
+| `get_procurement_view_availability` | `services/procurement_views/procurement_views.py` | Checks both the Spend X-ray registry (24 dashboards) and Category Navigator registry (14 levers) against the current mapping and reports which are feasible and which fields are missing. |
+| `_check_registry` | `services/procurement_views/procurement_views.py` | Checks every entry in one registry against the set of mapped field keys and returns feasibility with missing fields listed. |
 
 ### Select Views
 

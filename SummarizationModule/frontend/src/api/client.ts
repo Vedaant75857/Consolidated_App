@@ -9,7 +9,7 @@ import type {
   ViewDefinition,
   ViewResult,
   EmailContext,
-  ProcurementViewAvailability,
+  AnalysisFeasibilityResult,
 } from "../types";
 
 const BASE = "/api";
@@ -73,7 +73,7 @@ export async function confirmMapping(
   sessionId: string,
   mapping: Record<string, string | null>
 ) {
-  return post<{ castReport: CastReport; procurementViews?: ProcurementViewAvailability[] }>("/confirm-mapping", {
+  return post<{ castReport: CastReport; procurementViews?: AnalysisFeasibilityResult }>("/confirm-mapping", {
     sessionId,
     mapping,
   });
@@ -84,7 +84,7 @@ export async function getAvailableViews(sessionId: string) {
 }
 
 export async function getProcurementViews(sessionId: string) {
-  return post<{ views: ProcurementViewAvailability[] }>("/procurement-views", {
+  return post<AnalysisFeasibilityResult>("/procurement-views", {
     sessionId,
   });
 }

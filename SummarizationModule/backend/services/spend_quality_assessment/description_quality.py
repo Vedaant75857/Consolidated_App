@@ -16,19 +16,12 @@ from services.spend_quality_assessment.ai_prompts import DESCRIPTION_QUALITY_PRO
 
 logger = logging.getLogger(__name__)
 
-# Fallback priority order for the "best description" logic used elsewhere
 DESCRIPTION_FIELD_KEYS: list[str] = [
-    "invoice_description",
-    "po_description",
-    "material_description",
-    "gl_account_description",
+    "description",
 ]
 
 DESCRIPTION_DISPLAY_NAMES: dict[str, str] = {
-    "invoice_description": "Invoice Description",
-    "po_description": "PO Description",
-    "material_description": "Material Description",
-    "gl_account_description": "GL Account Description",
+    "description": "Description",
 }
 
 NULL_PROXY_VALUES: list[str] = [
@@ -66,8 +59,8 @@ def _compute_description_column_stats(
     """Compute full-dataset stats and top-10 descriptions for one column.
 
     Args:
-        conn: SQLite connection with ``analysis_data`` table.
-        field_key: Column name in analysis_data (e.g. ``invoice_description``).
+        conn: DuckDB connection with ``analysis_data`` table.
+        field_key: Column name in analysis_data (e.g. ``description``).
         spend_col: Spend column to aggregate (``total_spend``).
         total_rows: Total row count in analysis_data.
 
@@ -222,8 +215,8 @@ def _top_descriptions_by_frequency(
     """Return the *limit* most frequently occurring descriptions with spend.
 
     Args:
-        conn: SQLite connection with ``analysis_data`` table.
-        field_key: Description column name (e.g. ``invoice_description``).
+        conn: DuckDB connection with ``analysis_data`` table.
+        field_key: Description column name (e.g. ``description``).
         spend_col: Spend column to aggregate (``total_spend``).
         limit: Max descriptions to return (default 100).
 
@@ -288,10 +281,10 @@ def run_description_quality_analysis(
     available_columns: set[str],
     api_key: str,
 ) -> list[dict[str, Any]]:
-    """Run description quality analysis for all 4 description columns.
+    """Run description quality analysis for the description column.
 
     Args:
-        conn: SQLite connection with ``analysis_data`` table.
+        conn: DuckDB connection with ``analysis_data`` table.
         available_columns: Set of column names present in analysis_data.
         api_key: API key for LLM calls.
 

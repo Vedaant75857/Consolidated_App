@@ -32,7 +32,7 @@ export interface AIMapping {
   expectedType: string;
   bestMatch: string | null;
   bestMatchDetectedType?: string;
-  confidence: number;
+  confidence: string;
   alternatives: string[];
   reasoning: string;
 }
@@ -130,6 +130,11 @@ export interface ProcurementViewAvailability {
   requiredFields: string[];
   available: boolean;
   missingFields: string[];
+}
+
+export interface AnalysisFeasibilityResult {
+  spendXray: ProcurementViewAvailability[];
+  categoryNavigator: ProcurementViewAvailability[];
 }
 
 export type AppStep = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;

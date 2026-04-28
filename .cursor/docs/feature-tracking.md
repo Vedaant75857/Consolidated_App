@@ -423,8 +423,8 @@ The Spend Summarizer takes a procurement dataset and produces charts, quality as
 
 | # | Feature | Details |
 |---|---------|---------|
-| 1 | Detect columns | Click "Detect Columns" to run AI column detection that suggests which of your columns match standard procurement fields. |
-| 2 | Mapping grid | Review a table showing each standard field, its expected type (numeric/datetime/string), the AI's suggested match, and status (mapped or unmapped). |
+| 1 | Detect columns | Click "Detect Columns" to run AI column detection. The app first tries exact name and alias matching, then sends all remaining unmatched fields to the AI in a single batch call for fast, accurate mapping. |
+| 2 | Mapping grid | Review a table showing each of the 32 standard procurement fields (e.g. Business Unit, Contract ID, Vendor Name, Spend Classification Level 1-4), its expected type (numeric/datetime/string), the AI's suggested match, and status (mapped or unmapped). |
 | 3 | Change mapping | Use the dropdown on any field to pick a different column. Options include the AI's pick, alternatives, and a full list of all your columns. |
 | 4 | Unmap a field | Select "-- Not mapped --" in the dropdown to leave a field unmapped. |
 | 5 | Mapped count | A counter at the top shows how many fields have been mapped out of the total. |
@@ -478,16 +478,18 @@ The Spend Summarizer takes a procurement dataset and produces charts, quality as
 | 10 | Export CSV | Click the CSV button on any view to download its data as a CSV file. |
 | 11 | Excluded rows note | If rows were excluded due to null values, a footnote shows how many. |
 | 12 | Loading spinners | While a view is recomputing (e.g. after changing a slider), a spinner overlay appears on the chart. |
-| 13 | View Procurement Feasibility | Click this button at the bottom to continue to Procurement Views. |
+| 13 | View Analysis Feasibility | Click this button at the bottom to continue to Analysis Feasibility. |
 
-### Procurement Views
+### Analysis Feasibility
 
 | # | Feature | Details |
 |---|---------|---------|
-| 1 | Loading state | A spinner with "Checking procurement view feasibility…" appears while results load. |
-| 2 | Feasibility cards | A responsive grid of cards shows each advanced procurement analysis. Available views have a green check. Unavailable views show which required columns are missing. |
-| 3 | Error display | If the check fails, an error message is shown. |
-| 4 | Continue to Email | If an API key is set, click "Continue to Email" to open the email context form. |
+| 1 | Loading state | A spinner with "Checking analysis feasibility…" appears while results load. |
+| 2 | Two tabs | Switch between "Spend X-ray Analysis" and "Category Navigator Levers" using tabs at the top. Each tab shows a count badge (e.g. "18/22") indicating how many items are feasible out of the total. |
+| 3 | Summary bar | Below the tabs, a line shows how many analyses are feasible vs total for the active tab. |
+| 4 | Feasibility cards | A responsive grid of cards shows each dashboard or lever. Feasible items have a green check. Non-feasible items show which required columns are missing. |
+| 5 | Error display | If the check fails, an error message is shown. |
+| 6 | Continue to Email | If an API key is set, click "Continue to Email" to open the email context form. |
 
 ### Email
 
@@ -509,7 +511,7 @@ The Spend Summarizer takes a procurement dataset and produces charts, quality as
 | # | Feature | Details |
 |---|---------|---------|
 | 9 | Loading state | While the AI generates the email, a spinner shows with "Generating your email…" and a time estimate. |
-| 10 | Back to Procurement Views | Click "Back to Procurement Views" to return to the Procurement Views step. |
+| 10 | Back to Analysis Feasibility | Click "Back to Analysis Feasibility" to return to the Analysis Feasibility step. |
 | 11 | Edit/Preview toggle | Switch between "Edit" mode (editable text fields) and "Preview" mode (formatted display). |
 | 12 | Edit subject | In edit mode, change the email subject line in a text field. |
 | 13 | Edit body | In edit mode, edit the email body in a large text area. |

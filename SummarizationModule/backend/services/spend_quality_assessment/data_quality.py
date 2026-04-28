@@ -301,7 +301,7 @@ def _compute_spend_bifurcation(
             "negativeSpend": round(float(row[1] or 0)),
         }
 
-    # Local currency (local_spend grouped by currency)
+    # Local currency (grouped by currency code when available, aggregate otherwise)
     if "local_spend" in available and "currency" in available:
         rows = conn.execute(
             """

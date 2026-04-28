@@ -23,7 +23,7 @@ import type {
   CastReport,
   ViewConfig,
   EmailContext,
-  ProcurementViewAvailability,
+  AnalysisFeasibilityResult,
 } from "./types";
 import {
   getSessionState,
@@ -60,7 +60,7 @@ const SIDEBAR_ITEMS = [
   { name: "Spend Quality Assessment", steps: [4] as AppStep[] },
   { name: "Select Views", steps: [5] as AppStep[] },
   { name: "Dashboard", steps: [6] as AppStep[] },
-  { name: "Procurement Views", steps: [7] as AppStep[] },
+  { name: "Analysis Feasibility", steps: [7] as AppStep[] },
   { name: "Email", steps: [8] as AppStep[] },
 ];
 
@@ -71,7 +71,7 @@ const STEP_META: Record<number, { title: string; description: string }> = {
   4: { title: "Spend Quality Assessment", description: "Assess whether your data is ready for accurate spend analysis and cube creation by evaluating coverage, structure, and key quality signals." },
   5: { title: "Select Views", description: "Choose which analyses to generate from your data." },
   6: { title: "Dashboard", description: "Review detailed view summaries and export results." },
-  7: { title: "Spend X-ray Feasibility", description: "Check which procurement analysis views your data can support." },
+  7: { title: "Analysis Feasibility", description: "Check which Spend X-ray dashboards and Category Navigator levers your data can support." },
   8: { title: "Email", description: "Generate and edit a client-ready email summary." },
 };
 
@@ -112,7 +112,7 @@ export default function App() {
   const [previews, setPreviews] = useState<Record<string, PreviewData>>({});
   const [uploadWarnings, setUploadWarnings] = useState<UploadWarning[]>([]);
   const [castReport, setCastReport] = useState<CastReport | null>(null);
-  const [cachedProcurementViews, setCachedProcurementViews] = useState<ProcurementViewAvailability[] | null>(null);
+  const [cachedProcurementViews, setCachedProcurementViews] = useState<AnalysisFeasibilityResult | null>(null);
   const [availableViews, setAvailableViews] = useState<ViewDefinition[]>([]);
   const [viewResults, setViewResults] = useState<ViewResult[]>([]);
   const [savedAiMappings, setSavedAiMappings] = useState<AIMapping[] | null>(null);
@@ -154,6 +154,7 @@ export default function App() {
         setSavedStandardFields(null);
         setConfirmedMapping({});
         setCastReport(null);
+        setCachedProcurementViews(null);
       }
       if (fromStep < 5) {
         setAvailableViews([]);
@@ -684,6 +685,7 @@ export default function App() {
     setPreviews({});
     setUploadWarnings([]);
     setCastReport(null);
+    setCachedProcurementViews(null);
     setAvailableViews([]);
     setViewResults([]);
     setSavedAiMappings(null);

@@ -52,6 +52,7 @@ def map_columns():
                         "bestMatch": exact_matched[fk],
                         "alternatives": [],
                         "reasoning": "Exact name match",
+                        "confidence": "high",
                         "expectedType": field["expectedType"],
                     })
                 else:
@@ -80,6 +81,7 @@ def map_columns():
 
 @mapping_bp.route("/procurement-views", methods=["POST"])
 def procurement_views():
+    """Return analysis feasibility (Spend X-ray + Category Navigator)."""
     try:
         body = request.get_json(force=True)
         session_id = body.get("sessionId")
@@ -89,20 +91,19 @@ def procurement_views():
 
         conn = get_session_db(session_id)
 
-        # Read precomputed result (cached during /confirm-mapping)
-        views = get_meta(conn, "procurement_views")
-        if views:
-            return jsonify({"views": views})
+        cached = get_meta(conn, "procurement_views")
+        if cached:
+            return jsonify(cached)
 
-        # Fallback: compute on the fly if cache is missing
         mapping = get_meta(conn, "mapping")
         if not mapping:
             return jsonify({"error": "No mapping found. Complete column mapping first."}), 400
 
-        views = get_procurement_view_availability(mapping)
-        return jsonify({"views": views})
+        result = get_procurement_view_availability(mapping)
+        return jsonify(result)
     except Exception as exc:
-        logger.exception("procurement-views failed for session %s", body.get("sessionId", "?"))
+        sid = body.get("sessionId", "?") if "body" in dir() else "?"
+        logger.exception("procurement-views failed for session %s", sid)
         return jsonify({"error": str(exc)}), 500
 
 
