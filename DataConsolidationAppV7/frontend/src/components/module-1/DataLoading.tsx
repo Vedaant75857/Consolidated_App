@@ -314,6 +314,7 @@ export default function DataLoading({
   const [expandedTable, setExpandedTable] = useState<string | null>(null);
   const [headerEditTable, setHeaderEditTable] = useState<string | null>(null);
   const [confirmDeleteKey, setConfirmDeleteKey] = useState<string | null>(null);
+  const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set());
   const [selectedRowIds, setSelectedRowIds] = useState<Record<string, Set<string | number>>>({});
   const dragCounter = useRef(0);
   const zipInputRef = useRef<HTMLInputElement>(null);
@@ -367,6 +368,36 @@ export default function DataLoading({
     if (!window.confirm(`Delete ${ids.length} selected row(s)?`)) return;
     onDeleteRows(tableKey, ids);
     setSelectedRowIds(prev => { const n = { ...prev }; delete n[tableKey]; return n; });
+  };
+
+  const toggleTableSelection = (tableKey: string) => {
+    setSelectedTables(prev => {
+      const next = new Set(prev);
+      if (next.has(tableKey)) next.delete(tableKey); else next.add(tableKey);
+      return next;
+    });
+  };
+
+  const allTablesSelected = inventory.length > 0 && selectedTables.size === inventory.length;
+
+  const toggleSelectAllTables = () => {
+    if (allTablesSelected) {
+      setSelectedTables(new Set());
+    } else {
+      setSelectedTables(new Set(inventory.map((inv) => inv.table_key)));
+    }
+  };
+
+  const handleBulkDeleteTables = async () => {
+    const keys = Array.from(selectedTables);
+    if (keys.length === 0) return;
+    if (!window.confirm(`Delete ${keys.length} selected table${keys.length !== 1 ? "s" : ""}?`)) return;
+    for (const key of keys) {
+      onDeleteTable(key);
+    }
+    setSelectedTables(new Set());
+    setExpandedTable(null);
+    setConfirmDeleteKey(null);
   };
 
   const processDroppedItems = useCallback(async (items: DataTransferItemList) => {
@@ -700,15 +731,60 @@ export default function DataLoading({
             </div>
           )}
 
+          {/* Bulk selection bar */}
+          {selectedTables.size > 0 && (
+            <div className="mx-6 mt-4 flex items-center gap-2 px-3 py-2 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-xl">
+              <span className="text-xs font-bold text-red-600 dark:text-red-400">
+                {selectedTables.size} table{selectedTables.size !== 1 ? "s" : ""} selected
+              </span>
+              <button
+                type="button"
+                onClick={handleBulkDeleteTables}
+                className="ml-auto px-3 py-1 text-[11px] font-bold bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
+              >
+                Delete Selected
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedTables(new Set())}
+                className="px-2 py-1 text-[11px] font-medium border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 rounded-md hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
+              >
+                Clear
+              </button>
+            </div>
+          )}
+
           <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
+            {/* Select All header row */}
+            {inventory.length > 1 && (
+              <div className="flex items-center gap-2 px-6 py-2 bg-neutral-50/50 dark:bg-neutral-800/30">
+                <input
+                  type="checkbox"
+                  checked={allTablesSelected}
+                  onChange={toggleSelectAllTables}
+                  className="w-3.5 h-3.5 rounded border-neutral-300 dark:border-neutral-600 text-red-600 focus:ring-red-500/30 cursor-pointer"
+                />
+                <span className="text-[11px] font-medium text-neutral-500 dark:text-neutral-400">
+                  Select All
+                </span>
+              </div>
+            )}
             {inventory.map((inv, i) => {
               const isExpanded = expandedTable === inv.table_key;
               const isHeaderEdit = headerEditTable === inv.table_key;
               const preview = previews[inv.table_key];
               const isConfirmingDelete = confirmDeleteKey === inv.table_key;
+              const isTableSelected = selectedTables.has(inv.table_key);
               return (
                 <div key={i}>
                   <div className="flex items-center px-6 py-4 hover:bg-neutral-50/50 dark:hover:bg-neutral-800 transition-colors">
+                    <input
+                      type="checkbox"
+                      checked={isTableSelected}
+                      onChange={() => toggleTableSelection(inv.table_key)}
+                      onClick={(e) => e.stopPropagation()}
+                      className="w-3.5 h-3.5 rounded border-neutral-300 dark:border-neutral-600 text-red-600 focus:ring-red-500/30 cursor-pointer mr-3 shrink-0"
+                    />
                     <button
                       type="button"
                       onClick={() => {

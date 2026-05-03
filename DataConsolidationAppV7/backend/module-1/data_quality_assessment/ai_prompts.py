@@ -1,7 +1,14 @@
-"""Per-panel AI prompts for the redesigned Data Quality Assessment.
+"""Consolidated AI prompts for the Data Quality Assessment.
 
-Each panel (Date, Currency, Payment Terms, Country/Region, Supplier) has its
-own system prompt and a thin wrapper around ``shared.ai.call_ai_json``.
+Two thematic LLM calls replace the original five per-panel calls:
+
+1. **Financial Quality** — date, currency, payment terms
+2. **Entity Quality** — country/region, supplier
+
+Each panel's insight is returned as a JSON array of exactly 3 strings:
+  [main finding, reasoning with numbers, examples from data]
+
+Individual per-panel wrappers are kept for backward-compatible routes.
 """
 
 from __future__ import annotations
@@ -13,233 +20,233 @@ from shared.ai import call_ai_json
 
 logger = logging.getLogger(__name__)
 
-# ── Date Analysis ─────────────────────────────────────────────────────────
+# ── Shared instruction block (appended to every system prompt) ────────────
 
-DATE_SYSTEM_PROMPT = """\
-You are a senior procurement data-quality consultant. You will receive a JSON
-payload describing a date column analysis from a client's procurement dataset.
+_INSIGHT_FORMAT_RULES = """\
+### Output rules (apply to EVERY insight array you produce)
 
-The payload includes:
-- `formatTable`: per-file date format detection (fileName, dominantFormat,
-  formatPcts, examples, consistent flag)
-- `consistent`: whether all files use the same dominant date format
-- `pivotData`: a year x month spend matrix (may be null if unavailable)
-- `selectedColumn`: the date column being analysed
-
-### Instructions
-
-Respond with **exactly 2–3 short bullet points** (no more):
-
-1. If formats are **inconsistent** across files, state that **date
-   normalisation is required** and name which files differ. If consistent,
-   state so in one sentence.
-2. If `pivotData` is provided, note one key finding: seasonality, trend,
-   or data gap.
-3. Optionally add one sentence on an anomaly or recommendation.
-
-Keep the total response to 2–3 lines. Each bullet must be one sentence
-(under 30 words). Do NOT provide a full narrative, do NOT list every file
-individually.
-
-### Output format
-
-Return JSON:
-```
-{
-  "insight": "- bullet 1\\n- bullet 2\\n- bullet 3"
-}
-```
-
-Use `\\n` to separate bullets.  Use markdown **bold** for key numbers and
-findings.
+- Each insight is a JSON array of exactly **3** short strings (10-15 words max each).
+- Line 1: the single most important quality observation (the finding).
+- Line 2: why it matters, backed by numbers from the data (the reasoning).
+- Line 3: concrete example values taken from the data (the evidence).
+- Do NOT prefix lines with labels like "Finding:", "Why:", or "e.g.".
+- Use markdown **bold** for key numbers and column names.
+- If there is not enough data for a meaningful insight, return
+  ["Insufficient data for analysis", "Column has too few non-null values", "N/A"].
 """
 
-# ── Currency Analysis ─────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# Prompt 1: Spend & Financial Quality (date + currency + payment terms)
+# ═══════════════════════════════════════════════════════════════════════════
 
-CURRENCY_SYSTEM_PROMPT = """\
+FINANCIAL_SYSTEM_PROMPT = f"""\
 You are a senior procurement data-quality consultant. You will receive a JSON
-payload with a currency quality analysis table from a client's procurement
-dataset.
+payload containing analysis results for three financial panels from a client's
+procurement dataset:
 
-The payload includes:
-- `currencyTable`: per-currency breakdown with currencyCode, rowCount,
-  rowPct, localSpend, reportingSpend
-- `distinctCount`: number of distinct currency codes
-- `codes`: list of all currency codes found
+- **datePayload**: date column analysis (formatTable, consistent flag, pivotData,
+  selectedColumn, columnMatchType, fillRate)
+- **currencyPayload**: currency distribution (currencyTable, distinctCount, codes,
+  columnMatchType, fillRate)
+- **paymentTermsPayload**: payment terms breakdown (paymentTerms, totalSpend,
+  uniqueCount, columnMatchType, fillRate)
+
+Any payload may be null if the column was not found in the data.
 
 ### Instructions
 
-1. Summarise the currency distribution (dominant currency, long-tail
-   currencies).
-2. Flag that **currency standardisation is required** if multiple currencies
-   exist.
-3. Note if any currency codes look non-standard or potentially erroneous.
-4. Comment on the availability of local vs reporting currency spend data.
-5. Keep insights concise, actionable, and in bullet-point format.
+For each non-null payload, produce an insight array.
+
+**Date insight**: focus on format consistency across files; mention seasonality
+or data gaps from pivotData when available. Reference the actual column name.
+
+**Currency insight**: note the dominant currency, whether multi-currency
+standardisation is needed, and any suspicious currency codes.
+
+**Payment terms insight**: highlight standardisation opportunities (duplicates
+like "Net 30" / "NET30"), dominant terms, and working-capital implications.
+
+If a panel's column was found via fuzzy match (columnMatchType = "fuzzy"),
+mention that the column name did not match exactly and may need review.
+
+{_INSIGHT_FORMAT_RULES}
 
 ### Output format
 
 Return JSON:
-```
-{
-  "insight": "- bullet 1\\n- bullet 2\\n- bullet 3"
-}
-```
-
-Use `\\n` to separate bullets.  Use **bold** for key numbers.
+{{
+  "dateInsight": ["...", "...", "..."] or null,
+  "currencyInsight": ["...", "...", "..."] or null,
+  "paymentTermsInsight": ["...", "...", "..."] or null
+}}
 """
 
-# ── Payment Terms Analysis ────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# Prompt 2: Entity Quality (country/region + supplier)
+# ═══════════════════════════════════════════════════════════════════════════
 
-PAYMENT_TERMS_SYSTEM_PROMPT = """\
+ENTITY_SYSTEM_PROMPT = f"""\
 You are a senior procurement data-quality consultant. You will receive a JSON
-payload with payment terms analysis from a client's procurement dataset.
+payload containing analysis results for two entity panels from a client's
+procurement dataset:
 
-The payload includes:
-- `paymentTerms`: list of objects with term, spend, and pctOfTotal
-- `totalSpend`: total spend across all payment terms
-- `uniqueCount`: number of distinct payment terms
+- **countryPayload**: unique country values, column name, columnMatchType, fillRate
+- **regionPayload**: unique region values, column name (may be null)
+- **supplierPayload**: supplier names sample, supplierCount, columnMatchType,
+  fillRate, hasReportingSpend, top20 spend data
+
+Any payload may be null if the column was not found.
 
 ### Instructions
 
-1. Summarise the payment terms distribution.
-2. Identify if there is scope for **standardisation of payment terms** — look
-   for terms that appear to be duplicates or variations (e.g. "Net 30",
-   "NET30", "Net-30", "30 Days Net").
-3. Flag dominant payment terms and any unusual or non-standard terms.
-4. Comment on working capital implications if relevant.
-5. Keep insights concise, actionable, and in bullet-point format.
+**Country insight**: look for naming inconsistencies (e.g. "US" vs "United States"),
+mixed formats, and non-standard codes. Reference the actual column name.
+
+**Region insight**: same — naming inconsistencies, duplicates, non-standard entries.
+Return null if no region data.
+
+**Supplier insight**: assess whether supplier name normalisation is needed. Give
+specific example pairs from the data (e.g. "Amazon Inc" / "AMAZON INC."). If
+spend data is available, note concentration (e.g. top-N suppliers cover X% of spend).
+
+If a column was found via fuzzy match, note the inexact match.
+
+{_INSIGHT_FORMAT_RULES}
 
 ### Output format
 
 Return JSON:
-```
-{
-  "insight": "- bullet 1\\n- bullet 2\\n- bullet 3"
-}
-```
-
-Use `\\n` to separate bullets.  Use **bold** for key numbers.
-"""
-
-# ── Country / Region Analysis ─────────────────────────────────────────────
-
-COUNTRY_REGION_SYSTEM_PROMPT = """\
-You are a senior procurement data-quality consultant. You will receive a JSON
-payload with country and/or region data from a client's procurement dataset.
-
-The payload includes:
-- `countryValues`: list of unique country names/codes found (may be null)
-- `regionValues`: list of unique region names found (may be null)
-- `countryColumn`: the column name analysed for countries (may be null)
-- `regionColumn`: the column name analysed for regions (may be null)
-
-### Instructions
-
-1. For **countries**: check for standardisation scope.  Look for:
-   - Mixed formats (e.g. "US" vs "United States" vs "USA")
-   - Inconsistent casing
-   - Spelling variations or abbreviations
-   - Non-standard or potentially erroneous entries
-   Report findings and flag **country name standardisation is required** if
-   issues exist.
-
-2. For **regions**: same analysis — look for naming inconsistencies, duplicate
-   entries with different spellings, non-standard entries.
-   Flag **region standardisation is required** if issues exist.
-
-3. Keep insights concise, actionable, and in bullet-point format.
-
-### Output format
-
-Return JSON:
-```
-{
-  "countryInsight": "- bullet 1\\n- bullet 2" or null,
-  "regionInsight": "- bullet 1\\n- bullet 2" or null
-}
-```
-
-Set a key to null when no data was provided for that section.
-Use `\\n` to separate bullets.  Use **bold** for key findings.
-"""
-
-# ── Supplier Analysis ─────────────────────────────────────────────────────
-
-SUPPLIER_SYSTEM_PROMPT = """\
-You are a senior procurement data-quality consultant. You will receive a JSON
-payload with a list of supplier names from a client's procurement dataset.
-
-### Instructions
-
-Respond with **exactly 2–3 short bullet points** (no more):
-
-1. State whether **supplier name normalisation is needed** (Yes or No).
-2. Give **2–3 specific example supplier name pairs** from the data that
-   likely need normalisation (e.g. "Amazon Inc" / "AMAZON INC.").
-3. Optionally add one sentence on the type of issue (duplicates, casing,
-   abbreviations).
-
-Keep the total response to 2–3 lines. Do NOT provide a full narrative or
-percentage estimates.
-
-### Output format
-
-Return JSON:
-```
-{
-  "insight": "- bullet 1\\n- bullet 2\\n- bullet 3"
-}
-```
-
-Use `\\n` to separate bullets.  Use **bold** for key findings and examples.
+{{
+  "countryInsight": ["...", "...", "..."] or null,
+  "regionInsight": ["...", "...", "..."] or null,
+  "supplierInsight": ["...", "...", "..."] or null
+}}
 """
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Public wrappers — one per panel
+# Consolidated callers
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def generate_date_insight(payload: dict[str, Any], api_key: str) -> str:
-    """Generate AI insight for the date analysis panel."""
-    logger.info("Generating date analysis AI insight")
-    result = call_ai_json(DATE_SYSTEM_PROMPT, payload, api_key=api_key)
-    return str(result.get("insight", ""))
+def generate_financial_insights(
+    date_payload: dict[str, Any] | None,
+    currency_payload: dict[str, Any] | None,
+    payment_terms_payload: dict[str, Any] | None,
+    api_key: str,
+) -> dict[str, list[str] | None]:
+    """Call LLM once for date + currency + payment terms insights.
+
+    Returns:
+        Dict with keys ``dateInsight``, ``currencyInsight``,
+        ``paymentTermsInsight`` — each a 3-element list or None.
+    """
+    logger.info("Generating consolidated financial AI insights")
+    combined = {
+        "datePayload": date_payload,
+        "currencyPayload": currency_payload,
+        "paymentTermsPayload": payment_terms_payload,
+    }
+    result = call_ai_json(FINANCIAL_SYSTEM_PROMPT, combined, api_key=api_key)
+    return {
+        "dateInsight": _normalise_insight(result.get("dateInsight")),
+        "currencyInsight": _normalise_insight(result.get("currencyInsight")),
+        "paymentTermsInsight": _normalise_insight(result.get("paymentTermsInsight")),
+    }
 
 
-def generate_currency_insight(payload: dict[str, Any], api_key: str) -> str:
-    """Generate AI insight for the currency analysis panel."""
-    logger.info("Generating currency analysis AI insight")
-    result = call_ai_json(CURRENCY_SYSTEM_PROMPT, payload, api_key=api_key)
-    return str(result.get("insight", ""))
+def generate_entity_insights(
+    country_payload: dict[str, Any] | None,
+    region_payload: dict[str, Any] | None,
+    supplier_payload: dict[str, Any] | None,
+    api_key: str,
+) -> dict[str, list[str] | None]:
+    """Call LLM once for country + region + supplier insights.
+
+    Returns:
+        Dict with keys ``countryInsight``, ``regionInsight``,
+        ``supplierInsight`` — each a 3-element list or None.
+    """
+    logger.info("Generating consolidated entity AI insights")
+    combined = {
+        "countryPayload": country_payload,
+        "regionPayload": region_payload,
+        "supplierPayload": supplier_payload,
+    }
+    result = call_ai_json(ENTITY_SYSTEM_PROMPT, combined, api_key=api_key)
+    return {
+        "countryInsight": _normalise_insight(result.get("countryInsight")),
+        "regionInsight": _normalise_insight(result.get("regionInsight")),
+        "supplierInsight": _normalise_insight(result.get("supplierInsight")),
+    }
 
 
-def generate_payment_terms_insight(payload: dict[str, Any], api_key: str) -> str:
-    """Generate AI insight for the payment terms panel."""
-    logger.info("Generating payment terms AI insight")
-    result = call_ai_json(PAYMENT_TERMS_SYSTEM_PROMPT, payload, api_key=api_key)
-    return str(result.get("insight", ""))
+# ═══════════════════════════════════════════════════════════════════════════
+# Backward-compatible per-panel wrappers
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def generate_date_insight(payload: dict[str, Any], api_key: str) -> list[str] | None:
+    """Date-only insight (uses consolidated prompt with null siblings)."""
+    result = generate_financial_insights(payload, None, None, api_key)
+    return result["dateInsight"]
+
+
+def generate_currency_insight(payload: dict[str, Any], api_key: str) -> list[str] | None:
+    """Currency-only insight."""
+    result = generate_financial_insights(None, payload, None, api_key)
+    return result["currencyInsight"]
+
+
+def generate_payment_terms_insight(payload: dict[str, Any], api_key: str) -> list[str] | None:
+    """Payment terms-only insight."""
+    result = generate_financial_insights(None, None, payload, api_key)
+    return result["paymentTermsInsight"]
 
 
 def generate_country_region_insight(
     payload: dict[str, Any], api_key: str
-) -> dict[str, str | None]:
-    """Generate AI insights for the country/region panel.
-
-    Returns:
-        Dict with ``countryInsight`` and ``regionInsight`` (either may be None).
-    """
-    logger.info("Generating country/region AI insight")
-    result = call_ai_json(COUNTRY_REGION_SYSTEM_PROMPT, payload, api_key=api_key)
+) -> dict[str, list[str] | None]:
+    """Country/Region insight (backward-compatible return shape)."""
+    country_data = {
+        "countryValues": payload.get("countryValues"),
+        "countryColumn": payload.get("countryColumn"),
+    }
+    region_data = {
+        "regionValues": payload.get("regionValues"),
+        "regionColumn": payload.get("regionColumn"),
+    }
+    result = generate_entity_insights(
+        country_data if payload.get("countryValues") else None,
+        region_data if payload.get("regionValues") else None,
+        None,
+        api_key,
+    )
     return {
-        "countryInsight": result.get("countryInsight"),
-        "regionInsight": result.get("regionInsight"),
+        "countryInsight": result["countryInsight"],
+        "regionInsight": result["regionInsight"],
     }
 
 
-def generate_supplier_insight(payload: dict[str, Any], api_key: str) -> str:
-    """Generate AI insight for the supplier analysis panel."""
-    logger.info("Generating supplier analysis AI insight")
-    result = call_ai_json(SUPPLIER_SYSTEM_PROMPT, payload, api_key=api_key)
-    return str(result.get("insight", ""))
+def generate_supplier_insight(payload: dict[str, Any], api_key: str) -> list[str] | None:
+    """Supplier-only insight."""
+    result = generate_entity_insights(None, None, payload, api_key)
+    return result["supplierInsight"]
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────
+
+
+def _normalise_insight(raw: Any) -> list[str] | None:
+    """Ensure the insight is a list of strings, or None.
+
+    Handles legacy string-based responses by splitting on newlines.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        return [str(item).strip().lstrip("- ") for item in raw if item]
+    if isinstance(raw, str):
+        lines = [ln.strip().lstrip("- ") for ln in raw.split("\n") if ln.strip()]
+        return lines[:3] if lines else None
+    return None

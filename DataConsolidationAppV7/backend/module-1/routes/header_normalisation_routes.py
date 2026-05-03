@@ -214,6 +214,88 @@ def header_norm_download_excel():
         return jsonify({"error": str(exc)}), 500
 
 
+@header_normalisation_bp.route("/header-norm-download-summary", methods=["POST"])
+def header_norm_download_summary():
+    """Generate a concise Excel summary of column renames across all groups.
+
+    Each group gets its own sheet with two columns: Original Column Name and
+    Mapped Column Name.  Only columns that were actually renamed (action != DROP,
+    mapped_to non-empty and different from source_col) are included.
+
+    Expects JSON body: { sessionId, decisions: { groupId: [ColDecision, ...] } }
+    Returns: .xlsx attachment.
+    """
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+        all_decisions = body.get("decisions") or {}
+        if not session_id:
+            return jsonify({"error": "Missing sessionId"}), 400
+        if not all_decisions:
+            return jsonify({"error": "No decisions provided"}), 400
+
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_font = Font(bold=True, color="FFFFFF", size=10)
+        thin_border = Border(
+            left=Side(style="thin"), right=Side(style="thin"),
+            top=Side(style="thin"), bottom=Side(style="thin"),
+        )
+
+        for group_id, col_decisions in all_decisions.items():
+            rows_for_sheet: list[tuple[str, str]] = []
+            for cd in col_decisions:
+                action = str(cd.get("action", "KEEP")).upper()
+                if action == "DROP":
+                    continue
+                src = str(cd.get("source_col", ""))
+                mapped = str(cd.get("mapped_to") or cd.get("suggested_std_field") or "")
+                if not src:
+                    continue
+                rows_for_sheet.append((src, mapped if mapped else src))
+
+            if not rows_for_sheet:
+                continue
+
+            ws = wb.create_sheet(title=str(group_id)[:31])
+
+            for ci, label in enumerate(["Original Column Name", "Mapped Column Name"], 1):
+                cell = ws.cell(row=1, column=ci, value=label)
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal="center")
+                cell.border = thin_border
+
+            for ri, (orig, mapped) in enumerate(rows_for_sheet, 2):
+                ws.cell(row=ri, column=1, value=orig).border = thin_border
+                ws.cell(row=ri, column=2, value=mapped).border = thin_border
+
+            ws.column_dimensions["A"].width = 35
+            ws.column_dimensions["B"].width = 35
+
+        if len(wb.sheetnames) == 0:
+            return jsonify({"error": "No mapping data to export"}), 400
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return send_file(
+            buf,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            as_attachment=True,
+            download_name="header_mapping_summary.xlsx",
+        )
+    except ImportError:
+        return jsonify({"error": "openpyxl not installed on server"}), 500
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
 @header_normalisation_bp.route("/header-norm-upload-excel", methods=["POST"])
 def header_norm_upload_excel():
     """Parse an uploaded Excel file and extract normalization decisions from rows 1-3."""

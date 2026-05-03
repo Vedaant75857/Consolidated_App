@@ -13,18 +13,36 @@ import type {
 } from "../types";
 
 const BASE = "/api";
+const DEFAULT_TIMEOUT_MS = 120_000;
 
-async function post<T>(path: string, body?: any): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    method: "POST",
-    headers: body instanceof FormData ? {} : { "Content-Type": "application/json" },
-    body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || `Request failed: ${res.status}`);
+async function post<T>(
+  path: string,
+  body?: any,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      method: "POST",
+      headers: body instanceof FormData ? {} : { "Content-Type": "application/json" },
+      body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || `Request failed: ${res.status}`);
+    }
+    return res.json();
+  } catch (err: any) {
+    if (err?.name === "AbortError") {
+      throw new Error(`Request to ${path} timed out after ${timeoutMs / 1000}s`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
-  return res.json();
 }
 
 async function get<T>(path: string): Promise<T> {
@@ -240,7 +258,7 @@ export interface DescriptionQualityItem {
   spendCovered: number | null;
   top10: DescriptionTop10Item[];
   backendStats: DescriptionBackendStats | null;
-  aiInsight: string;
+  aiInsight: string[];
 }
 
 export interface SpendBifurcationCurrency {
@@ -252,6 +270,9 @@ export interface SpendBifurcationCurrency {
 export interface SpendBifurcationReporting {
   positiveSpend: number;
   negativeSpend: number;
+  negPctOfPos?: number;
+  negRowCount?: number;
+  netSpend?: number;
 }
 
 export interface SpendBifurcationResult {
@@ -259,8 +280,102 @@ export interface SpendBifurcationResult {
   local: SpendBifurcationCurrency[] | SpendBifurcationReporting | null;
 }
 
+export interface DatePeriodResult {
+  startDate: string;
+  endDate: string;
+  periodLabel: string;
+  monthsCovered: number;
+  feasible: boolean;
+  message?: string;
+}
+
+export interface SpendBreakdownResult {
+  ltmSpend: number;
+  currentFySpend: number;
+  priorFySpend: number;
+  currentFyLabel: string;
+  priorFyLabel: string;
+  yoyAbs: number;
+  yoyPct: number;
+  feasible: boolean;
+  message?: string;
+}
+
+export interface SupplierBreakdownResult {
+  totalSuppliers: number;
+  suppliersTo80Pct: number;
+  top10: { supplier: string; spend: number; sharePct: number }[];
+  duplicateNameFlags: number;
+  feasible: boolean;
+  message?: string;
+}
+
+export interface CategorizationBuckets {
+  high: number;
+  medium: number;
+  low: number;
+}
+
+export interface CategorizationEffortResult {
+  metrics: {
+    rowCount: number;
+    avgWordCount: number;
+    avgCharLength: number;
+    fillRate: number;
+    uniqueCount: number;
+    distinctPairs: number;
+    sampledCount: number;
+  };
+  buckets: CategorizationBuckets | null;
+  bucketsPct: CategorizationBuckets | null;
+  qualityVerdict: "high" | "medium" | "low" | null;
+  recommendedMethod: "MapAI" | "Creactives" | null;
+  mapAICost: number;
+  reasoning: string | null;
+  qualityWarning: boolean;
+  feasible: boolean;
+  message?: string;
+}
+
+export interface FlagsResult {
+  spendConsistency: {
+    flaggedMonths: { month: string; spend: number; deviationPct: number }[];
+    avgMonthlySpend: number;
+  } | null;
+  descriptionQuality: {
+    fillRate: number;
+    avgWordCount: number;
+    message: string;
+  } | null;
+  vendorQuality: {
+    fillRate: number;
+    populatedCount: number;
+    totalRows: number;
+  } | null;
+  nullColumns: {
+    flaggedColumns: { name: string; fillRate: number; spendCoverage: number }[];
+  } | null;
+}
+
+export interface ColumnFillRateItem {
+  columnName: string;
+  fillRate: number;
+  spendCoverage: number | null;
+}
+
+export interface ColumnFillRateResult {
+  columns: ColumnFillRateItem[];
+  feasible: boolean;
+}
+
 export interface ExecutiveSummaryResult {
   totalRows: number;
+  datePeriod: DatePeriodResult;
+  spendBreakdown: SpendBreakdownResult;
+  supplierBreakdown: SupplierBreakdownResult;
+  categorizationEffort: CategorizationEffortResult;
+  flags: FlagsResult;
+  columnFillRate: ColumnFillRateResult;
   datePivot: DatePivotResult;
   spendBifurcation: SpendBifurcationResult;
   paretoAnalysis: ParetoAnalysisResult;
@@ -276,6 +391,57 @@ export async function getExecutiveSummary(
     sessionId,
     apiKey,
     force,
+  });
+}
+
+/* ── Not Procurable Spend ────────────────────────────────────────────── */
+
+export interface SearchableColumn {
+  fieldKey: string;
+  displayName: string;
+}
+
+export interface KeywordSearchResult {
+  keyword: string;
+  matchingRows: number;
+  totalSpend: number;
+}
+
+export async function getNotProcurableColumns(sessionId: string) {
+  return post<{ columns: SearchableColumn[] }>("/not-procurable/columns", {
+    sessionId,
+  });
+}
+
+export async function searchNotProcurableKeyword(
+  sessionId: string,
+  columns: string[],
+  keyword: string
+) {
+  return post<KeywordSearchResult>("/not-procurable/search", {
+    sessionId,
+    columns,
+    keyword,
+  });
+}
+
+/* ── Intercompany Spend ──────────────────────────────────────────────── */
+
+export async function getIntercompanyColumns(sessionId: string) {
+  return post<{ columns: SearchableColumn[] }>("/intercompany/columns", {
+    sessionId,
+  });
+}
+
+export async function searchIntercompanyKeyword(
+  sessionId: string,
+  columns: string[],
+  keyword: string
+) {
+  return post<KeywordSearchResult>("/intercompany/search", {
+    sessionId,
+    columns,
+    keyword,
   });
 }
 

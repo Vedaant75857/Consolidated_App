@@ -72,6 +72,7 @@ A complete list of every Python function in the app, organised by module and ste
 | `header_norm_preview` | `routes/header_normalisation_routes.py` | Returns a preview of what a single table would look like after applying the mappings. |
 | `header_norm_group_preview` | `routes/header_normalisation_routes.py` | Returns a preview for an entire append group after applying mappings. |
 | `header_norm_download_excel` | `routes/header_normalisation_routes.py` | Creates and sends an Excel workbook containing the current mapping decisions for offline editing. |
+| `header_norm_download_summary` | `routes/header_normalisation_routes.py` | Creates a concise Excel file summarising the column renames — one sheet per group, with two columns: original name and mapped name. |
 | `header_norm_upload_excel` | `routes/header_normalisation_routes.py` | Reads an uploaded Excel mapping file and applies those decisions back into the session. |
 | `run_header_norm` | `header-normalisation/service.py` | Runs the full header normalisation pipeline for each table — deterministic matching first, then AI for the rest. |
 | `_get_data_rows` | `header-normalisation/service.py` | Fetches a sample of data rows from a table to give the AI context about what each column contains. |
@@ -223,7 +224,7 @@ A complete list of every Python function in the app, organised by module and ste
 | `run_supplier_analysis_ai` | `data_quality_assessment/supplier_analysis.py` | Sends the supplier list to AI for normalisation assessment. |
 | `run_payment_terms_analysis_sql` | `data_quality_assessment/payment_terms_analysis.py` | Queries the database for payment terms breakdown by spend. |
 | `run_payment_terms_analysis_ai` | `data_quality_assessment/payment_terms_analysis.py` | Sends the payment terms data to AI for insight generation. |
-| `_find_available_date_columns` | `data_quality_assessment/date_analysis.py` | Finds which standard date columns exist in the table. |
+| `_pick_spend_column` | `data_quality_assessment/date_analysis.py` | Picks the best spend column for the date panel — tries reporting currency first, then local. |
 | `_build_date_extract_sql` | `data_quality_assessment/date_analysis.py` | Creates database queries that pull apart dates into year, month, etc. for analysis. |
 | `_build_format_table` | `data_quality_assessment/date_analysis.py` | Builds a breakdown table showing how many dates are in each format. |
 | `_build_reporting_pivot` | `data_quality_assessment/date_analysis.py` | Creates a pivot showing spend by reporting period (e.g. monthly or quarterly). |
@@ -235,14 +236,34 @@ A complete list of every Python function in the app, organised by module and ste
 | `_unique_values` | `data_quality_assessment/country_region_analysis.py` | Gets the list of unique values in a country or region column. |
 | `run_country_region_analysis_sql` | `data_quality_assessment/country_region_analysis.py` | Queries the database for unique country and region values. |
 | `run_country_region_analysis_ai` | `data_quality_assessment/country_region_analysis.py` | Sends the country/region data to AI for insight generation. |
-| `generate_date_insight` | `data_quality_assessment/ai_prompts.py` | Asks the AI to write a plain-English summary of the date quality findings. |
-| `generate_currency_insight` | `data_quality_assessment/ai_prompts.py` | Asks the AI to write a plain-English summary of the currency quality findings. |
-| `generate_payment_terms_insight` | `data_quality_assessment/ai_prompts.py` | Asks the AI to write a plain-English summary of the payment terms findings. |
-| `generate_country_region_insight` | `data_quality_assessment/ai_prompts.py` | Asks the AI to write a plain-English summary of the country/region findings. |
-| `generate_supplier_insight` | `data_quality_assessment/ai_prompts.py` | Asks the AI to write a plain-English summary of the supplier quality findings. |
-| `find_column` | `data_quality_assessment/metrics.py` | Given a list of possible column names and the set of columns actually in the table, finds the first match ignoring upper/lowercase differences and extra spaces. Used by all DQA panels so columns like "VENDOR NAME" still match "Vendor Name". |
+| `generate_financial_insights` | `data_quality_assessment/ai_prompts.py` | Sends date, currency, and payment terms data to AI in one call and gets back structured 3-point insights for each panel. |
+| `generate_entity_insights` | `data_quality_assessment/ai_prompts.py` | Sends country/region and supplier data to AI in one call and gets back structured 3-point insights for each panel. |
+| `generate_date_insight` | `data_quality_assessment/ai_prompts.py` | Asks the AI to write a structured 3-point summary of the date quality findings. Uses the consolidated financial prompt internally. |
+| `generate_currency_insight` | `data_quality_assessment/ai_prompts.py` | Asks the AI to write a structured 3-point summary of the currency quality findings. Uses the consolidated financial prompt internally. |
+| `generate_payment_terms_insight` | `data_quality_assessment/ai_prompts.py` | Asks the AI to write a structured 3-point summary of the payment terms findings. Uses the consolidated financial prompt internally. |
+| `generate_country_region_insight` | `data_quality_assessment/ai_prompts.py` | Asks the AI to write a structured 3-point summary of the country/region findings. Uses the consolidated entity prompt internally. |
+| `generate_supplier_insight` | `data_quality_assessment/ai_prompts.py` | Asks the AI to write a structured 3-point summary of the supplier quality findings. Uses the consolidated entity prompt internally. |
+| `_normalise_insight` | `data_quality_assessment/ai_prompts.py` | Makes sure AI insight output is always a list of strings, handling both old string-based and new array-based formats. |
+| `resolve_column` | `data_quality_assessment/column_resolver.py` | Finds the best matching column for a given role (like "date" or "vendor_name") from the columns in the table. Tries exact match first, then known aliases, then fuzzy matching. |
+| `resolve_all_columns` | `data_quality_assessment/column_resolver.py` | Finds all columns in the table that match a given role, not just the first one. Returns them ordered by match quality. |
+| `find_date_columns` | `data_quality_assessment/column_resolver.py` | Finds all date-related columns using the resolver, plus any column with "date" in the name as a fallback. |
+| `find_country_columns` | `data_quality_assessment/column_resolver.py` | Finds all country-type columns, plus any column with "country" in the name as a fallback. |
+| `find_currency_columns` | `data_quality_assessment/column_resolver.py` | Finds all currency-type columns using the resolver, plus any column with "curr" in the name as a fallback. |
+| `find_payment_terms_columns` | `data_quality_assessment/column_resolver.py` | Finds all payment-terms-type columns, plus any column with "payment" or "term" in the name as a fallback. |
+| `find_supplier_columns` | `data_quality_assessment/column_resolver.py` | Finds all supplier/vendor-type columns, plus any column with "vendor" or "supplier" in the name as a fallback. |
+| `suggest_columns_ai` | `data_quality_assessment/column_resolver_ai.py` | Sends column names and sample values to the AI and asks it to pick the top 3 most likely columns for each analysis role (date, currency, payment terms, country, vendor). |
+| `collect_column_samples` | `data_quality_assessment/service.py` | Reads column names and a few non-null sample values for each column from a table, for use in AI column suggestions. |
+| `run_dqa_suggest_columns` | `data_quality_assessment/service.py` | Calls the AI to suggest the best columns for each analysis role, using pre-collected column samples. |
+| `dqa_suggest_columns` | `routes/data_quality_routes.py` | Receives the column suggestion request. Reads samples under the session lock, then calls AI outside the lock. |
+| `find_column` | `data_quality_assessment/metrics.py` | Given a list of possible column names and the set of columns actually in the table, finds the first match ignoring upper/lowercase differences and extra spaces. Legacy function kept for backward compatibility. |
+| `numeric_spend_expr` | `data_quality_assessment/metrics.py` | Creates a database formula that safely converts a spend column to a number, handling commas and spaces in values like "1,234.56". Returns 0 for non-numeric values. |
+| `raw_numeric_expr` | `data_quality_assessment/metrics.py` | Similar to numeric_spend_expr but keeps negative numbers and returns blank instead of 0 for non-numeric values. Used for spend bifurcation. |
 | `_safe_pct` | `data_quality_assessment/metrics.py` | Calculates a percentage safely, returning zero instead of crashing when the total is zero. |
 | `_non_null_condition` | `data_quality_assessment/metrics.py` | Creates a database condition that checks whether a cell has actual content (not blank or null). |
+| `run_dqa_financial_ai` | `data_quality_assessment/service.py` | Sends date, currency, and payment terms SQL results to a single AI call for consolidated insights. |
+| `run_dqa_entity_ai` | `data_quality_assessment/service.py` | Sends country/region and supplier SQL results to a single AI call for consolidated insights. |
+| `run_dqa_all_sql` | `data_quality_assessment/service.py` | Runs all seven panels' SQL queries in a single lock acquisition so the database is accessed just once. |
+| `dqa_all` | `routes/data_quality_routes.py` | Receives a request to run all panels at once. Runs all SQL under one lock, then makes 2 consolidated AI calls, and returns everything together. |
 | `compute_fill_rates` | `data_quality_assessment/metrics.py` | Calculates what percentage of each column is filled in (vs. empty). |
 | `compute_date_metrics` | `data_quality_assessment/metrics.py` | Measures how many dates are valid, parseable, and in a recognisable format. |
 | `compute_spend_metrics` | `data_quality_assessment/metrics.py` | Checks whether spend values are proper numbers and flags outliers. |
@@ -587,15 +608,35 @@ A complete list of every Python function in the app, organised by module and ste
 | `_compute_date_spend_pivot` | `services/spend_quality_assessment/data_quality.py` | Builds a year-by-month pivot table showing total spend per period. Rows with non-numeric spend are excluded (not counted as zero). |
 | `_compute_spend_bifurcation` | `services/spend_quality_assessment/data_quality.py` | Splits spend into positive and negative totals. Returns both a reporting currency view (using total_spend) and a local currency view (using local_spend grouped by currency). Supports a frontend toggle between the two views. |
 | `_compute_pareto_analysis` | `services/spend_quality_assessment/data_quality.py` | Calculates supplier concentration — groups all invoices by supplier, sums their spend, ranks suppliers from biggest to smallest, then walks down the list to find how many suppliers make up 80%, 85%, 90%, 95%, and 99% of total positive spend. For each threshold, also counts the total invoice rows and unique transaction types belonging to those suppliers. |
-| `run_executive_summary` | `services/spend_quality_assessment/data_quality.py` | Runs the full quality assessment: date-spend pivot, spend bifurcation, Pareto analysis, and description quality (with AI). |
+| `run_executive_summary` | `services/spend_quality_assessment/data_quality.py` | Convenience wrapper that runs both SQL and AI phases sequentially. Prefer calling the split functions so the AI phase runs outside the lock. |
+| `run_executive_summary_sql` | `services/spend_quality_assessment/data_quality.py` | Runs the SQL-only phase: date-spend pivot, spend bifurcation, Pareto analysis, and description column stats (no AI). Must be called under the session lock. |
+| `run_executive_summary_ai` | `services/spend_quality_assessment/data_quality.py` | Runs the AI phase: generates a categorization method recommendation from pre-computed SQL data. Safe to call without any lock. |
+| `_compute_date_period` | `services/spend_quality_assessment/data_quality.py` | Finds the earliest and latest invoice date in the dataset, formats a period label (e.g. "Jan 2024 – Dec 2025"), and counts how many distinct months the data spans. |
+| `_compute_spend_breakdown` | `services/spend_quality_assessment/data_quality.py` | Computes last-twelve-months spend, current and prior fiscal year spend, and the year-over-year change (both absolute and percentage). |
+| `_compute_supplier_breakdown` | `services/spend_quality_assessment/data_quality.py` | Counts total suppliers, finds how many cover 80% of spend, lists the top 10 by share, and flags suppliers that look like duplicates (same name with different casing). |
+| `_compute_categorization_effort` | `services/spend_quality_assessment/data_quality.py` | Measures description quality (word count, character length, fill rate, unique values) and estimates how much it would cost to run AI-based categorization on the dataset. |
+| `_compute_flags` | `services/spend_quality_assessment/data_quality.py` | Checks the dataset for quality issues: months with abnormal spend, poor description fill rate or word count, low supplier fill rate, and columns with significant gaps or missing spend coverage. |
+| `_compute_column_fill_rate` | `services/spend_quality_assessment/data_quality.py` | For every mapped column, calculates what percentage of rows are filled and what percentage of total spend sits in populated rows. |
 | `_quote_id` | `services/spend_quality_assessment/description_quality.py` | Same as above — wraps a name in quotes for safe database use. |
 | `_nn` | `services/spend_quality_assessment/description_quality.py` | Same as above — checks if a cell has real content. |
 | `_build_null_proxy_sql` | `services/spend_quality_assessment/description_quality.py` | Creates conditions to catch placeholder descriptions that look filled in but are actually meaningless (e.g. "N/A", "TBD", "---"). |
 | `_compute_description_column_stats` | `services/spend_quality_assessment/description_quality.py` | Calculates per-column stats: how much spend is covered, top 10 most common values, average length, word count, and null-proxy rates. |
 | `_sample_descriptions_for_ai` | `services/spend_quality_assessment/description_quality.py` | Picks a sample of the most impactful descriptions (covering ~80% of spend) to send to the AI for quality assessment. |
 | `_top_descriptions_by_frequency` | `services/spend_quality_assessment/description_quality.py` | Returns the most common description values along with how often they appear and how much spend they cover. |
-| `_generate_description_insight` | `services/spend_quality_assessment/description_quality.py` | Asks the AI to assess description quality — are they specific enough? Do they contain useful detail? |
-| `run_description_quality_analysis` | `services/spend_quality_assessment/description_quality.py` | Runs the full description quality check across all description columns. |
+| `_normalise_insight` | `services/spend_quality_assessment/description_quality.py` | Makes sure the AI insight output is always a list of up to 3 short strings, handling both old single-string and new array formats. |
+| `_generate_description_insight` | `services/spend_quality_assessment/description_quality.py` | Asks the AI to assess description quality and returns exactly 3 concise bullet points (verdict, key issue, categorisation suitability). |
+| `_generate_categorization_recommendation` | `services/spend_quality_assessment/description_quality.py` | Asks the AI to recommend a categorization method (MapAI vs Creactives) based on description metrics, and returns quality buckets plus a verdict. |
+| `run_description_quality_analysis` | `services/spend_quality_assessment/description_quality.py` | Runs the full description quality check. When api_key is None, runs SQL only and leaves AI insight as None for the caller to fill in later. |
+| `get_searchable_columns` | `services/spend_quality_assessment/not_procurable.py` | Returns the list of text columns in the analysis data that can be searched for keywords (e.g. Description, PO Material Description, L1–L4, Vendor Name). Only returns columns that actually exist in the session. |
+| `search_keyword_spend` | `services/spend_quality_assessment/not_procurable.py` | Searches for a keyword across one or more selected columns using case-insensitive matching, and returns how many rows matched and the total spend (reporting currency) for those rows. |
+| `_quote_id` | `services/spend_quality_assessment/not_procurable.py` | Wraps a column name in double quotes for safe use in database queries. |
+| `not_procurable_columns` | `routes/views_routes.py` | Receives the request to list which text columns are available for keyword-based spend search and returns them. |
+| `not_procurable_search` | `routes/views_routes.py` | Receives a keyword and list of columns, searches for matching rows, and returns the row count and total spend. |
+| `get_vendor_searchable_columns` | `services/spend_quality_assessment/intercompany.py` | Returns the list of vendor-related columns in the analysis data that can be searched for intercompany keywords. Only returns columns that actually exist in the session. |
+| `search_intercompany_keyword` | `services/spend_quality_assessment/intercompany.py` | Searches for a keyword across one or more selected vendor columns using case-insensitive matching, and returns how many rows matched and the total spend for those rows. |
+| `_quote_id` | `services/spend_quality_assessment/intercompany.py` | Wraps a column name in double quotes for safe use in database queries. |
+| `intercompany_columns` | `routes/views_routes.py` | Receives the request to list which vendor columns are available for intercompany keyword-based spend search and returns them. |
+| `intercompany_search` | `routes/views_routes.py` | Receives a keyword and list of vendor columns, searches for matching rows, and returns the row count and total spend. |
 
 ### Analysis Feasibility
 

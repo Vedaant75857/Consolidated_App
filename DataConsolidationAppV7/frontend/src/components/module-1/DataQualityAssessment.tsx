@@ -24,6 +24,7 @@ import {
   postDqaSupplier,
   postDqaFillRate,
   postDqaSpendBifurcation,
+  postDqaSuggestColumns,
 } from "./services/stitchingApi";
 import type { MergeOutput } from "../../types";
 
@@ -72,7 +73,7 @@ interface DateResult {
   pivotData: PivotData | null;
   totalSpendSummary: TotalSpendSummary | null;
   consistent: boolean;
-  aiInsight: string;
+  aiInsight: string[] | null;
 }
 
 interface CurrencyTableRow {
@@ -85,13 +86,14 @@ interface CurrencyTableRow {
 
 interface CurrencyResult {
   exists: boolean;
+  availableCurrencyColumns: string[];
   currencyColumn: string | null;
   distinctCount: number;
   codes: string[];
   currencyTable: CurrencyTableRow[];
   hasLocalSpend: boolean;
   hasReportingSpend: boolean;
-  aiInsight: string;
+  aiInsight: string[] | null;
 }
 
 interface PaymentTermRow {
@@ -99,15 +101,20 @@ interface PaymentTermRow {
   spend: number | null;
   rowCount: number;
   pctOfTotal: number | null;
+  pctOfRows: number | null;
+  currencySpend: Record<string, number>;
 }
 
 interface PaymentTermsResult {
   exists: boolean;
+  availablePaymentTermsColumns: string[];
   paymentTerms: PaymentTermRow[];
   totalSpend: number;
   uniqueCount: number;
   spendColumn: string | null;
-  aiInsight: string;
+  aiInsight: string[] | null;
+  isReporting: boolean;
+  currencyColumns: string[];
 }
 
 interface CountryRegionResult {
@@ -115,17 +122,23 @@ interface CountryRegionResult {
   regionColumn: string | null;
   countryValues: string[] | null;
   regionValues: string[] | null;
-  countryAiInsight: string | null;
-  regionAiInsight: string | null;
+  countryAiInsight: string[] | null;
+  regionAiInsight: string[] | null;
+  availableCountryColumns: string[];
 }
 
 interface SupplierResult {
   exists: boolean;
+  availableSupplierColumns: string[];
   supplierCount: number;
   topNCount: number;
   totalSpendCovered: number;
   spendColumn: string | null;
-  aiInsight: string;
+  aiInsight: string[] | null;
+  hasReportingSpend: boolean;
+  paretoVendorCount: number | null;
+  paretoVendorPct: number | null;
+  top20: Array<{ vendor: string; spend: number }>;
 }
 
 interface FillRateColumn {
@@ -183,6 +196,7 @@ function fmtSpend(val: number | null | undefined): string {
   return Math.round(val).toLocaleString();
 }
 
+/** Renders **bold** markdown within a text string. */
 function renderBoldMarkdown(text: string): ReactNode {
   const parts = text.split(/(\*\*[^*]+\*\*)/g);
   return parts.map((part, i) =>
@@ -192,22 +206,6 @@ function renderBoldMarkdown(text: string): ReactNode {
       part
     ),
   );
-}
-
-function renderInsightMarkdown(text: string): ReactNode {
-  const lines = text.split("\n").filter((l) => l.trim());
-  const hasBullets = lines.some((l) => l.trim().startsWith("- "));
-  if (hasBullets) {
-    return (
-      <ul className="list-disc list-inside space-y-1">
-        {lines.map((line, i) => {
-          const content = line.replace(/^-\s*/, "");
-          return <li key={i}>{renderBoldMarkdown(content)}</li>;
-        })}
-      </ul>
-    );
-  }
-  return renderBoldMarkdown(text);
 }
 
 function tableNameForVersion(version: number): string {
@@ -220,6 +218,205 @@ interface PanelState<T> {
   loading: boolean;
   error: string | null;
   data: T | null;
+}
+
+/* ── Shared sub-components ─────────────────────────────────────────────── */
+
+const EXPAND_TRANSITION = { duration: 0.25, ease: [0.22, 1, 0.36, 1] as [number, number, number, number] };
+
+/** Renders AI insight as 3 bullet points from a string array, with a colored left border accent. */
+function StructuredInsight({
+  insight,
+  accentColor,
+}: {
+  insight: string[] | null;
+  accentColor: "blue" | "amber" | "violet" | "emerald" | "rose";
+}) {
+  if (!insight || insight.length === 0) return null;
+
+  const borderMap: Record<string, string> = {
+    blue: "border-blue-400 dark:border-blue-500",
+    amber: "border-amber-400 dark:border-amber-500",
+    violet: "border-violet-400 dark:border-violet-500",
+    emerald: "border-emerald-400 dark:border-emerald-500",
+    rose: "border-rose-400 dark:border-rose-500",
+  };
+
+  const bgMap: Record<string, string> = {
+    blue: "bg-blue-50/70 dark:bg-blue-950/30",
+    amber: "bg-amber-50/70 dark:bg-amber-950/30",
+    violet: "bg-violet-50/70 dark:bg-violet-950/30",
+    emerald: "bg-emerald-50/70 dark:bg-emerald-950/30",
+    rose: "bg-rose-50/70 dark:bg-rose-950/30",
+  };
+
+  return (
+    <div
+      className={`mx-6 my-4 rounded-2xl border-l-4 ${borderMap[accentColor]} ${bgMap[accentColor]} px-6 py-4`}
+    >
+      <ul className="space-y-2">
+        {insight.map((line, i) => (
+          <li key={i} className="flex items-start gap-2.5 text-sm leading-relaxed text-neutral-700 dark:text-neutral-300">
+            <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-50" />
+            <span>{renderBoldMarkdown(line)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** Collapsible "View Details" / "Hide Details" toggle with smooth animation. */
+function DeepDiveSection({ children }: { children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-2 px-6 py-3 text-xs font-semibold text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-300 transition-colors w-full text-left border-t border-neutral-100 dark:border-neutral-800"
+      >
+        <ChevronDown
+          className={`w-3.5 h-3.5 transition-transform ${open ? "" : "-rotate-90"}`}
+        />
+        {open ? "Hide Details" : "View Details"}
+      </button>
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={EXPAND_TRANSITION}
+            className="overflow-hidden"
+          >
+            <div className="bg-neutral-50/50 dark:bg-neutral-800/20 border-t border-neutral-100 dark:border-neutral-800">
+              {children}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function PanelHeader({
+  icon,
+  iconBg,
+  title,
+  subtitle,
+  expanded,
+  onToggle,
+}: {
+  icon: ReactNode;
+  iconBg: string;
+  title: string;
+  subtitle: string;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      onClick={onToggle}
+      className="flex items-center justify-between w-full px-6 py-4 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors rounded-t-3xl"
+    >
+      <div className="flex items-center gap-3">
+        <span
+          className={`w-8 h-8 rounded-lg ${iconBg} flex items-center justify-center`}
+        >
+          {icon}
+        </span>
+        <div>
+          <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">
+            {title}
+          </h3>
+          <p className="text-xs text-neutral-400">{subtitle}</p>
+        </div>
+      </div>
+      <ChevronDown
+        className={`w-4 h-4 text-neutral-400 transition-transform ${
+          expanded ? "" : "-rotate-90"
+        }`}
+      />
+    </button>
+  );
+}
+
+function PanelSpinner({ message }: { message: string }) {
+  return (
+    <div className="flex items-center gap-3 px-6 py-8 justify-center">
+      <Loader2 className="w-5 h-5 text-red-500 animate-spin" />
+      <span className="text-sm text-neutral-500 dark:text-neutral-400">
+        {message}
+      </span>
+    </div>
+  );
+}
+
+function PanelError({
+  message,
+  onRetry,
+}: {
+  message: string;
+  onRetry?: () => void;
+}) {
+  return (
+    <div className="px-6 py-6 text-center">
+      <p className="text-red-600 dark:text-red-400 text-sm font-medium mb-2">
+        {message}
+      </p>
+      {onRetry && (
+        <button
+          onClick={onRetry}
+          className="inline-flex items-center gap-1.5 text-xs font-semibold text-red-600 hover:text-red-700 dark:text-red-400"
+        >
+          <RefreshCw className="w-3 h-3" /> Retry
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Centered empty-state message with a muted icon. */
+function EmptyState({
+  icon: Icon,
+  message,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  message: string;
+}) {
+  return (
+    <div className="flex flex-col items-center justify-center py-10 gap-3">
+      <Icon className="w-8 h-8 text-neutral-300 dark:text-neutral-600" />
+      <p className="text-sm text-neutral-500 dark:text-neutral-400">{message}</p>
+    </div>
+  );
+}
+
+function SubSectionHeader({
+  title,
+  expanded,
+  onToggle,
+}: {
+  title: string;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      onClick={onToggle}
+      className="flex items-center justify-between w-full px-6 py-2 text-left border-t border-neutral-100 dark:border-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors"
+    >
+      <p className="text-[10px] uppercase tracking-wider font-semibold text-neutral-500 dark:text-neutral-400">
+        {title}
+      </p>
+      <ChevronDown
+        className={`w-3 h-3 text-neutral-400 transition-transform ${
+          expanded ? "" : "-rotate-90"
+        }`}
+      />
+    </button>
+  );
 }
 
 /* ── Component ─────────────────────────────────────────────────────────── */
@@ -248,9 +445,11 @@ export default function DataQualityAssessment({
 
   const markPanelComplete = useCallback(() => {
     completedPanelsRef.current += 1;
-    setLoadingMessage(
-      `Data Quality Assessment… ${completedPanelsRef.current}/7 panels complete`,
-    );
+    if (runningRef.current) {
+      setLoadingMessage(
+        `Data Quality Assessment… ${completedPanelsRef.current}/7 panels complete`,
+      );
+    }
   }, [setLoadingMessage]);
 
   const [dateState, setDateState] = useState<PanelState<DateResult>>({
@@ -285,6 +484,26 @@ export default function DataQualityAssessment({
     string | undefined
   >(undefined);
 
+  const [selectedCountryColumn, setSelectedCountryColumn] = useState<
+    string | undefined
+  >(undefined);
+
+  const [selectedCurrencyColumn, setSelectedCurrencyColumn] = useState<
+    string | undefined
+  >(undefined);
+
+  const [selectedPaymentTermsColumn, setSelectedPaymentTermsColumn] = useState<
+    string | undefined
+  >(undefined);
+
+  const [selectedSupplierColumn, setSelectedSupplierColumn] = useState<
+    string | undefined
+  >(undefined);
+
+  const [aiColumnSuggestions, setAiColumnSuggestions] = useState<
+    Record<string, string[]>
+  >({});
+
   const hasRunRef = useRef(false);
 
   const getTableKey = useCallback(
@@ -292,11 +511,9 @@ export default function DataQualityAssessment({
     [isSingleTable, singleTableName],
   );
 
-  // ── TABLE_MISSING retry: counter-based so re-trigger always works ──
   const [tableMissingRetry, setTableMissingRetry] = useState(0);
   const MAX_TABLE_MISSING_RETRIES = 2;
 
-  // ── Overlay: state-derived, stays until ALL panels settle ──────────
   const allPanelsSettled =
     !dateState.loading &&
     !currencyState.loading &&
@@ -307,9 +524,11 @@ export default function DataQualityAssessment({
     !bifurcationState.loading;
 
   const [runningAssessment, setRunningAssessment] = useState(false);
+  const runningRef = useRef(false);
 
   useEffect(() => {
-    if (runningAssessment && allPanelsSettled) {
+    if (runningAssessment && allPanelsSettled && completedPanelsRef.current > 0) {
+      runningRef.current = false;
       setAiLoading(false);
       setLoadingMessage("");
       setRunningAssessment(false);
@@ -317,7 +536,6 @@ export default function DataQualityAssessment({
     }
   }, [runningAssessment, allPanelsSettled, setAiLoading, setLoadingMessage, addLog]);
 
-  // ── Silent retry helper (exponential backoff: 2s, 4s, 8s) ─────────
   const MAX_PANEL_RETRIES = 3;
   const RETRY_BASE_MS = 2000;
 
@@ -336,7 +554,7 @@ export default function DataQualityAssessment({
     }
   }
 
-  // ── Panel runners ────────────────────────────────────────────────────
+  /* ── Panel runners ────────────────────────────────────────────────────── */
 
   const runDatePanel = useCallback(
     async (version: number, dateCol?: string) => {
@@ -374,14 +592,17 @@ export default function DataQualityAssessment({
   );
 
   const runCurrencyPanel = useCallback(
-    async (version: number) => {
+    async (version: number, currencyCol?: string) => {
       setCurrencyState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
         const data = await withRetry(() =>
-          postDqaCurrency(sessionId, apiKey, tn, getTableKey()),
+          postDqaCurrency(sessionId, apiKey, tn, getTableKey(), currencyCol),
         );
         setCurrencyState({ loading: false, error: null, data });
+        if (!currencyCol && data.currencyColumn && data.availableCurrencyColumns?.length > 0) {
+          setSelectedCurrencyColumn(data.currencyColumn);
+        }
       } catch (err: any) {
         const code = err?.code || "";
         if (code === ERROR_CODE_TABLE_MISSING) {
@@ -402,14 +623,17 @@ export default function DataQualityAssessment({
   );
 
   const runPaymentPanel = useCallback(
-    async (version: number) => {
+    async (version: number, paymentCol?: string) => {
       setPaymentState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
         const data = await withRetry(() =>
-          postDqaPaymentTerms(sessionId, apiKey, tn, getTableKey()),
+          postDqaPaymentTerms(sessionId, apiKey, tn, getTableKey(), paymentCol),
         );
         setPaymentState({ loading: false, error: null, data });
+        if (!paymentCol && data.paymentTerms?.length > 0 && data.availablePaymentTermsColumns?.length > 0) {
+          setSelectedPaymentTermsColumn(data.availablePaymentTermsColumns[0]);
+        }
       } catch (err: any) {
         const code = err?.code || "";
         if (code === ERROR_CODE_TABLE_MISSING) {
@@ -430,14 +654,17 @@ export default function DataQualityAssessment({
   );
 
   const runCountryPanel = useCallback(
-    async (version: number) => {
+    async (version: number, countryCol?: string) => {
       setCountryState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
         const data = await withRetry(() =>
-          postDqaCountryRegion(sessionId, apiKey, tn, getTableKey()),
+          postDqaCountryRegion(sessionId, apiKey, tn, getTableKey(), countryCol),
         );
         setCountryState({ loading: false, error: null, data });
+        if (!countryCol && data.countryColumn) {
+          setSelectedCountryColumn(data.countryColumn);
+        }
       } catch (err: any) {
         const code = err?.code || "";
         if (code === ERROR_CODE_TABLE_MISSING) {
@@ -458,14 +685,17 @@ export default function DataQualityAssessment({
   );
 
   const runSupplierPanel = useCallback(
-    async (version: number) => {
+    async (version: number, vendorCol?: string) => {
       setSupplierState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
         const data = await withRetry(() =>
-          postDqaSupplier(sessionId, apiKey, tn, getTableKey()),
+          postDqaSupplier(sessionId, apiKey, tn, getTableKey(), vendorCol),
         );
         setSupplierState({ loading: false, error: null, data });
+        if (!vendorCol && data.exists && data.availableSupplierColumns?.length > 0) {
+          setSelectedSupplierColumn(data.availableSupplierColumns[0]);
+        }
       } catch (err: any) {
         const code = err?.code || "";
         if (code === ERROR_CODE_TABLE_MISSING) {
@@ -542,22 +772,36 @@ export default function DataQualityAssessment({
   );
 
   const runAllPanels = useCallback(
-    (version: number) => {
+    async (version: number) => {
       completedPanelsRef.current = 0;
       setTableMissing(false);
       setTableMissingRetry(0);
       addLog("Data Quality", "info", "Running data quality assessment…");
       setAiLoading(true);
       setRunningAssessment(true);
+      runningRef.current = true;
+      setLoadingMessage("Data Quality Assessment… asking AI for column suggestions…");
+
+      const tn = isSingleTable ? "" : tableNameForVersion(version);
+      let suggestions: Record<string, string[]> = {};
+      try {
+        suggestions = await postDqaSuggestColumns(sessionId, apiKey, tn, getTableKey());
+        setAiColumnSuggestions(suggestions);
+      } catch {
+        /* AI suggestions are best-effort — proceed without them */
+      }
+
       setLoadingMessage("Data Quality Assessment… 0/7 panels complete");
 
+      const pickFirst = (role: string) => suggestions[role]?.[0] || undefined;
+
       runFillRatePanel(version);
-      runDatePanel(version);
+      runDatePanel(version, pickFirst("date"));
       runBifurcationPanel(version);
-      runCurrencyPanel(version);
-      runPaymentPanel(version);
-      runCountryPanel(version);
-      runSupplierPanel(version);
+      runCurrencyPanel(version, pickFirst("currency_code"));
+      runPaymentPanel(version, pickFirst("payment_terms"));
+      runCountryPanel(version, pickFirst("country"));
+      runSupplierPanel(version, pickFirst("vendor_name"));
     },
     [
       runFillRatePanel,
@@ -570,15 +814,19 @@ export default function DataQualityAssessment({
       addLog,
       setAiLoading,
       setLoadingMessage,
+      sessionId,
+      apiKey,
+      isSingleTable,
+      getTableKey,
     ],
   );
 
-  // ── Single-panel re-run (no global overlay / counter) ──────────────
+  /* ── Single-panel re-runs (no global overlay / counter) ──────────────── */
+
   const rerunDateAbortRef = useRef<AbortController | null>(null);
 
   const rerunDatePanelOnly = useCallback(
     async (version: number, dateCol: string) => {
-      // Cancel any previous single-panel re-run
       if (rerunDateAbortRef.current) rerunDateAbortRef.current.abort();
       const ac = new AbortController();
       rerunDateAbortRef.current = ac;
@@ -603,11 +851,128 @@ export default function DataQualityAssessment({
     [sessionId, apiKey, isSingleTable, getTableKey],
   );
 
+  const rerunCountryAbortRef = useRef<AbortController | null>(null);
+
+  const rerunCountryPanelOnly = useCallback(
+    async (version: number, countryCol: string) => {
+      if (rerunCountryAbortRef.current) rerunCountryAbortRef.current.abort();
+      const ac = new AbortController();
+      rerunCountryAbortRef.current = ac;
+
+      setCountryState({ loading: true, error: null, data: null });
+      try {
+        const tn = isSingleTable ? "" : tableNameForVersion(version);
+        const data = await withRetry(() =>
+          postDqaCountryRegion(sessionId, apiKey, tn, getTableKey(), countryCol),
+        );
+        if (ac.signal.aborted) return;
+        setCountryState({ loading: false, error: null, data });
+      } catch (err: any) {
+        if (ac.signal.aborted) return;
+        setCountryState({
+          loading: false,
+          error: err?.message || "Country/Region analysis failed",
+          data: null,
+        });
+      }
+    },
+    [sessionId, apiKey, isSingleTable, getTableKey],
+  );
+
+  const rerunCurrencyAbortRef = useRef<AbortController | null>(null);
+
+  const rerunCurrencyPanelOnly = useCallback(
+    async (version: number, currencyCol: string) => {
+      if (rerunCurrencyAbortRef.current) rerunCurrencyAbortRef.current.abort();
+      const ac = new AbortController();
+      rerunCurrencyAbortRef.current = ac;
+
+      setCurrencyState({ loading: true, error: null, data: null });
+      try {
+        const tn = isSingleTable ? "" : tableNameForVersion(version);
+        const data = await withRetry(() =>
+          postDqaCurrency(sessionId, apiKey, tn, getTableKey(), currencyCol),
+        );
+        if (ac.signal.aborted) return;
+        setCurrencyState({ loading: false, error: null, data });
+      } catch (err: any) {
+        if (ac.signal.aborted) return;
+        setCurrencyState({
+          loading: false,
+          error: err?.message || "Currency analysis failed",
+          data: null,
+        });
+      }
+    },
+    [sessionId, apiKey, isSingleTable, getTableKey],
+  );
+
+  const rerunPaymentAbortRef = useRef<AbortController | null>(null);
+
+  const rerunPaymentPanelOnly = useCallback(
+    async (version: number, paymentCol: string) => {
+      if (rerunPaymentAbortRef.current) rerunPaymentAbortRef.current.abort();
+      const ac = new AbortController();
+      rerunPaymentAbortRef.current = ac;
+
+      setPaymentState({ loading: true, error: null, data: null });
+      try {
+        const tn = isSingleTable ? "" : tableNameForVersion(version);
+        const data = await withRetry(() =>
+          postDqaPaymentTerms(sessionId, apiKey, tn, getTableKey(), paymentCol),
+        );
+        if (ac.signal.aborted) return;
+        setPaymentState({ loading: false, error: null, data });
+      } catch (err: any) {
+        if (ac.signal.aborted) return;
+        setPaymentState({
+          loading: false,
+          error: err?.message || "Payment terms analysis failed",
+          data: null,
+        });
+      }
+    },
+    [sessionId, apiKey, isSingleTable, getTableKey],
+  );
+
+  const rerunSupplierAbortRef = useRef<AbortController | null>(null);
+
+  const rerunSupplierPanelOnly = useCallback(
+    async (version: number, vendorCol: string) => {
+      if (rerunSupplierAbortRef.current) rerunSupplierAbortRef.current.abort();
+      const ac = new AbortController();
+      rerunSupplierAbortRef.current = ac;
+
+      setSupplierState({ loading: true, error: null, data: null });
+      try {
+        const tn = isSingleTable ? "" : tableNameForVersion(version);
+        const data = await withRetry(() =>
+          postDqaSupplier(sessionId, apiKey, tn, getTableKey(), vendorCol),
+        );
+        if (ac.signal.aborted) return;
+        setSupplierState({ loading: false, error: null, data });
+      } catch (err: any) {
+        if (ac.signal.aborted) return;
+        setSupplierState({
+          loading: false,
+          error: err?.message || "Supplier analysis failed",
+          data: null,
+        });
+      }
+    },
+    [sessionId, apiKey, isSingleTable, getTableKey],
+  );
+
   const cancelAssessment = useCallback(() => {
+    runningRef.current = false;
     setRunningAssessment(false);
     setAiLoading(false);
     setLoadingMessage("");
     if (rerunDateAbortRef.current) rerunDateAbortRef.current.abort();
+    if (rerunCountryAbortRef.current) rerunCountryAbortRef.current.abort();
+    if (rerunCurrencyAbortRef.current) rerunCurrencyAbortRef.current.abort();
+    if (rerunPaymentAbortRef.current) rerunPaymentAbortRef.current.abort();
+    if (rerunSupplierAbortRef.current) rerunSupplierAbortRef.current.abort();
     setDateState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
     setCurrencyState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
     setPaymentState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
@@ -618,7 +983,6 @@ export default function DataQualityAssessment({
     addLog("Data Quality", "info", "Assessment cancelled by user.");
   }, [setAiLoading, setLoadingMessage, addLog]);
 
-  // Register cancel function so the parent LoadingOverlay can invoke it
   useEffect(() => {
     if (cancelRef) cancelRef.current = cancelAssessment;
     return () => { if (cancelRef) cancelRef.current = null; };
@@ -632,7 +996,6 @@ export default function DataQualityAssessment({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-retry on TABLE_MISSING — counter-based so React always re-fires
   useEffect(() => {
     if (tableMissingRetry === 0) return;
     if (tableMissingRetry > MAX_TABLE_MISSING_RETRIES) {
@@ -654,7 +1017,7 @@ export default function DataQualityAssessment({
       return next;
     });
 
-  // ── Render ───────────────────────────────────────────────────────────
+  /* ── Render ───────────────────────────────────────────────────────────── */
 
   if (tableMissing) {
     return (
@@ -759,6 +1122,11 @@ export default function DataQualityAssessment({
           <button
             onClick={() => {
               setSelectedDateColumn(undefined);
+              setSelectedCountryColumn(undefined);
+              setSelectedCurrencyColumn(undefined);
+              setSelectedPaymentTermsColumn(undefined);
+              setSelectedSupplierColumn(undefined);
+              setAiColumnSuggestions({});
               runAllPanels(selectedVersion);
             }}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-neutral-100 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 text-sm font-semibold text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors"
@@ -768,14 +1136,14 @@ export default function DataQualityAssessment({
         </div>
       </SurfaceCard>
 
-      {/* ── Panel 0: Fill Rate Summary ────────────────────────────────── */}
+      {/* ── Panel 0: Fill Rate Summary ──────────────────────────────────── */}
       <FillRateSummaryPanel
         state={fillRateState}
         expanded={expandedPanels.has("fillrate")}
         onToggle={() => togglePanel("fillrate")}
       />
 
-      {/* ── Panel 1: Date Analysis ──────────────────────────────────────── */}
+      {/* ── Panel 1: Date Analysis ────────────────────────────────────── */}
       <DatePanel
         state={dateState}
         expanded={expandedPanels.has("date")}
@@ -787,163 +1155,81 @@ export default function DataQualityAssessment({
         }}
       />
 
-      {/* ── Panel 1b: Spend Bifurcation ──────────────────────────────── */}
+      {/* ── Panel 1b: Spend Bifurcation ────────────────────────────────── */}
       <SpendBifurcationPanel
         state={bifurcationState}
         expanded={expandedPanels.has("bifurcation")}
         onToggle={() => togglePanel("bifurcation")}
       />
 
-      {/* ── Panel 2: Currency Analysis ──────────────────────────────────── */}
+      {/* ── Panel 2: Currency Analysis ────────────────────────────────── */}
       <CurrencyPanel
         state={currencyState}
         expanded={expandedPanels.has("currency")}
         onToggle={() => togglePanel("currency")}
+        selectedCurrencyColumn={selectedCurrencyColumn}
+        onCurrencyColumnChange={(col) => {
+          setSelectedCurrencyColumn(col);
+          rerunCurrencyPanelOnly(selectedVersion, col);
+        }}
+        aiSuggestions={aiColumnSuggestions["currency_code"]}
       />
 
-      {/* ── Panel 3: Payment Terms ──────────────────────────────────────── */}
+      {/* ── Panel 3: Payment Terms ────────────────────────────────────── */}
       <PaymentTermsPanel
         state={paymentState}
         expanded={expandedPanels.has("payment")}
         onToggle={() => togglePanel("payment")}
+        selectedPaymentTermsColumn={selectedPaymentTermsColumn}
+        onPaymentTermsColumnChange={(col) => {
+          setSelectedPaymentTermsColumn(col);
+          rerunPaymentPanelOnly(selectedVersion, col);
+        }}
+        aiSuggestions={aiColumnSuggestions["payment_terms"]}
       />
 
-      {/* ── Panel 4: Country / Region ───────────────────────────────────── */}
+      {/* ── Panel 4: Country / Region ─────────────────────────────────── */}
       <CountryRegionPanel
         state={countryState}
         expanded={expandedPanels.has("country")}
         onToggle={() => togglePanel("country")}
+        selectedCountryColumn={selectedCountryColumn}
+        onCountryColumnChange={(col) => {
+          setSelectedCountryColumn(col);
+          rerunCountryPanelOnly(selectedVersion, col);
+        }}
       />
 
-      {/* ── Panel 5: Supplier ───────────────────────────────────────────── */}
+      {/* ── Panel 5: Supplier ─────────────────────────────────────────── */}
       <SupplierPanel
         state={supplierState}
         expanded={expandedPanels.has("supplier")}
         onToggle={() => togglePanel("supplier")}
+        selectedSupplierColumn={selectedSupplierColumn}
+        onSupplierColumnChange={(col) => {
+          setSelectedSupplierColumn(col);
+          rerunSupplierPanelOnly(selectedVersion, col);
+        }}
+        aiSuggestions={aiColumnSuggestions["vendor_name"]}
       />
     </motion.div>
   );
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   Shared sub-components
-   ══════════════════════════════════════════════════════════════════════════ */
-
-function PanelHeader({
-  icon,
-  iconBg,
-  title,
-  subtitle,
-  expanded,
-  onToggle,
-}: {
-  icon: ReactNode;
-  iconBg: string;
-  title: string;
-  subtitle: string;
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <button
-      onClick={onToggle}
-      className="flex items-center justify-between w-full px-6 py-4 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors rounded-t-3xl"
-    >
-      <div className="flex items-center gap-3">
-        <span
-          className={`w-8 h-8 rounded-lg ${iconBg} flex items-center justify-center`}
-        >
-          {icon}
-        </span>
-        <div>
-          <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">
-            {title}
-          </h3>
-          <p className="text-xs text-neutral-400">{subtitle}</p>
-        </div>
-      </div>
-      <ChevronDown
-        className={`w-4 h-4 text-neutral-400 transition-transform ${
-          expanded ? "" : "-rotate-90"
-        }`}
-      />
-    </button>
-  );
-}
-
-function PanelSpinner({ message }: { message: string }) {
-  return (
-    <div className="flex items-center gap-3 px-6 py-8 justify-center">
-      <Loader2 className="w-5 h-5 text-red-500 animate-spin" />
-      <span className="text-sm text-neutral-500 dark:text-neutral-400">
-        {message}
-      </span>
-    </div>
-  );
-}
-
-function PanelError({
-  message,
-  onRetry,
-}: {
-  message: string;
-  onRetry?: () => void;
-}) {
-  return (
-    <div className="px-6 py-6 text-center">
-      <p className="text-red-600 dark:text-red-400 text-sm font-medium mb-2">
-        {message}
-      </p>
-      {onRetry && (
-        <button
-          onClick={onRetry}
-          className="inline-flex items-center gap-1.5 text-xs font-semibold text-red-600 hover:text-red-700 dark:text-red-400"
-        >
-          <RefreshCw className="w-3 h-3" /> Retry
-        </button>
-      )}
-    </div>
-  );
-}
-
-function AiInsightBanner({ insight }: { insight: string }) {
-  if (!insight) return null;
-  return (
-    <div className="px-6 py-4 bg-blue-50/70 dark:bg-blue-950/30 border-b border-neutral-100 dark:border-neutral-800">
-      <p className="text-[10px] uppercase tracking-wider font-semibold text-blue-600 dark:text-blue-400 mb-2">
-        AI Insights
-      </p>
-      <div className="text-sm leading-relaxed text-neutral-700 dark:text-neutral-300">
-        {renderInsightMarkdown(insight)}
-      </div>
-    </div>
-  );
-}
-
-function SubSectionHeader({
-  title,
-  expanded,
-  onToggle,
-}: {
-  title: string;
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <button
-      onClick={onToggle}
-      className="flex items-center justify-between w-full px-6 py-2 text-left border-t border-neutral-100 dark:border-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors"
-    >
-      <p className="text-[10px] uppercase tracking-wider font-semibold text-neutral-500 dark:text-neutral-400">
-        {title}
-      </p>
-      <ChevronDown
-        className={`w-3 h-3 text-neutral-400 transition-transform ${
-          expanded ? "" : "-rotate-90"
-        }`}
-      />
-    </button>
-  );
+/** Merge backend-returned available columns with AI suggestions, deduplicating. */
+function mergeColumnLists(
+  backendCols?: string[],
+  aiSuggestions?: string[],
+): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const col of [...(aiSuggestions ?? []), ...(backendCols ?? [])]) {
+    if (!seen.has(col)) {
+      seen.add(col);
+      result.push(col);
+    }
+  }
+  return result;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -963,9 +1249,6 @@ function DatePanel({
   selectedDateColumn: string | undefined;
   onDateColumnChange: (col: string) => void;
 }) {
-  const [showTotalSpend, setShowTotalSpend] = useState(true);
-  const [showPivotTable, setShowPivotTable] = useState(true);
-
   const d = state.data;
   const subtitle = d
     ? `${d.selectedColumn ?? "—"} · ${d.consistent ? "Consistent formats" : "Inconsistent formats detected"}`
@@ -990,7 +1273,7 @@ function DatePanel({
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+            transition={EXPAND_TRANSITION}
             className="overflow-hidden"
           >
             <div className="border-t border-neutral-100 dark:border-neutral-800">
@@ -1000,142 +1283,56 @@ function DatePanel({
               {state.error && !d && <PanelError message={state.error} />}
               {d && (
                 <>
-                  {/* Date column selector */}
-                  {d.availableDateColumns.length > 1 && (
+                  {/* Date column selector — always visible when a column was picked */}
+                  {d.selectedColumn && (
                     <div className="px-6 py-3 border-b border-neutral-100 dark:border-neutral-800 flex items-center gap-3">
                       <label className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
                         Date column:
                       </label>
-                      <select
-                        value={selectedDateColumn ?? d.selectedColumn ?? ""}
-                        onChange={(e) => onDateColumnChange(e.target.value)}
-                        className="text-sm rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-2 py-1 text-neutral-800 dark:text-neutral-200 focus:ring-2 focus:ring-blue-500/30 outline-none"
-                      >
-                        {d.availableDateColumns.map((c) => (
-                          <option key={c} value={c}>
-                            {c}
-                          </option>
-                        ))}
-                      </select>
+                      {d.availableDateColumns.length > 1 ? (
+                        <select
+                          value={selectedDateColumn ?? d.selectedColumn ?? ""}
+                          onChange={(e) => onDateColumnChange(e.target.value)}
+                          className="text-sm rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-2 py-1 text-neutral-800 dark:text-neutral-200 focus:ring-2 focus:ring-blue-500/30 outline-none"
+                        >
+                          {d.availableDateColumns.map((c) => (
+                            <option key={c} value={c}>
+                              {c}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className="text-sm font-medium text-neutral-800 dark:text-neutral-200">
+                          {d.selectedColumn}
+                        </span>
+                      )}
                     </div>
                   )}
 
                   {/* AI Insight */}
-                  <AiInsightBanner insight={d.aiInsight} />
+                  <StructuredInsight insight={d.aiInsight} accentColor="blue" />
 
-                  {/* Format table */}
-                  {d.formatTable.length > 0 && (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-                            <th className="px-6 py-3">File</th>
-                            <th className="px-4 py-3">Dominant Format</th>
-                            <th className="px-4 py-3">Format Breakdown</th>
-                            <th className="px-4 py-3">Example</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                          {d.formatTable.map((entry) => (
-                            <tr
-                              key={entry.fileName}
-                              className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors"
-                            >
-                              <td className="px-6 py-2.5 font-medium text-neutral-800 dark:text-neutral-200 max-w-[200px] truncate">
-                                {entry.fileName}
-                              </td>
-                              <td className="px-4 py-2.5">
-                                <span
-                                  className={`inline-block px-2 py-0.5 rounded text-xs font-bold ${
-                                    entry.consistent
-                                      ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400"
-                                      : "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
-                                  }`}
-                                >
-                                  {entry.dominantFormat}
-                                </span>
-                              </td>
-                              <td className="px-4 py-2.5 text-xs text-neutral-600 dark:text-neutral-400">
-                                {Object.entries(entry.formatPcts).map(
-                                  ([fmt, pct]) => (
-                                    <span key={fmt} className="mr-2">
-                                      {fmt}: {pct}%
-                                    </span>
-                                  ),
-                                )}
-                              </td>
-                              <td className="px-4 py-2.5 text-xs text-neutral-500 dark:text-neutral-400 font-mono">
-                                {Object.values(entry.examples)[0] ?? "—"}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
+                  {/* Deep dive: format table + total spend + pivot */}
+                  {(d.formatTable.length > 0 || d.totalSpendSummary || d.pivotData?.feasible) && (
+                    <DeepDiveSection>
+                      {d.formatTable.length > 0 && (
+                        <DateFormatTable entries={d.formatTable} />
+                      )}
 
-                  {/* Total spend summary — collapsible */}
-                  {d.totalSpendSummary && (
-                    <>
-                      <SubSectionHeader
-                        title="Total Spend"
-                        expanded={showTotalSpend}
-                        onToggle={() => setShowTotalSpend((v) => !v)}
-                      />
-                      <AnimatePresence initial={false}>
-                        {showTotalSpend && (
-                          <motion.div
-                            initial={{ height: 0, opacity: 0 }}
-                            animate={{ height: "auto", opacity: 1 }}
-                            exit={{ height: 0, opacity: 0 }}
-                            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-                            className="overflow-hidden"
-                          >
-                            <div className="px-6 py-3 bg-neutral-50/50 dark:bg-neutral-800/30">
-                              <p className="text-sm font-semibold tabular-nums text-neutral-800 dark:text-neutral-200">
-                                {d.totalSpendSummary.type === "reporting"
-                                  ? fmtSpend(d.totalSpendSummary.total ?? 0)
-                                  : d.totalSpendSummary.currencies
-                                      ?.map(
-                                        (c) => `${fmtSpend(c.total)} ${c.code}`,
-                                      )
-                                      .join(", ") ?? "N/A"}
-                              </p>
-                            </div>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-                    </>
-                  )}
+                      {d.totalSpendSummary && (
+                        <DateTotalSpendBlock summary={d.totalSpendSummary} />
+                      )}
 
-                  {/* Pivot table — collapsible */}
-                  {d.pivotData?.feasible && (
-                    <>
-                      <SubSectionHeader
-                        title="Spend by Year & Month"
-                        expanded={showPivotTable}
-                        onToggle={() => setShowPivotTable((v) => !v)}
-                      />
-                      <AnimatePresence initial={false}>
-                        {showPivotTable && (
-                          <motion.div
-                            initial={{ height: 0, opacity: 0 }}
-                            animate={{ height: "auto", opacity: 1 }}
-                            exit={{ height: 0, opacity: 0 }}
-                            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-                            className="overflow-hidden"
-                          >
-                            <div>
-                              {d.pivotData.type === "reporting" ? (
-                                <ReportingPivotTable pivot={d.pivotData} />
-                              ) : (
-                                <CurrencyCrosstabTable pivot={d.pivotData} />
-                              )}
-                            </div>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-                    </>
+                      {d.pivotData?.feasible && (
+                        <div>
+                          {d.pivotData.type === "reporting" ? (
+                            <ReportingPivotTable pivot={d.pivotData} />
+                          ) : (
+                            <CurrencyCrosstabTable pivot={d.pivotData} />
+                          )}
+                        </div>
+                      )}
+                    </DeepDiveSection>
                   )}
                 </>
               )}
@@ -1147,6 +1344,80 @@ function DatePanel({
   );
 }
 
+function DateFormatTable({ entries }: { entries: FormatEntry[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <div className="px-6 py-2.5 border-b border-neutral-100 dark:border-neutral-800">
+        <p className="text-[10px] uppercase tracking-wider font-semibold text-neutral-500 dark:text-neutral-400">
+          Date Format Breakdown
+        </p>
+      </div>
+      <div className="rounded-b-2xl overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+              <th className="px-6 py-3">File</th>
+              <th className="px-4 py-3">Dominant Format</th>
+              <th className="px-4 py-3">Format Breakdown</th>
+              <th className="px-4 py-3">Example</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+            {entries.map((entry, idx) => (
+              <tr
+                key={entry.fileName}
+                className={`hover:bg-neutral-100/60 dark:hover:bg-neutral-700/20 transition-colors ${idx % 2 === 0 ? "bg-neutral-50/30 dark:bg-neutral-800/10" : ""}`}
+              >
+                <td className="px-6 py-2.5 font-medium text-neutral-800 dark:text-neutral-200 max-w-[200px] truncate">
+                  {entry.fileName}
+                </td>
+                <td className="px-4 py-2.5">
+                  <span
+                    className={`inline-block px-2 py-0.5 rounded text-xs font-bold ${
+                      entry.consistent
+                        ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400"
+                        : "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
+                    }`}
+                  >
+                    {entry.dominantFormat}
+                  </span>
+                </td>
+                <td className="px-4 py-2.5 text-xs text-neutral-600 dark:text-neutral-400">
+                  {Object.entries(entry.formatPcts).map(([fmt, pct]) => (
+                    <span key={fmt} className="mr-2">
+                      {fmt}: {pct}%
+                    </span>
+                  ))}
+                </td>
+                <td className="px-4 py-2.5 text-xs text-neutral-500 dark:text-neutral-400 font-mono">
+                  {Object.values(entry.examples)[0] ?? "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function DateTotalSpendBlock({ summary }: { summary: TotalSpendSummary }) {
+  return (
+    <div className="px-6 py-4 border-t border-neutral-100 dark:border-neutral-800">
+      <p className="text-[10px] uppercase tracking-wider font-semibold text-neutral-500 dark:text-neutral-400 mb-2">
+        Total Spend
+      </p>
+      <p className="text-sm font-semibold tabular-nums text-neutral-800 dark:text-neutral-200">
+        {summary.type === "reporting"
+          ? fmtSpend(summary.total ?? 0)
+          : summary.currencies
+              ?.map((c) => `${fmtSpend(c.total)} ${c.code}`)
+              .join(", ") ?? "N/A"}
+      </p>
+    </div>
+  );
+}
+
 function ReportingPivotTable({ pivot }: { pivot: ReportingPivot }) {
   return (
     <div className="overflow-x-auto">
@@ -1155,35 +1426,94 @@ function ReportingPivotTable({ pivot }: { pivot: ReportingPivot }) {
           Spend by Year &amp; Month ({pivot.spendColumn})
         </p>
       </div>
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-            <th className="px-4 py-3 sticky left-0 bg-neutral-50 dark:bg-neutral-800/50 z-10">
-              Month
-            </th>
-            {pivot.years.map((yr) => (
-              <th key={yr} className="px-4 py-3 text-right min-w-[120px]">
-                {yr}
+      <div className="rounded-b-2xl overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+              <th className="px-4 py-3 sticky left-0 bg-neutral-50 dark:bg-neutral-800/50 z-10">
+                Month
               </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-          {pivot.months.map((monthName, idx) => {
-            const monthNum = String(idx + 1);
-            return (
+              {pivot.years.map((yr) => (
+                <th key={yr} className="px-4 py-3 text-right min-w-[120px]">
+                  {yr}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+            {pivot.months.map((monthName, idx) => {
+              const monthNum = String(idx + 1);
+              return (
+                <tr
+                  key={monthNum}
+                  className={`hover:bg-neutral-100/60 dark:hover:bg-neutral-700/20 transition-colors ${idx % 2 === 0 ? "bg-neutral-50/30 dark:bg-neutral-800/10" : ""}`}
+                >
+                  <td className="px-4 py-2.5 font-medium text-neutral-800 dark:text-neutral-200 sticky left-0 bg-white dark:bg-neutral-900 z-10">
+                    {monthName}
+                  </td>
+                  {pivot.years.map((yr) => {
+                    const val = pivot.cells[String(yr)]?.[monthNum] ?? 0;
+                    return (
+                      <td
+                        key={yr}
+                        className="px-4 py-2.5 text-right tabular-nums text-neutral-700 dark:text-neutral-300"
+                      >
+                        {val === 0 ? (
+                          <span className="text-neutral-300 dark:text-neutral-600">
+                            0
+                          </span>
+                        ) : (
+                          fmtSpend(val)
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function CurrencyCrosstabTable({ pivot }: { pivot: CurrencyCrosstabPivot }) {
+  return (
+    <div className="overflow-x-auto">
+      <div className="px-6 py-2.5 bg-neutral-50 dark:bg-neutral-800/50 border-b border-neutral-100 dark:border-neutral-800">
+        <p className="text-[10px] uppercase tracking-wider font-semibold text-neutral-500 dark:text-neutral-400">
+          Spend by Month &amp; Currency ({pivot.spendColumn})
+        </p>
+      </div>
+      <div className="rounded-b-2xl overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+              <th className="px-4 py-3 sticky left-0 bg-neutral-50 dark:bg-neutral-800/50 z-10">
+                Period
+              </th>
+              {pivot.currencies.map((ccy) => (
+                <th key={ccy} className="px-4 py-3 text-right min-w-[110px]">
+                  {ccy}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+            {pivot.rowLabels.map((label, idx) => (
               <tr
-                key={monthNum}
-                className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors"
+                key={label}
+                className={`hover:bg-neutral-100/60 dark:hover:bg-neutral-700/20 transition-colors ${idx % 2 === 0 ? "bg-neutral-50/30 dark:bg-neutral-800/10" : ""}`}
               >
-                <td className="px-4 py-2.5 font-medium text-neutral-800 dark:text-neutral-200 sticky left-0 bg-white dark:bg-neutral-900 z-10">
-                  {monthName}
+                <td className="px-4 py-2.5 font-medium text-neutral-800 dark:text-neutral-200 sticky left-0 bg-white dark:bg-neutral-900 z-10 whitespace-nowrap">
+                  {label}
                 </td>
-                {pivot.years.map((yr) => {
-                  const val = pivot.cells[String(yr)]?.[monthNum] ?? 0;
+                {pivot.currencies.map((ccy) => {
+                  const val = pivot.cells[label]?.[ccy] ?? 0;
                   return (
                     <td
-                      key={yr}
+                      key={ccy}
                       className="px-4 py-2.5 text-right tabular-nums text-neutral-700 dark:text-neutral-300"
                     >
                       {val === 0 ? (
@@ -1197,65 +1527,10 @@ function ReportingPivotTable({ pivot }: { pivot: ReportingPivot }) {
                   );
                 })}
               </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function CurrencyCrosstabTable({ pivot }: { pivot: CurrencyCrosstabPivot }) {
-  return (
-    <div className="overflow-x-auto">
-      <div className="px-6 py-2.5 bg-neutral-50 dark:bg-neutral-800/50 border-b border-neutral-100 dark:border-neutral-800">
-        <p className="text-[10px] uppercase tracking-wider font-semibold text-neutral-500 dark:text-neutral-400">
-          Spend by Month &amp; Currency ({pivot.spendColumn})
-        </p>
-      </div>
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-            <th className="px-4 py-3 sticky left-0 bg-neutral-50 dark:bg-neutral-800/50 z-10">
-              Period
-            </th>
-            {pivot.currencies.map((ccy) => (
-              <th key={ccy} className="px-4 py-3 text-right min-w-[110px]">
-                {ccy}
-              </th>
             ))}
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-          {pivot.rowLabels.map((label) => (
-            <tr
-              key={label}
-              className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors"
-            >
-              <td className="px-4 py-2.5 font-medium text-neutral-800 dark:text-neutral-200 sticky left-0 bg-white dark:bg-neutral-900 z-10 whitespace-nowrap">
-                {label}
-              </td>
-              {pivot.currencies.map((ccy) => {
-                const val = pivot.cells[label]?.[ccy] ?? 0;
-                return (
-                  <td
-                    key={ccy}
-                    className="px-4 py-2.5 text-right tabular-nums text-neutral-700 dark:text-neutral-300"
-                  >
-                    {val === 0 ? (
-                      <span className="text-neutral-300 dark:text-neutral-600">
-                        0
-                      </span>
-                    ) : (
-                      fmtSpend(val)
-                    )}
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -1268,10 +1543,16 @@ function CurrencyPanel({
   state,
   expanded,
   onToggle,
+  selectedCurrencyColumn,
+  onCurrencyColumnChange,
+  aiSuggestions,
 }: {
   state: PanelState<CurrencyResult>;
   expanded: boolean;
   onToggle: () => void;
+  selectedCurrencyColumn: string | undefined;
+  onCurrencyColumnChange: (col: string) => void;
+  aiSuggestions?: string[];
 }) {
   const d = state.data;
   const subtitle = d
@@ -1279,6 +1560,8 @@ function CurrencyPanel({
       ? `${d.distinctCount} currencies detected`
       : "No currency column found"
     : "Analysing currency distribution";
+
+  const availableCols = mergeColumnLists(d?.availableCurrencyColumns, aiSuggestions);
 
   return (
     <SurfaceCard noPadding>
@@ -1299,7 +1582,7 @@ function CurrencyPanel({
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+            transition={EXPAND_TRANSITION}
             className="overflow-hidden"
           >
             <div className="border-t border-neutral-100 dark:border-neutral-800">
@@ -1307,54 +1590,66 @@ function CurrencyPanel({
                 <PanelSpinner message="Analysing currency quality…" />
               )}
               {state.error && !d && <PanelError message={state.error} />}
-              {d && (
+              {d && !d.exists && (
+                <EmptyState icon={Coins} message="No currency column found" />
+              )}
+              {d && d.exists && (
                 <>
-                  <AiInsightBanner insight={d.aiInsight} />
+                  {availableCols.length > 1 && (
+                    <div className="px-6 py-3 border-b border-neutral-100 dark:border-neutral-800 flex items-center gap-3">
+                      <label className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
+                        Currency column:
+                      </label>
+                      <select
+                        value={selectedCurrencyColumn ?? d.currencyColumn ?? ""}
+                        onChange={(e) => onCurrencyColumnChange(e.target.value)}
+                        className="text-sm rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-2 py-1 text-neutral-800 dark:text-neutral-200 focus:ring-2 focus:ring-amber-500/30 outline-none"
+                      >
+                        {availableCols.map((c) => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <StructuredInsight insight={d.aiInsight} accentColor="amber" />
 
                   {d.currencyTable.length > 0 && (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-                            <th className="px-6 py-3">Currency Code</th>
-                            <th className="px-4 py-3 text-center">
-                              % of Rows
-                            </th>
-                            <th className="px-4 py-3 text-right">
-                              Local Spend
-                            </th>
-                            <th className="px-4 py-3 text-right">
-                              Reporting Spend
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                          {d.currencyTable.map((row) => (
-                            <tr
-                              key={row.currencyCode}
-                              className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors"
-                            >
-                              <td className="px-6 py-2 font-medium text-neutral-800 dark:text-neutral-200">
-                                {row.currencyCode}
-                              </td>
-                              <td className="px-4 py-2 text-center tabular-nums text-neutral-700 dark:text-neutral-300">
-                                {row.rowPct.toFixed(1)}%
-                              </td>
-                              <td className="px-4 py-2 text-right tabular-nums text-neutral-700 dark:text-neutral-300">
-                                {d.hasLocalSpend
-                                  ? fmtSpend(row.localSpend)
-                                  : "N/A"}
-                              </td>
-                              <td className="px-4 py-2 text-right tabular-nums text-neutral-700 dark:text-neutral-300">
-                                {d.hasReportingSpend
-                                  ? fmtSpend(row.reportingSpend)
-                                  : "N/A"}
-                              </td>
+                    <DeepDiveSection>
+                      <div className="overflow-x-auto rounded-b-2xl">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                              <th className="px-6 py-3 sticky left-0 bg-neutral-50 dark:bg-neutral-800/50 z-10">Currency Code</th>
+                              <th className="px-4 py-3 text-center">% of Rows</th>
+                              <th className="px-4 py-3 text-right">Local Spend</th>
+                              <th className="px-4 py-3 text-right">Reporting Spend</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                          </thead>
+                          <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                            {d.currencyTable.map((row, idx) => (
+                              <tr
+                                key={row.currencyCode}
+                                className={`hover:bg-neutral-100/60 dark:hover:bg-neutral-700/20 transition-colors ${idx % 2 === 0 ? "bg-neutral-50/30 dark:bg-neutral-800/10" : ""}`}
+                              >
+                                <td className="px-6 py-2.5 font-medium text-neutral-800 dark:text-neutral-200 sticky left-0 bg-white dark:bg-neutral-900 z-10">
+                                  {row.currencyCode}
+                                </td>
+                                <td className="px-4 py-2.5 text-center tabular-nums text-neutral-700 dark:text-neutral-300">
+                                  {row.rowPct.toFixed(1)}%
+                                </td>
+                                <td className="px-4 py-2.5 text-right tabular-nums text-neutral-700 dark:text-neutral-300">
+                                  {d.hasLocalSpend ? fmtSpend(row.localSpend) : "N/A"}
+                                </td>
+                                <td className="px-4 py-2.5 text-right tabular-nums text-neutral-700 dark:text-neutral-300">
+                                  {d.hasReportingSpend ? fmtSpend(row.reportingSpend) : "N/A"}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </DeepDiveSection>
                   )}
                 </>
               )}
@@ -1374,10 +1669,16 @@ function PaymentTermsPanel({
   state,
   expanded,
   onToggle,
+  selectedPaymentTermsColumn,
+  onPaymentTermsColumnChange,
+  aiSuggestions,
 }: {
   state: PanelState<PaymentTermsResult>;
   expanded: boolean;
   onToggle: () => void;
+  selectedPaymentTermsColumn: string | undefined;
+  onPaymentTermsColumnChange: (col: string) => void;
+  aiSuggestions?: string[];
 }) {
   const d = state.data;
   const subtitle = d
@@ -1385,6 +1686,9 @@ function PaymentTermsPanel({
       ? `${d.uniqueCount} unique payment terms`
       : "No Payment Terms column found"
     : "Analysing payment terms";
+
+  const currencyCols = d?.currencyColumns ?? [];
+  const availableCols = mergeColumnLists(d?.availablePaymentTermsColumns, aiSuggestions);
 
   return (
     <SurfaceCard noPadding>
@@ -1405,7 +1709,7 @@ function PaymentTermsPanel({
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+            transition={EXPAND_TRANSITION}
             className="overflow-hidden"
           >
             <div className="border-t border-neutral-100 dark:border-neutral-800">
@@ -1413,48 +1717,79 @@ function PaymentTermsPanel({
                 <PanelSpinner message="Analysing payment terms…" />
               )}
               {state.error && !d && <PanelError message={state.error} />}
-              {d && (
+              {d && !d.exists && (
+                <EmptyState icon={FileText} message="Payment Terms column not found" />
+              )}
+              {d && d.exists && (
                 <>
-                  <AiInsightBanner insight={d.aiInsight} />
+                  {availableCols.length > 1 && (
+                    <div className="px-6 py-3 border-b border-neutral-100 dark:border-neutral-800 flex items-center gap-3">
+                      <label className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
+                        Payment terms column:
+                      </label>
+                      <select
+                        value={selectedPaymentTermsColumn ?? d.availablePaymentTermsColumns?.[0] ?? ""}
+                        onChange={(e) => onPaymentTermsColumnChange(e.target.value)}
+                        className="text-sm rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-2 py-1 text-neutral-800 dark:text-neutral-200 focus:ring-2 focus:ring-violet-500/30 outline-none"
+                      >
+                        {availableCols.map((c) => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <StructuredInsight insight={d.aiInsight} accentColor="violet" />
 
                   {d.paymentTerms.length > 0 && (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-                            <th className="px-6 py-3">Payment Term</th>
-                            <th className="px-4 py-3 text-right">Spend</th>
-                            <th className="px-4 py-3 text-center">
-                              % of Total
-                            </th>
-                            <th className="px-4 py-3 text-right">Rows</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                          {d.paymentTerms.map((row) => (
-                            <tr
-                              key={row.term}
-                              className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors"
-                            >
-                              <td className="px-6 py-2 font-medium text-neutral-800 dark:text-neutral-200">
-                                {row.term}
-                              </td>
-                              <td className="px-4 py-2 text-right tabular-nums text-neutral-700 dark:text-neutral-300">
-                                {fmtSpend(row.spend)}
-                              </td>
-                              <td className="px-4 py-2 text-center tabular-nums text-neutral-700 dark:text-neutral-300">
-                                {row.pctOfTotal != null
-                                  ? `${row.pctOfTotal.toFixed(1)}%`
-                                  : "—"}
-                              </td>
-                              <td className="px-4 py-2 text-right tabular-nums text-neutral-700 dark:text-neutral-300">
-                                {row.rowCount.toLocaleString()}
-                              </td>
+                    <DeepDiveSection>
+                      <div className="overflow-x-auto rounded-b-2xl">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                              <th className="px-6 py-3 sticky left-0 bg-neutral-50 dark:bg-neutral-800/50 z-10">Term</th>
+                              <th className="px-4 py-3 text-right">Spend (Reporting)</th>
+                              <th className="px-4 py-3 text-center">% of Rows</th>
+                              {currencyCols.map((ccy) => (
+                                <th key={ccy} className="px-4 py-3 text-right">
+                                  {ccy}
+                                </th>
+                              ))}
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                          </thead>
+                          <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                            {d.paymentTerms.map((row, idx) => (
+                              <tr
+                                key={row.term}
+                                className={`hover:bg-neutral-100/60 dark:hover:bg-neutral-700/20 transition-colors ${idx % 2 === 0 ? "bg-neutral-50/30 dark:bg-neutral-800/10" : ""}`}
+                              >
+                                <td className="px-6 py-2.5 font-medium text-neutral-800 dark:text-neutral-200 sticky left-0 bg-white dark:bg-neutral-900 z-10">
+                                  {row.term}
+                                </td>
+                                <td className="px-4 py-2.5 text-right tabular-nums text-neutral-700 dark:text-neutral-300">
+                                  {fmtSpend(row.spend)}
+                                </td>
+                                <td className="px-4 py-2.5 text-center tabular-nums text-neutral-700 dark:text-neutral-300">
+                                  {row.pctOfRows != null
+                                    ? `${row.pctOfRows.toFixed(1)}%`
+                                    : "—"}
+                                </td>
+                                {currencyCols.map((ccy) => (
+                                  <td
+                                    key={ccy}
+                                    className="px-4 py-2.5 text-right tabular-nums text-neutral-700 dark:text-neutral-300"
+                                  >
+                                    {row.currencySpend?.[ccy] != null
+                                      ? fmtSpend(row.currencySpend[ccy])
+                                      : "—"}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </DeepDiveSection>
                   )}
                 </>
               )}
@@ -1474,10 +1809,14 @@ function CountryRegionPanel({
   state,
   expanded,
   onToggle,
+  selectedCountryColumn,
+  onCountryColumnChange,
 }: {
   state: PanelState<CountryRegionResult>;
   expanded: boolean;
   onToggle: () => void;
+  selectedCountryColumn: string | undefined;
+  onCountryColumnChange: (col: string) => void;
 }) {
   const d = state.data;
   const parts: string[] = [];
@@ -1488,6 +1827,8 @@ function CountryRegionPanel({
       ? parts.join(" · ") + " unique values"
       : "No country or region columns found"
     : "Analysing country & region data";
+
+  const availableCols = d?.availableCountryColumns ?? [];
 
   return (
     <SurfaceCard noPadding>
@@ -1508,7 +1849,7 @@ function CountryRegionPanel({
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+            transition={EXPAND_TRANSITION}
             className="overflow-hidden"
           >
             <div className="border-t border-neutral-100 dark:border-neutral-800">
@@ -1518,90 +1859,100 @@ function CountryRegionPanel({
               {state.error && !d && <PanelError message={state.error} />}
               {d && (
                 <>
-                  {/* Country sub-section */}
-                  {d.countryAiInsight && (
-                    <div className="px-6 py-4 bg-blue-50/70 dark:bg-blue-950/30 border-b border-neutral-100 dark:border-neutral-800">
-                      <p className="text-[10px] uppercase tracking-wider font-semibold text-blue-600 dark:text-blue-400 mb-1">
-                        Country Insights
-                        {d.countryColumn && (
-                          <span className="ml-1 font-normal normal-case text-neutral-500">
-                            ({d.countryColumn})
-                          </span>
-                        )}
-                      </p>
-                      <div className="text-sm leading-relaxed text-neutral-700 dark:text-neutral-300">
-                        {renderInsightMarkdown(d.countryAiInsight)}
-                      </div>
-                    </div>
-                  )}
-
-                  {d.countryValues && d.countryValues.length > 0 && (
-                    <div className="px-6 py-3 border-b border-neutral-100 dark:border-neutral-800">
-                      <p className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 mb-2">
-                        Unique Country Values ({d.countryValues.length})
-                      </p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {d.countryValues.slice(0, 100).map((v) => (
-                          <span
-                            key={v}
-                            className="text-xs px-2 py-0.5 rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300"
-                          >
-                            {v}
-                          </span>
+                  {/* Country column dropdown */}
+                  {availableCols.length > 1 && (
+                    <div className="px-6 py-3 border-b border-neutral-100 dark:border-neutral-800 flex items-center gap-3">
+                      <label className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
+                        Country column:
+                      </label>
+                      <select
+                        value={selectedCountryColumn ?? d.countryColumn ?? ""}
+                        onChange={(e) => onCountryColumnChange(e.target.value)}
+                        className="text-sm rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-2 py-1 text-neutral-800 dark:text-neutral-200 focus:ring-2 focus:ring-emerald-500/30 outline-none"
+                      >
+                        {availableCols.map((c) => (
+                          <option key={c} value={c}>
+                            {c}
+                          </option>
                         ))}
-                        {d.countryValues.length > 100 && (
-                          <span className="text-xs text-neutral-400">
-                            +{d.countryValues.length - 100} more
-                          </span>
-                        )}
-                      </div>
+                      </select>
                     </div>
                   )}
 
-                  {/* Region sub-section */}
-                  {d.regionAiInsight && (
-                    <div className="px-6 py-4 bg-blue-50/70 dark:bg-blue-950/30 border-b border-neutral-100 dark:border-neutral-800">
-                      <p className="text-[10px] uppercase tracking-wider font-semibold text-blue-600 dark:text-blue-400 mb-1">
-                        Region Insights
-                        {d.regionColumn && (
-                          <span className="ml-1 font-normal normal-case text-neutral-500">
-                            ({d.regionColumn})
-                          </span>
-                        )}
-                      </p>
-                      <div className="text-sm leading-relaxed text-neutral-700 dark:text-neutral-300">
-                        {renderInsightMarkdown(d.regionAiInsight)}
-                      </div>
-                    </div>
-                  )}
+                  {/* AI insights — country and region stacked */}
+                  <StructuredInsight insight={d.countryAiInsight} accentColor="emerald" />
+                  <StructuredInsight insight={d.regionAiInsight} accentColor="emerald" />
 
-                  {d.regionValues && d.regionValues.length > 0 && (
-                    <div className="px-6 py-3">
-                      <p className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 mb-2">
-                        Unique Region Values ({d.regionValues.length})
-                      </p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {d.regionValues.slice(0, 100).map((v) => (
-                          <span
-                            key={v}
-                            className="text-xs px-2 py-0.5 rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300"
-                          >
-                            {v}
-                          </span>
-                        ))}
-                        {d.regionValues.length > 100 && (
-                          <span className="text-xs text-neutral-400">
-                            +{d.regionValues.length - 100} more
-                          </span>
-                        )}
-                      </div>
-                    </div>
+                  {/* Deep dive: country and region value grids */}
+                  {(
+                    (d.countryValues && d.countryValues.length > 0) ||
+                    (d.regionValues && d.regionValues.length > 0)
+                  ) && (
+                    <DeepDiveSection>
+                      {d.countryValues && d.countryValues.length > 0 && (
+                        <div className="px-6 py-4 border-b border-neutral-100 dark:border-neutral-800">
+                          <p className="text-[10px] uppercase tracking-wider font-semibold text-neutral-500 dark:text-neutral-400 mb-3">
+                            Unique Country Values ({d.countryValues.length})
+                            {d.countryColumn && (
+                              <span className="ml-1 font-normal normal-case text-neutral-400">
+                                — {d.countryColumn}
+                              </span>
+                            )}
+                          </p>
+                          <div className="rounded-xl overflow-hidden border border-neutral-200 dark:border-neutral-700">
+                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+                              {d.countryValues.slice(0, 100).map((v, idx) => (
+                                <div
+                                  key={v}
+                                  className={`px-4 py-2 text-sm text-neutral-700 dark:text-neutral-300 border-b border-r border-neutral-100 dark:border-neutral-800 ${idx % 2 === 0 ? "bg-neutral-50/30 dark:bg-neutral-800/10" : ""}`}
+                                >
+                                  {v}
+                                </div>
+                              ))}
+                            </div>
+                            {d.countryValues.length > 100 && (
+                              <div className="px-4 py-2 text-xs text-neutral-400 text-center bg-neutral-50/50 dark:bg-neutral-800/30">
+                                +{d.countryValues.length - 100} more
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {d.regionValues && d.regionValues.length > 0 && (
+                        <div className="px-6 py-4">
+                          <p className="text-[10px] uppercase tracking-wider font-semibold text-neutral-500 dark:text-neutral-400 mb-3">
+                            Unique Region Values ({d.regionValues.length})
+                            {d.regionColumn && (
+                              <span className="ml-1 font-normal normal-case text-neutral-400">
+                                — {d.regionColumn}
+                              </span>
+                            )}
+                          </p>
+                          <div className="rounded-xl overflow-hidden border border-neutral-200 dark:border-neutral-700">
+                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+                              {d.regionValues.slice(0, 100).map((v, idx) => (
+                                <div
+                                  key={v}
+                                  className={`px-4 py-2 text-sm text-neutral-700 dark:text-neutral-300 border-b border-r border-neutral-100 dark:border-neutral-800 ${idx % 2 === 0 ? "bg-neutral-50/30 dark:bg-neutral-800/10" : ""}`}
+                                >
+                                  {v}
+                                </div>
+                              ))}
+                            </div>
+                            {d.regionValues.length > 100 && (
+                              <div className="px-4 py-2 text-xs text-neutral-400 text-center bg-neutral-50/50 dark:bg-neutral-800/30">
+                                +{d.regionValues.length - 100} more
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </DeepDiveSection>
                   )}
 
                   {!d.countryColumn && !d.regionColumn && (
-                    <div className="px-6 py-6 text-center text-sm text-neutral-500 dark:text-neutral-400">
-                      No country or region columns found in the dataset.
-                    </div>
+                    <EmptyState icon={Globe} message="No country or region columns found in the dataset." />
                   )}
                 </>
               )}
@@ -1621,10 +1972,16 @@ function SupplierPanel({
   state,
   expanded,
   onToggle,
+  selectedSupplierColumn,
+  onSupplierColumnChange,
+  aiSuggestions,
 }: {
   state: PanelState<SupplierResult>;
   expanded: boolean;
   onToggle: () => void;
+  selectedSupplierColumn: string | undefined;
+  onSupplierColumnChange: (col: string) => void;
+  aiSuggestions?: string[];
 }) {
   const d = state.data;
   const subtitle = d
@@ -1632,6 +1989,8 @@ function SupplierPanel({
       ? `${d.supplierCount.toLocaleString()} unique suppliers`
       : "No Vendor Name column found"
     : "Analysing supplier names";
+
+  const availableCols = mergeColumnLists(d?.availableSupplierColumns, aiSuggestions);
 
   return (
     <SurfaceCard noPadding>
@@ -1652,7 +2011,7 @@ function SupplierPanel({
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+            transition={EXPAND_TRANSITION}
             className="overflow-hidden"
           >
             <div className="border-t border-neutral-100 dark:border-neutral-800">
@@ -1660,7 +2019,81 @@ function SupplierPanel({
                 <PanelSpinner message="Analysing supplier names for normalisation opportunities…" />
               )}
               {state.error && !d && <PanelError message={state.error} />}
-              {d && <AiInsightBanner insight={d.aiInsight} />}
+              {d && !d.exists && (
+                <EmptyState icon={Users} message="No Vendor Name column found" />
+              )}
+              {d && d.exists && (
+                <>
+                  {availableCols.length > 1 && (
+                    <div className="px-6 py-3 border-b border-neutral-100 dark:border-neutral-800 flex items-center gap-3">
+                      <label className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
+                        Supplier column:
+                      </label>
+                      <select
+                        value={selectedSupplierColumn ?? d.availableSupplierColumns?.[0] ?? ""}
+                        onChange={(e) => onSupplierColumnChange(e.target.value)}
+                        className="text-sm rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-2 py-1 text-neutral-800 dark:text-neutral-200 focus:ring-2 focus:ring-rose-500/30 outline-none"
+                      >
+                        {availableCols.map((c) => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <StructuredInsight insight={d.aiInsight} accentColor="rose" />
+
+                  {d.hasReportingSpend && (
+                    <DeepDiveSection>
+                      {d.paretoVendorCount != null && d.paretoVendorPct != null && (
+                        <div className="px-6 py-4 border-b border-neutral-100 dark:border-neutral-800">
+                          <p className="text-sm text-neutral-700 dark:text-neutral-300">
+                            <strong className="font-semibold">{d.paretoVendorCount.toLocaleString()}</strong> suppliers account for{" "}
+                            <strong className="font-semibold">{d.paretoVendorPct.toFixed(1)}%</strong> of total spend
+                          </p>
+                        </div>
+                      )}
+
+                      {d.top20 && d.top20.length > 0 && (
+                        <div className="overflow-x-auto rounded-b-2xl">
+                          <div className="px-6 py-2.5 border-b border-neutral-100 dark:border-neutral-800">
+                            <p className="text-[10px] uppercase tracking-wider font-semibold text-neutral-500 dark:text-neutral-400">
+                              Top {d.top20.length} Suppliers by Spend
+                            </p>
+                          </div>
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                                <th className="px-6 py-3 w-8">#</th>
+                                <th className="px-4 py-3">Vendor</th>
+                                <th className="px-4 py-3 text-right">Spend</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                              {d.top20.map((row, idx) => (
+                                <tr
+                                  key={row.vendor}
+                                  className={`hover:bg-neutral-100/60 dark:hover:bg-neutral-700/20 transition-colors ${idx % 2 === 0 ? "bg-neutral-50/30 dark:bg-neutral-800/10" : ""}`}
+                                >
+                                  <td className="px-6 py-2.5 tabular-nums text-neutral-400 text-xs">
+                                    {idx + 1}
+                                  </td>
+                                  <td className="px-4 py-2.5 font-medium text-neutral-800 dark:text-neutral-200 max-w-[300px] truncate">
+                                    {row.vendor}
+                                  </td>
+                                  <td className="px-4 py-2.5 text-right tabular-nums text-neutral-700 dark:text-neutral-300">
+                                    {fmtSpend(row.spend)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </DeepDiveSection>
+                  )}
+                </>
+              )}
             </div>
           </motion.div>
         )}
@@ -1713,7 +2146,7 @@ function FillRateSummaryPanel({
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+            transition={EXPAND_TRANSITION}
             className="overflow-hidden"
           >
             <div className="border-t border-neutral-100 dark:border-neutral-800">
@@ -1722,11 +2155,11 @@ function FillRateSummaryPanel({
               )}
               {state.error && !d && <PanelError message={state.error} />}
               {d && d.columns.length > 0 && (
-                <div className="overflow-x-auto">
+                <div className="overflow-x-auto rounded-b-2xl">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-                        <th className="px-6 py-3">Column Name</th>
+                        <th className="px-6 py-3 sticky left-0 bg-neutral-50 dark:bg-neutral-800/50 z-10">Column Name</th>
                         <th className="px-4 py-3 text-center">% Rows Covered</th>
                         {spendHeader && (
                           <th className="px-4 py-3 text-center">{spendHeader}</th>
@@ -1734,19 +2167,19 @@ function FillRateSummaryPanel({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                      {d.columns.map((col) => (
+                      {d.columns.map((col, idx) => (
                         <tr
                           key={col.columnName}
-                          className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors"
+                          className={`hover:bg-neutral-100/60 dark:hover:bg-neutral-700/20 transition-colors ${idx % 2 === 0 ? "bg-neutral-50/30 dark:bg-neutral-800/10" : ""}`}
                         >
-                          <td className="px-6 py-2 font-medium text-neutral-800 dark:text-neutral-200 max-w-[260px] truncate">
+                          <td className="px-6 py-2.5 font-medium text-neutral-800 dark:text-neutral-200 max-w-[260px] truncate sticky left-0 bg-white dark:bg-neutral-900 z-10">
                             {col.columnName}
                           </td>
-                          <td className="px-4 py-2 text-center tabular-nums text-neutral-700 dark:text-neutral-300">
+                          <td className="px-4 py-2.5 text-center tabular-nums text-neutral-700 dark:text-neutral-300">
                             {col.pctRowsCovered.toFixed(1)}%
                           </td>
                           {spendHeader && (
-                            <td className="px-4 py-2 text-center tabular-nums text-neutral-700 dark:text-neutral-300">
+                            <td className="px-4 py-2.5 text-center tabular-nums text-neutral-700 dark:text-neutral-300">
                               <FillRateSpendCell
                                 coverage={col.spendCoverage}
                                 spendType={d.spendType}
@@ -1834,7 +2267,7 @@ function SpendBifurcationPanel({
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+            transition={EXPAND_TRANSITION}
             className="overflow-hidden"
           >
             <div className="border-t border-neutral-100 dark:border-neutral-800">
@@ -1843,12 +2276,10 @@ function SpendBifurcationPanel({
               )}
               {state.error && !d && <PanelError message={state.error} />}
               {d && d.type === "none" && (
-                <div className="px-6 py-6 text-center text-sm text-neutral-500 dark:text-neutral-400">
-                  No spend column found in the dataset.
-                </div>
+                <EmptyState icon={SplitSquareHorizontal} message="No spend column found in the dataset." />
               )}
               {d && (d.type === "reporting" || d.type === "local_single") && (
-                <div className="overflow-x-auto">
+                <div className="overflow-x-auto rounded-b-2xl">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
@@ -1870,7 +2301,7 @@ function SpendBifurcationPanel({
                 </div>
               )}
               {d && d.type === "local" && d.currencies && (
-                <div className="overflow-x-auto">
+                <div className="overflow-x-auto rounded-b-2xl">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
@@ -1880,18 +2311,18 @@ function SpendBifurcationPanel({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                      {d.currencies.map((c) => (
+                      {d.currencies.map((c, idx) => (
                         <tr
                           key={c.code}
-                          className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors"
+                          className={`hover:bg-neutral-100/60 dark:hover:bg-neutral-700/20 transition-colors ${idx % 2 === 0 ? "bg-neutral-50/30 dark:bg-neutral-800/10" : ""}`}
                         >
-                          <td className="px-6 py-2 font-medium text-neutral-800 dark:text-neutral-200">
+                          <td className="px-6 py-2.5 font-medium text-neutral-800 dark:text-neutral-200">
                             {c.code}
                           </td>
-                          <td className="px-4 py-2 text-right tabular-nums text-emerald-700 dark:text-emerald-400">
+                          <td className="px-4 py-2.5 text-right tabular-nums text-emerald-700 dark:text-emerald-400">
                             {fmtSpend(c.positiveSpend)}
                           </td>
-                          <td className="px-4 py-2 text-right tabular-nums text-red-600 dark:text-red-400">
+                          <td className="px-4 py-2.5 text-right tabular-nums text-red-600 dark:text-red-400">
                             {fmtSpend(c.negativeSpend)}
                           </td>
                         </tr>

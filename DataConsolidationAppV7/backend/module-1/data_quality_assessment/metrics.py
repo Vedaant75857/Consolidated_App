@@ -20,7 +20,7 @@ NULL_PROXY_VALUES: list[str] = [
     "na", "#na", "n/a", "#n/a", "none", "null", "nan",
     "-", "unknown", "not applicable", "tbd",
     "misc", "miscellaneous", "other", "general",
-    "unclassified", "0", ".",
+    "unclassified", ".",
 ]
 
 NON_PROCURABLE_KEYWORDS: list[str] = [
@@ -39,31 +39,15 @@ _PAT_YEAR_ONLY   = re.compile(r"^\d{4}$")
 # Ambiguous patterns (need DMY/MDY heuristic to resolve)
 _PAT_SLASH_SEP   = re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$")
 _PAT_DASH_SEP    = re.compile(r"^\d{1,2}-\d{1,2}-\d{4}$")
+# Alpha-month patterns (e.g. "15-Jan-2024", "Jan 15, 2024", "15 Jan 2024")
+_PAT_DD_MON_YYYY = re.compile(r"^\d{1,2}[-\s](?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[-\s,]*\d{4}$", re.IGNORECASE)
+_PAT_MON_DD_YYYY = re.compile(r"^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[-\s,.]*\d{1,2}[-\s,]*\d{4}$", re.IGNORECASE)
 # Cleaning helpers (adapted from Module 2 normalization agent)
 _TIME_SUFFIX_RE  = re.compile(r'\s+\d{1,2}:\d{2}(:\d{2})?(\s*(AM|PM))?$', re.IGNORECASE)
 _ISO_T_RE        = re.compile(r'T\d{2}:\d{2}(:\d{2})?(\..*?)?(Z|[+-]\d{2}:\d{2})?$', re.IGNORECASE)
 _MONTHS_RE       = re.compile(r'(?i)^(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)')
 
 _YEAR_RE = re.compile(r"((?:19|20)\d{2})")
-
-
-def find_column(available: set[str], candidates: list[str]) -> str | None:
-    """Return the real column name for the first candidate that matches (case-insensitive, stripped).
-
-    Args:
-        available: Column names actually present in the table.
-        candidates: Preferred column names in priority order.
-
-    Returns:
-        The actual column name from *available* that matches the first hit,
-        or ``None`` if nothing matches.
-    """
-    lookup = {c.strip().lower(): c for c in available}
-    for candidate in candidates:
-        real = lookup.get(candidate.strip().lower())
-        if real is not None:
-            return real
-    return None
 
 
 def _safe_pct(num: int, den: int) -> float:
@@ -78,6 +62,37 @@ def _safe_pct(num: int, den: int) -> float:
 def _non_null_condition(qc: str) -> str:
     """SQL fragment: column is non-null and non-empty after trimming."""
     return f"{qc} IS NOT NULL AND TRIM({qc}) != ''"
+
+
+def _strip_thousands(qc: str) -> str:
+    """SQL expression that removes commas and spaces from a column value."""
+    return f"REPLACE(REPLACE(TRIM({qc}), ',', ''), ' ', '')"
+
+
+def numeric_spend_expr(qc: str) -> str:
+    """SQL expression that safely casts a spend column to REAL, returning 0 for non-numeric.
+
+    Handles thousands separators (commas, spaces) before the numeric check.
+    """
+    stripped = _strip_thousands(qc)
+    return (
+        f"CASE WHEN regexp_matches({stripped}, '[0-9]') "
+        f"AND regexp_matches({stripped}, '^[0-9eE.+-]+$') "
+        f"THEN COALESCE(TRY_CAST({stripped} AS REAL), 0) ELSE 0 END"
+    )
+
+
+def raw_numeric_expr(qc: str) -> str:
+    """SQL expression that casts to REAL preserving sign, NULL for non-numeric.
+
+    Used for spend bifurcation where negatives must be preserved.
+    """
+    stripped = _strip_thousands(qc)
+    return (
+        f"CASE WHEN regexp_matches({stripped}, '[0-9]') "
+        f"AND regexp_matches({stripped}, '^[0-9eE.+-]+$') "
+        f"THEN TRY_CAST({stripped} AS REAL) ELSE NULL END"
+    )
 
 
 # ── fill rate (batch) ──────────────────────────────────────────────────────
@@ -166,6 +181,11 @@ def _detect_format(value: str, order: str = "DMY") -> str:
         return "YYYYMMDD"
     if _PAT_YEAR_ONLY.match(v):
         return "YYYY"
+    # Alpha-month patterns (e.g. "15-Jan-2024", "Jan 15, 2024")
+    if _PAT_DD_MON_YYYY.match(v):
+        return "DD-Mon-YYYY"
+    if _PAT_MON_DD_YYYY.match(v):
+        return "Mon-DD-YYYY"
     # Ambiguous slash/dash patterns — use heuristic order
     if _PAT_SLASH_SEP.match(v):
         return "DD/MM/YYYY" if order == "DMY" else "MM/DD/YYYY"
@@ -285,19 +305,20 @@ def compute_spend_metrics(
     """
     tbl = quote_id(table_name)
     qc = quote_id(column)
+    stripped = _strip_thousands(qc)
     row = conn.execute(
         f"SELECT "
         f"  COUNT(*) AS total, "
-        f"  SUM(CASE WHEN regexp_matches(TRIM({qc}), '[0-9]') "
-        f"       AND regexp_matches(TRIM({qc}), '^[0-9eE.+-]+$') "
-        f"       THEN CAST({qc} AS REAL) ELSE 0 END) AS total_spend, "
+        f"  SUM(CASE WHEN regexp_matches({stripped}, '[0-9]') "
+        f"       AND regexp_matches({stripped}, '^[0-9eE.+-]+$') "
+        f"       THEN TRY_CAST({stripped} AS REAL) ELSE 0 END) AS total_spend, "
         f"  COUNT(CASE WHEN {_non_null_condition(qc)} "
-        f"       AND (NOT regexp_matches(TRIM({qc}), '[0-9]') "
-        f"            OR NOT regexp_matches(TRIM({qc}), '^[0-9eE.+-]+$')) "
+        f"       AND (NOT regexp_matches({stripped}, '[0-9]') "
+        f"            OR NOT regexp_matches({stripped}, '^[0-9eE.+-]+$')) "
         f"       THEN 1 END) AS non_numeric, "
         f"  COUNT(CASE WHEN {_non_null_condition(qc)} "
-        f"       AND regexp_matches(TRIM({qc}), '[0-9]') "
-        f"       AND regexp_matches(TRIM({qc}), '^[0-9eE.+-]+$') "
+        f"       AND regexp_matches({stripped}, '[0-9]') "
+        f"       AND regexp_matches({stripped}, '^[0-9eE.+-]+$') "
         f"       THEN 1 END) AS numeric_ct "
         f"FROM {tbl}"
     ).fetchone()

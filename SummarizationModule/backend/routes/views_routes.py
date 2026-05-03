@@ -6,7 +6,18 @@ from flask import Blueprint, jsonify, request
 from shared.db import get_session_db, get_meta, set_meta, session_exists
 from services.views.view_engine import get_available_views, compute_views
 from services.dashboard.ai_summary import generate_summary_for_view
-from services.spend_quality_assessment.data_quality import run_executive_summary
+from services.spend_quality_assessment.data_quality import (
+    run_executive_summary_sql,
+    run_executive_summary_ai,
+)
+from services.spend_quality_assessment.not_procurable import (
+    get_searchable_columns,
+    search_keyword_spend,
+)
+from services.spend_quality_assessment.intercompany import (
+    get_vendor_searchable_columns,
+    search_intercompany_keyword,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +212,12 @@ def executive_summary():
                 if cached:
                     return jsonify(cached)
 
-            result = run_executive_summary(conn, str(api_key).strip())
+            sql_result = run_executive_summary_sql(conn)
+
+        # AI phase runs outside the lock to avoid blocking other requests
+        result = run_executive_summary_ai(sql_result, str(api_key).strip())
+
+        with lock:
             set_meta(conn, "executive_summary", result)
 
         return jsonify(result)
@@ -210,4 +226,120 @@ def executive_summary():
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         logger.error("executive-summary failed: %s", exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 500
+
+
+# ── Not Procurable Spend ─────────────────────────────────────────────────
+
+@views_bp.route("/not-procurable/columns", methods=["POST"])
+def not_procurable_columns():
+    """Return the text columns available for keyword-based spend search.
+
+    Request JSON:
+        sessionId – active session identifier (required)
+    """
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+
+        if not session_id or not session_exists(session_id):
+            return jsonify({"error": "Invalid session"}), 400
+
+        conn = get_session_db(str(session_id))
+        columns = get_searchable_columns(conn)
+        return jsonify({"columns": columns})
+
+    except Exception as exc:
+        logger.error("not-procurable/columns failed: %s", exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 500
+
+
+@views_bp.route("/not-procurable/search", methods=["POST"])
+def not_procurable_search():
+    """Search for a keyword across selected columns and return matching spend.
+
+    Request JSON:
+        sessionId – active session identifier (required)
+        columns   – list of column fieldKeys to search (required, non-empty)
+        keyword   – search term (required, non-empty)
+    """
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+        columns = body.get("columns", [])
+        keyword = body.get("keyword", "")
+
+        if not session_id or not session_exists(session_id):
+            return jsonify({"error": "Invalid session"}), 400
+        if not columns:
+            return jsonify({"error": "At least one column must be selected."}), 400
+        if not keyword or not str(keyword).strip():
+            return jsonify({"error": "Keyword must not be empty."}), 400
+
+        conn = get_session_db(str(session_id))
+        result = search_keyword_spend(conn, columns, str(keyword))
+        return jsonify(result)
+
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.error("not-procurable/search failed: %s", exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 500
+
+
+# ── Intercompany Spend ────────────────────────────────────────────────
+
+@views_bp.route("/intercompany/columns", methods=["POST"])
+def intercompany_columns():
+    """Return the vendor columns available for intercompany keyword search.
+
+    Request JSON:
+        sessionId – active session identifier (required)
+    """
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+
+        if not session_id or not session_exists(session_id):
+            return jsonify({"error": "Invalid session"}), 400
+
+        conn = get_session_db(str(session_id))
+        columns = get_vendor_searchable_columns(conn)
+        return jsonify({"columns": columns})
+
+    except Exception as exc:
+        logger.error("intercompany/columns failed: %s", exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 500
+
+
+@views_bp.route("/intercompany/search", methods=["POST"])
+def intercompany_search():
+    """Search for a keyword across selected vendor columns and return matching spend.
+
+    Request JSON:
+        sessionId – active session identifier (required)
+        columns   – list of column fieldKeys to search (required, non-empty)
+        keyword   – search term (required, non-empty)
+    """
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+        columns = body.get("columns", [])
+        keyword = body.get("keyword", "")
+
+        if not session_id or not session_exists(session_id):
+            return jsonify({"error": "Invalid session"}), 400
+        if not columns:
+            return jsonify({"error": "At least one column must be selected."}), 400
+        if not keyword or not str(keyword).strip():
+            return jsonify({"error": "Keyword must not be empty."}), 400
+
+        conn = get_session_db(str(session_id))
+        result = search_intercompany_keyword(conn, columns, str(keyword))
+        return jsonify(result)
+
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.error("intercompany/search failed: %s", exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500

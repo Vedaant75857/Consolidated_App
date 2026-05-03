@@ -36,6 +36,8 @@ The DataStitcher helps users combine multiple data files into one clean, merged 
 | 6 | Custom header names | When the chosen header row has empty cells, text fields appear so you can type custom column names. |
 | 7 | Confirm/cancel header | Click "Confirm Row N" to apply your chosen header, or "Cancel" to close without changes. |
 | 8 | Delete table | Click the trash icon on a table, then confirm, to remove that table from the session entirely. |
+| 8b | Select tables for bulk delete | Use the checkbox to the left of each table to select it. A "Select All" checkbox at the top lets you check or uncheck every table at once. |
+| 8c | Bulk delete tables | When one or more tables are selected, a red bar appears showing the count and a "Delete Selected" button. Click it, confirm, and all selected tables are removed. Click "Clear" to deselect without deleting. |
 | 9 | Select rows | Use checkboxes in the preview table to select individual rows. |
 | 10 | Delete selected rows | Click "Delete Selected Rows" to remove the checked rows (asks for confirmation first). |
 | 11 | Clear row selection | Click "Clear" to uncheck all selected rows. |
@@ -76,6 +78,7 @@ The DataStitcher helps users combine multiple data files into one clean, merged 
 | 5 | Expand group panels | Click a group's panel header to expand or collapse the mapping grid for that group. See row/column counts and AUTO/KEEP/DROP tallies. |
 | 6 | Fullscreen view | Click "Expand Fullscreen" to open a group's mapping grid in a fullscreen modal (close with X or Escape). |
 | 7 | Download Excel | Click "Download Excel" to get a workbook of the current mappings for offline review and editing. |
+| 7b | Download mapping summary | Click "Download Mapping Summary" in the toolbar to get a concise Excel file listing each column's original name and its mapped name, with a separate sheet for each group. |
 | 8 | Upload Excel | Toggle "Manual Excel Workflow" on, then click "Upload Excel" to load a mapping workbook that overrides the current decisions. |
 | 9 | Apply mappings | Click "Apply & Proceed to Data Cleaning" to rename all columns according to the approved mappings. |
 | 10 | Re-run AI | Click "Re-Run AI" to discard current suggestions and get fresh ones from the AI. |
@@ -198,17 +201,23 @@ The DataStitcher helps users combine multiple data files into one clean, merged 
 | 2 | Re-run all | Click "Re-run All" to refresh every quality assessment at once. |
 | 2b | Merge data not found | If the merged table is missing (e.g. earlier steps were changed), a "Merge Data Not Found" card appears with a "Back to Merge" button so you can re-run the merge. |
 | 2c | Session expired | If the session is genuinely gone, a "Session Expired" card appears with a "Back to Upload" button. |
-| 3 | Fill Rate Summary panel | Shown above all other panels. A table listing every column with its percentage of non-empty rows and spend coverage. If reporting currency spend exists, shows a single percentage per column. If only local spend exists, shows per-currency percentages like "USD(17%), EUR(36%)". |
-| 4 | Date panel | Expand the "Date" panel to see date format distributions and timeline charts. If multiple date columns exist, pick which one to analyse from a dropdown. |
-| 4b | Total spend summary | Above the pivot table inside the Date panel, a summary block shows total spend. If reporting currency is available, shows a single total. If only local spend, shows totals split by currency (e.g. "965 USD, 765 EUR"). |
-| 5 | Spend Bifurcation panel | Shown after the Date panel. If reporting currency spend exists, shows Total Positive Spend and Total Negative Spend. If only local spend exists, shows a table with Currency, Total +ve Spend, and Total -ve Spend per currency. |
-| 6 | Currency panel | Expand the "Currency" panel to see which currencies appear, their distribution, and consistency metrics. |
-| 7 | Payment Terms panel | Expand the "Payment Terms" panel to see how payment terms are distributed across spend. |
-| 8 | Country/Region panel | Expand the "Country & Region" panel to see completeness of country and region fields, with value chips (shows "+N more" when there are many). |
-| 9 | Supplier panel | Expand the "Supplier" panel to see a short 2-3 bullet AI insight on whether supplier normalisation is needed, with example name cases. No stat cards — just the short insight. |
-| 10 | AI summaries | Each panel includes an AI-written narrative explaining the findings in plain language. |
-| 11 | Retry on error | If a panel fails to load, click "Retry" to try again for just that one. |
-| 12 | Expand/collapse panels | Click any panel's header to expand or collapse it (chevron rotates to show state). |
+| 3 | Fill Rate Summary panel | Shown above all other panels. A table listing every column with its effective fill rate (excluding null-proxy values like "N/A" or "unknown") and spend coverage. Zebra-striped rows for readability. |
+| 4 | Date panel | Expand the "Date" panel to see an AI insight at the top (3 structured bullet points: main finding, reasoning, examples). The selected date column name is always shown above the insight. If multiple date columns exist, a dropdown lets you pick which one to analyse — changing the selection re-runs analysis for that column. Click "View Details" to expand a deep dive with format table, total spend summary, and spend pivot. |
+| 4b | Total spend summary | Inside the Date deep dive, shows total spend. If reporting currency is available, shows a single total. If only local spend, shows totals split by currency. |
+| 5 | Spend Bifurcation panel | Shown after the Date panel. If reporting currency spend exists, shows Total Positive Spend and Total Negative Spend. If only local spend exists, shows a table with Currency, Total +ve Spend, and Total -ve Spend per currency. No AI insight — pure data display. |
+| 6 | Currency panel | AI insight at the top with 3 structured bullet points. Click "View Details" to expand a deep dive with the currency breakdown table (code, % of rows, local spend, reporting spend). If no currency column found, shows an empty state with a helpful message. |
+| 7 | Payment Terms panel | AI insight at the top. Deep dive shows a redesigned table with Term, Spend (Reporting), % of Rows. If multiple currencies exist, extra columns show spend per currency. If no payment terms column found, shows "not found" empty state. |
+| 8 | Country/Region panel | A dropdown at the top lets you pick which country column to analyse (e.g. Vendor Country, Company Country). Changing the dropdown re-runs the analysis and refreshes the AI insight. AI insight (country + region stacked) shown prominently. Deep dive shows country and region values in a clean grid layout. |
+| 9 | Supplier panel | AI insight at the top with 3 structured bullet points about normalisation needs. If reporting spend data exists, the deep dive shows a Pareto statistic ("X suppliers account for 80% of spend") and a table of the top 20 suppliers by spend. If no spend data, shows AI insight only. |
+| 10 | AI summaries | Each panel's AI insight is structured as exactly 3 bullet points: main finding, reasoning with numbers, and examples from the data. No labels or headings — just clean bullet points on a soft blue background with a coloured left border matching the panel's theme. |
+| 11 | Deep dive sections | Every panel with an AI insight has a "View Details" section below it that starts collapsed. Click to expand and see the full data tables. |
+| 12 | Smarter column detection | Columns are found using a 3-step process: exact name match, then known aliases, then fuzzy matching. This means columns like "Supplier Name" or "Pymnt Terms" still get picked up even if the exact standard name wasn't used. |
+| 12b | AI column suggestions | Before analysis starts, the app sends all column names and sample values to the AI. The AI suggests the 3 most likely columns for each analysis type (date, currency, payment terms, country, supplier). The best suggestion is used automatically — others are available in dropdowns. |
+| 12c | Currency column dropdown | If multiple currency-type columns are found, pick which one to analyse from a dropdown in the Currency panel. Changing re-runs only that panel. |
+| 12d | Payment terms column dropdown | If multiple payment-terms-type columns are found, pick which one from a dropdown in the Payment Terms panel. Changing re-runs only that panel. |
+| 12e | Supplier column dropdown | If multiple supplier/vendor-type columns are found, pick which one from a dropdown in the Supplier panel. Changing re-runs only that panel. |
+| 13 | Retry on error | If a panel fails to load, click "Retry" to try again for just that one. |
+| 14 | Expand/collapse panels | Click any panel's header to expand or collapse it (chevron rotates to show state). All panels start expanded to show insights immediately. |
 
 ### App-Wide Features (available across all steps)
 
@@ -443,14 +452,29 @@ The Spend Summarizer takes a procurement dataset and produces charts, quality as
 | 3 | Total rows stat | The header shows the total number of rows being assessed. |
 | 4 | Re-run assessment | Click the refresh icon in the header to re-run the entire assessment. |
 | 5 | Date-spend pivot panel | Expand this panel to see a pivot table of spend by year and month. Cells with zero spend are dimmed. |
+| 5b | Date period summary | Shows the date range of the data (e.g. "Jan 2024 – Jan 2025"), the number of months covered, and start/end dates. |
+| 5c | Spend breakdown panel | Shows last-twelve-months spend, current and prior fiscal year totals, and the year-over-year change (amount and percentage). |
+| 5d | Supplier breakdown panel | Shows total supplier count, how many suppliers make up 80% of spend, top 10 suppliers with share percentages, and a count of possible duplicate supplier names. |
+| 5e | Categorization effort panel | Displays description quality metrics (fill rate, avg word count, unique counts), an estimated AI categorization cost, and an AI-recommended method (MapAI or Creactives). |
+| 5f | Quality flags panel | Highlights potential data quality issues: months with abnormal spend (+/- 20% from average), poor description quality, low vendor fill rate, and columns with significant gaps. |
+| 5g | Column fill rate panel | A table showing every mapped column's fill rate (%) and spend coverage (%). Sorted by spend coverage descending. |
 | 5b | Spend Bifurcation panel | Shown after the Date-spend pivot. Shows positive vs negative spend. A toggle lets you switch between "Reporting Currency" (single total) and "Local Currency" (table with per-currency breakdown). Handles missing columns gracefully. |
 | 6 | Pareto analysis panel | Expand to see supplier concentration metrics at different thresholds (80%, 85%, 90%, 95%, 99%) — shows total positive spend, number of invoice rows, unique transaction types, and supplier count at each level. Negative spend and credit notes are excluded from the ranking (they appear separately in the Spend Bifurcation panel). Suppliers are grouped and ranked by their total spend, matching the Dashboard's Pareto chart. |
 | 7 | Description quality panel | Expand to see how many description columns were mapped and their quality. Shows spend coverage per description type. |
 | 8 | Top 10 descriptions | Click "Show top 10" on any description type to see the most common descriptions ranked by spend. Click "Hide top 10" to collapse. |
-| 9 | AI insight per description | Each description type shows an AI-written insight (rendered as formatted text with bullet points) assessing specificity, length, and usefulness. |
+| 9 | AI insight per description | Each description type shows an AI-written insight as exactly 3 concise bullet points (10-15 words each): overall verdict, key data quality issue with numbers, and categorisation suitability. Displayed with a coloured left border matching Module 1's structured insight style. |
 | 10 | Not-mapped indicators | Description types that weren't mapped show "Not mapped" / "N/A" styling. |
-| 11 | Retry on failure | If the assessment fails, a "Retry" button appears. |
-| 12 | Proceed to Select Views | Click "Proceed to Select Views" to move on. |
+| 11 | Retry on failure | If the assessment fails, a "Retry" button appears. The app also auto-retries up to 3 times with exponential backoff before showing the error, and displays "Attempt 2/3…" during retries. |
+| 12 | Tab bar | Three tabs at the top let you switch between "Executive Summary" (all the panels above), "Not Procurable Spend" (keyword-based spend search across description columns), and "Intercompany Spend" (keyword-based spend search across vendor columns). The active tab is highlighted with a white background and red text. |
+| 13 | Not Procurable Spend — column selector | In the Not Procurable Spend tab, see pill-shaped buttons for each text column in your data (e.g. Description, PO Material Description, L1–L4, Vendor Name). Click to select or deselect — at least one must stay selected. The first column is pre-selected. |
+| 14 | Not Procurable Spend — keyword search | Type a keyword into the search bar and press Enter or click "Add" to find all rows where that word appears in the selected columns. A spinner shows while searching. Duplicate keywords are rejected with an inline message. |
+| 15 | Not Procurable Spend — keyword chips | Each keyword you've searched appears as a small chip below the search bar. Click the X on a chip to remove it and its results from the table. |
+| 16 | Not Procurable Spend — results table | A table shows every keyword you've added with its matching row count and total spend (in reporting currency). A bold "Total" row at the bottom sums up all keywords. Click the trash icon on any row to remove it. |
+| 17 | Intercompany Spend — column selector | In the Intercompany Spend tab, see pill-shaped buttons for each vendor column in your data. Click to select or deselect — at least one must stay selected. The first column is pre-selected. |
+| 18 | Intercompany Spend — keyword search | Type a keyword into the search bar and press Enter or click "Add" to find all rows where that word appears in the selected vendor columns. A spinner shows while searching. Duplicate keywords are rejected with an inline message. |
+| 19 | Intercompany Spend — keyword chips | Each keyword you've searched appears as a small chip below the search bar. Click the X on a chip to remove it and its results from the table. |
+| 20 | Intercompany Spend — results table | A table shows every keyword you've added with its matching row count and total spend (in reporting currency). A bold "Total" row at the bottom sums up all keywords. Click the trash icon on any row to remove it. |
+| 21 | Proceed to Select Views | Click "Proceed to Select Views" to move on. |
 
 ### Select Views
 

@@ -18,13 +18,18 @@ from shared.db import get_session_db, get_session_lock, lookup_sql_name
 
 from data_quality_assessment.service import (
     TableMissingError,
+    collect_column_samples,
+    run_dqa_suggest_columns,
+    run_dqa_all_sql,
     run_dqa_country_region_sql,
     run_dqa_country_region_ai,
     run_dqa_currency_sql,
     run_dqa_currency_ai,
     run_dqa_date_sql,
     run_dqa_date_ai,
+    run_dqa_entity_ai,
     run_dqa_fill_rate,
+    run_dqa_financial_ai,
     run_dqa_payment_terms_sql,
     run_dqa_payment_terms_ai,
     run_dqa_spend_bifurcation,
@@ -99,6 +104,31 @@ def _resolve_table_under_lock(
     return conn, lock, table_name
 
 
+# ── Column suggestion (AI-assisted) ───────────────────────────────────────
+
+@data_quality_bp.route("/dqa/suggest-columns", methods=["POST"])
+def dqa_suggest_columns():
+    """Ask AI to identify the best columns for each analysis role."""
+    try:
+        fields = _parse_request_fields()
+        conn, lock, table_name = _resolve_table_under_lock(
+            fields["session_id"], fields["table_name"], fields["table_key"],
+        )
+
+        with lock:
+            samples = collect_column_samples(conn, table_name)
+
+        suggestions = run_dqa_suggest_columns(samples, fields["api_key"])
+        return jsonify(suggestions)
+    except TableMissingError as exc:
+        return jsonify({"error": str(exc), "code": "TABLE_MISSING"}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("DQA suggest-columns failed")
+        return jsonify({"error": str(exc)}), 500
+
+
 # ── Date ──────────────────────────────────────────────────────────────────
 
 @data_quality_bp.route("/dqa/date", methods=["POST"])
@@ -134,12 +164,15 @@ def dqa_currency():
     """Currency quality table + AI insight."""
     try:
         fields = _parse_request_fields()
+        body = request.get_json(force=True, silent=True) or {}
+        currency_column = body.get("currencyColumn")
+
         conn, lock, table_name = _resolve_table_under_lock(
             fields["session_id"], fields["table_name"], fields["table_key"],
         )
 
         with lock:
-            sql_data = run_dqa_currency_sql(conn, table_name)
+            sql_data = run_dqa_currency_sql(conn, table_name, currency_column)
 
         result = run_dqa_currency_ai(sql_data, fields["api_key"])
         return jsonify(result)
@@ -159,12 +192,15 @@ def dqa_payment_terms():
     """Payment terms spend breakdown + AI insight."""
     try:
         fields = _parse_request_fields()
+        body = request.get_json(force=True, silent=True) or {}
+        payment_terms_column = body.get("paymentTermsColumn")
+
         conn, lock, table_name = _resolve_table_under_lock(
             fields["session_id"], fields["table_name"], fields["table_key"],
         )
 
         with lock:
-            sql_data = run_dqa_payment_terms_sql(conn, table_name)
+            sql_data = run_dqa_payment_terms_sql(conn, table_name, payment_terms_column)
 
         result = run_dqa_payment_terms_ai(sql_data, fields["api_key"])
         return jsonify(result)
@@ -184,12 +220,15 @@ def dqa_country_region():
     """Country / Region unique values + AI standardisation insight."""
     try:
         fields = _parse_request_fields()
+        body = request.get_json(force=True, silent=True) or {}
+        country_column = body.get("countryColumn")
+
         conn, lock, table_name = _resolve_table_under_lock(
             fields["session_id"], fields["table_name"], fields["table_key"],
         )
 
         with lock:
-            sql_data = run_dqa_country_region_sql(conn, table_name)
+            sql_data = run_dqa_country_region_sql(conn, table_name, country_column)
 
         result = run_dqa_country_region_ai(sql_data, fields["api_key"])
         return jsonify(result)
@@ -209,12 +248,15 @@ def dqa_supplier():
     """Supplier name list + AI normalisation insight."""
     try:
         fields = _parse_request_fields()
+        body = request.get_json(force=True, silent=True) or {}
+        vendor_column = body.get("vendorColumn")
+
         conn, lock, table_name = _resolve_table_under_lock(
             fields["session_id"], fields["table_name"], fields["table_key"],
         )
 
         with lock:
-            sql_data = run_dqa_supplier_sql(conn, table_name)
+            sql_data = run_dqa_supplier_sql(conn, table_name, vendor_column)
 
         result = run_dqa_supplier_ai(sql_data, fields["api_key"])
         return jsonify(result)
@@ -272,4 +314,61 @@ def dqa_spend_bifurcation():
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         logger.exception("DQA spend bifurcation failed")
+        return jsonify({"error": str(exc)}), 500
+
+
+# ── Consolidated (all panels, 2 AI calls) ─────────────────────────────────
+
+@data_quality_bp.route("/dqa/all", methods=["POST"])
+def dqa_all():
+    """Run all panels SQL in one lock, then 2 consolidated AI calls.
+
+    Returns a dict keyed by panel name with complete results.
+    """
+    try:
+        fields = _parse_request_fields()
+        body = request.get_json(force=True, silent=True) or {}
+        date_column = body.get("dateColumn")
+        country_column = body.get("countryColumn")
+        currency_column = body.get("currencyColumn")
+        payment_terms_column = body.get("paymentTermsColumn")
+        vendor_column = body.get("vendorColumn")
+
+        conn, lock, table_name = _resolve_table_under_lock(
+            fields["session_id"], fields["table_name"], fields["table_key"],
+        )
+
+        with lock:
+            all_sql = run_dqa_all_sql(
+                conn, table_name, date_column, country_column,
+                currency_column, payment_terms_column, vendor_column,
+            )
+
+        # 2 consolidated AI calls (outside the lock)
+        financial = run_dqa_financial_ai(
+            all_sql["date"], all_sql["currency"], all_sql["paymentTerms"],
+            fields["api_key"],
+        )
+        entity = run_dqa_entity_ai(
+            all_sql["countryRegion"], all_sql["supplier"],
+            fields["api_key"],
+        )
+
+        # Merge AI insights into SQL results
+        all_sql["date"]["aiInsight"] = financial["dateInsight"]
+        all_sql["currency"]["aiInsight"] = financial["currencyInsight"]
+        all_sql["paymentTerms"]["aiInsight"] = financial["paymentTermsInsight"]
+        all_sql["countryRegion"]["countryAiInsight"] = entity["countryInsight"]
+        all_sql["countryRegion"]["regionAiInsight"] = entity["regionInsight"]
+        all_sql["supplier"]["aiInsight"] = entity["supplierInsight"]
+
+        all_sql["supplier"].pop("_supplierNames", None)
+
+        return jsonify(all_sql)
+    except TableMissingError as exc:
+        return jsonify({"error": str(exc), "code": "TABLE_MISSING"}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("DQA all failed")
         return jsonify({"error": str(exc)}), 500

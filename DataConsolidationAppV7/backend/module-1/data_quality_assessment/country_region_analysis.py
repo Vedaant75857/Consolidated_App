@@ -12,20 +12,10 @@ from typing import Any
 from shared.db import DuckDBConnection, quote_id, read_table_columns
 
 from .ai_prompts import generate_country_region_insight
-from .metrics import _non_null_condition, find_column
+from .column_resolver import find_country_columns, resolve_column
+from .metrics import _non_null_condition
 
 logger = logging.getLogger(__name__)
-
-COUNTRY_COLUMNS: list[str] = [
-    "Country Code",
-    "Country",
-    "Supplier Country",
-    "Supplier_Country",
-    "Vendor Country",
-    "Vendor_Country",
-    "Country of Origin",
-]
-REGION_COLUMN = "Region"
 
 
 def _unique_values(
@@ -49,8 +39,15 @@ def _unique_values(
 def run_country_region_analysis_sql(
     conn: DuckDBConnection,
     table_name: str,
+    country_column: str | None = None,
 ) -> dict[str, Any]:
     """SQL-only phase: unique country/region values.
+
+    Args:
+        conn: DuckDB session connection.
+        table_name: Target table.
+        country_column: User-selected country column override. If None,
+            defaults to the first available country column.
 
     Must be called under the session lock.
 
@@ -59,13 +56,20 @@ def run_country_region_analysis_sql(
     """
     available = set(read_table_columns(conn, table_name))
 
-    country_col = find_column(available, COUNTRY_COLUMNS)
+    available_country_cols = find_country_columns(available)
+
+    # Resolve user's selection or default to first available
+    country_col: str | None = None
+    if country_column and country_column in available:
+        country_col = country_column
+    elif available_country_cols:
+        country_col = available_country_cols[0]
 
     country_values: list[str] | None = None
     if country_col:
         country_values = _unique_values(conn, table_name, country_col)
 
-    region_col = find_column(available, [REGION_COLUMN])
+    region_col = resolve_column(available, "region", fuzzy=False)
 
     region_values: list[str] | None = None
     if region_col:
@@ -73,15 +77,17 @@ def run_country_region_analysis_sql(
 
     if country_col is None and region_col is None:
         return {
+            "availableCountryColumns": available_country_cols,
             "countryColumn": None,
             "regionColumn": None,
             "countryValues": None,
             "regionValues": None,
-            "countryAiInsight": "No country or region columns found in the dataset.",
+            "countryAiInsight": None,
             "regionAiInsight": None,
         }
 
     return {
+        "availableCountryColumns": available_country_cols,
         "countryColumn": country_col,
         "regionColumn": region_col,
         "countryValues": country_values,
@@ -115,10 +121,10 @@ def run_country_region_analysis_ai(
     except Exception as exc:
         logger.warning("Country/region AI insight generation failed: %s", exc)
         sql_result["countryAiInsight"] = (
-            "AI insight generation failed." if sql_result["countryColumn"] else None
+            ["AI insight generation failed."] if sql_result["countryColumn"] else None
         )
         sql_result["regionAiInsight"] = (
-            "AI insight generation failed." if sql_result["regionColumn"] else None
+            ["AI insight generation failed."] if sql_result["regionColumn"] else None
         )
 
     return sql_result

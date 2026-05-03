@@ -12,7 +12,10 @@ from typing import Any
 
 from shared.ai_client import call_ai_json
 from shared.duckdb_compat import DuckDBConnection
-from services.spend_quality_assessment.ai_prompts import DESCRIPTION_QUALITY_PROMPT
+from services.spend_quality_assessment.ai_prompts import (
+    CATEGORIZATION_EFFORT_PROMPT,
+    DESCRIPTION_QUALITY_PROMPT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -254,39 +257,66 @@ def _top_descriptions_by_frequency(
     ]
 
 
+def _normalise_insight(raw: Any) -> list[str]:
+    """Normalise the AI response into a list of exactly 3 short strings.
+
+    Handles both the new JSON array format and legacy single-string responses.
+    """
+    if isinstance(raw, list):
+        lines = [str(s).strip() for s in raw if isinstance(s, str) and s.strip()]
+    elif isinstance(raw, str):
+        lines = [s.strip() for s in raw.replace("\n", "|").split("|") if s.strip()]
+        lines = [l.lstrip("-•● ").strip() for l in lines if l.lstrip("-•● ").strip()]
+    else:
+        return ["AI insight format unrecognised."]
+
+    return lines[:3] if lines else ["No insight generated."]
+
+
 def _generate_description_insight(
-    field_key: str,
-    backend_stats: dict[str, Any],
-    sampled_descriptions: list[str],
-    top_by_frequency: list[dict[str, Any]],
+    item: dict[str, Any],
     api_key: str,
-) -> str:
-    """Call the LLM to produce a quality insight for one description column."""
+) -> list[str]:
+    """Call the LLM to produce a quality insight for one description column.
+
+    Args:
+        item: Full result dict for the column (contains fieldKey, backendStats,
+              _sampledDescriptions, _topByFrequency).
+        api_key: API key for LLM calls.
+
+    Returns:
+        List of up to 3 short insight strings.
+    """
+    field_key = item.get("fieldKey", "description")
     payload = {
         "descriptionType": DESCRIPTION_DISPLAY_NAMES.get(field_key, field_key),
-        "sampledDescriptions": sampled_descriptions,
-        "topByFrequency": top_by_frequency,
-        "backendStats": backend_stats,
+        "sampledDescriptions": item.get("_sampledDescriptions", []),
+        "topByFrequency": item.get("_topByFrequency", []),
+        "backendStats": item.get("backendStats", {}),
     }
     try:
         result = call_ai_json(DESCRIPTION_QUALITY_PROMPT, payload, api_key=api_key)
-        return str(result.get("insight", ""))
+        return _normalise_insight(result.get("insight", []))
     except Exception as exc:
         logger.error("AI description insight failed for %s: %s", field_key, exc)
-        return f"AI insight unavailable: {exc}"
+        return [f"AI insight unavailable: {exc}"]
 
 
 def run_description_quality_analysis(
     conn: DuckDBConnection,
     available_columns: set[str],
-    api_key: str,
+    api_key: str | None = None,
 ) -> list[dict[str, Any]]:
     """Run description quality analysis for the description column.
+
+    When ``api_key`` is ``None`` (SQL-only mode), the AI insight is left as
+    ``None`` and sample/frequency data is stored under private keys so the
+    caller can pass items to ``_generate_description_insight`` later.
 
     Args:
         conn: DuckDB connection with ``analysis_data`` table.
         available_columns: Set of column names present in analysis_data.
-        api_key: API key for LLM calls.
+        api_key: API key for LLM calls. None skips AI.
 
     Returns:
         List of dicts, one per description column, with stats and AI insight.
@@ -313,8 +343,8 @@ def run_description_quality_analysis(
                 "spendCovered": None,
                 "top10": [],
                 "backendStats": None,
-                "aiInsight": "Column not mapped." if fk not in available_columns
-                    else "Spend column not available for analysis.",
+                "aiInsight": ["Column not mapped."] if fk not in available_columns
+                    else ["Spend column not available for analysis."],
             })
             continue
 
@@ -325,21 +355,67 @@ def run_description_quality_analysis(
         sampled = _sample_descriptions_for_ai(conn, fk, spend_col)
         freq_descs = _top_descriptions_by_frequency(conn, fk, spend_col)
 
-        if sampled:
-            insight = _generate_description_insight(
-                fk, stats["backendStats"], sampled, freq_descs, api_key
-            )
-        else:
-            insight = "No populated descriptions found for AI analysis."
-
-        results.append({
+        item: dict[str, Any] = {
             "fieldKey": fk,
             "displayName": display,
             "mapped": True,
             "spendCovered": stats["spendCovered"],
             "top10": stats["top10"],
             "backendStats": stats["backendStats"],
-            "aiInsight": insight,
-        })
+            "_sampledDescriptions": sampled,
+            "_topByFrequency": freq_descs,
+            "aiInsight": None,
+        }
+
+        if api_key and sampled:
+            item["aiInsight"] = _generate_description_insight(item, api_key)
+        elif not sampled:
+            item["aiInsight"] = ["No populated descriptions found for AI analysis."]
+
+        results.append(item)
 
     return results
+
+
+def _generate_categorization_recommendation(
+    categorization_data: dict[str, Any],
+    api_key: str,
+) -> dict[str, Any]:
+    """Call the LLM to assess description quality and recommend a categorization method.
+
+    Args:
+        categorization_data: Dict containing metrics, mapAICost, forcedMethod,
+                            and top1000Descriptions from _compute_categorization_effort().
+        api_key: API key for LLM calls.
+
+    Returns:
+        Dict with buckets, qualityVerdict, recommendedMethod, and reasoning.
+    """
+    metrics = categorization_data.get("metrics", {})
+    payload = {
+        "rowCount": metrics.get("rowCount", 0),
+        "avgWordCount": metrics.get("avgWordCount", 0),
+        "avgCharLength": metrics.get("avgCharLength", 0),
+        "fillRate": metrics.get("fillRate", 0),
+        "uniqueCount": metrics.get("uniqueCount", 0),
+        "distinctVendorDescPairs": metrics.get("distinctPairs", 0),
+        "top1000Descriptions": categorization_data.get("top1000Descriptions", []),
+        "mapAICostUsd": categorization_data.get("mapAICost", 0),
+        "forcedMethodByRowCount": categorization_data.get("forcedMethod"),
+    }
+    try:
+        result = call_ai_json(CATEGORIZATION_EFFORT_PROMPT, payload, api_key=api_key)
+        return {
+            "buckets": result.get("buckets", {"high": 0, "medium": 0, "low": 0}),
+            "qualityVerdict": result.get("qualityVerdict", "low"),
+            "recommendedMethod": result.get("recommendedMethod", "MapAI"),
+            "reasoning": result.get("reasoning", ""),
+        }
+    except Exception as exc:
+        logger.error("Categorization effort AI failed: %s", exc)
+        return {
+            "buckets": {"high": 0, "medium": 0, "low": 0},
+            "qualityVerdict": "low",
+            "recommendedMethod": categorization_data.get("forcedMethod") or "MapAI",
+            "reasoning": f"AI assessment unavailable: {exc}",
+        }

@@ -12,46 +12,21 @@ from typing import Any
 from shared.db import DuckDBConnection, quote_id, read_table_columns
 
 from .ai_prompts import generate_date_insight
+from .column_resolver import find_date_columns, pick_currency_code_column, pick_spend_column, resolve_column
 from .metrics import (
     _detect_format,
     _non_null_condition,
     _profile_dmy_mdy,
     _safe_pct,
-    find_column,
+    numeric_spend_expr,
 )
 
 logger = logging.getLogger(__name__)
-
-# Standard date column names from header normalisation
-DATE_COLUMNS: list[str] = [
-    "Invoice Date",
-    "Goods Receipt Date",
-    "Payment date",
-    "PO Document Date",
-    "Contract End Date",
-    "Contract Start Date",
-]
 
 MONTH_NAMES = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ]
-
-# Spend column priority: reporting currency first, then local
-_REPORTING_SPEND_COLS: list[str] = [
-    "Total Amount paid in Reporting Currency",
-    "PO Total Amount in reporting currency",
-]
-
-_LOCAL_SPEND_COLS: list[str] = [
-    "Total Amount paid in Local Currency",
-    "PO Total Amount in Local Currency",
-]
-
-_CURRENCY_CODE_FOR_SPEND: dict[str, str] = {
-    "Total Amount paid in Local Currency": "Local Currency Code",
-    "PO Total Amount in Local Currency": "PO Local Currency Code",
-}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -59,55 +34,6 @@ _CURRENCY_CODE_FOR_SPEND: dict[str, str] = {
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _find_available_date_columns(available: set[str]) -> list[str]:
-    """Return date columns present in the table.
-
-    Priority: exact (case-insensitive) matches against the standard DATE_COLUMNS
-    come first, then any other column whose name contains 'date'.
-    """
-    available_lower = {c.lower(): c for c in available}
-    known = [available_lower[c.lower()] for c in DATE_COLUMNS if c.lower() in available_lower]
-    known_set = set(known)
-    extra = [c for c in sorted(available) if "date" in c.lower() and c not in known_set]
-    return known + extra
-
-
-def _pick_spend_column(available: set[str]) -> tuple[str | None, bool]:
-    """Pick the best spend column (case-insensitive).
-
-    Returns:
-        (column_name, is_reporting_currency)
-    """
-    reporting = find_column(available, _REPORTING_SPEND_COLS)
-    if reporting is not None:
-        return reporting, True
-    local = find_column(available, _LOCAL_SPEND_COLS)
-    if local is not None:
-        return local, False
-    return None, False
-
-
-def _pick_currency_code_column(
-    spend_col: str | None, available: set[str]
-) -> str | None:
-    """Return the currency code column paired with a local spend column (case-insensitive)."""
-    if spend_col is None:
-        return None
-    # Match the actual spend column against canonical keys case-insensitively
-    matched_key = find_column(set(_CURRENCY_CODE_FOR_SPEND.keys()), [spend_col])
-    if not matched_key:
-        return None
-    code_col = _CURRENCY_CODE_FOR_SPEND[matched_key]
-    return find_column(available, [code_col])
-
-
-def _numeric_spend_expr(qs: str) -> str:
-    """SQL expression that safely casts a spend column to REAL."""
-    return (
-        f"CASE WHEN regexp_matches(TRIM({qs}), '[0-9]') "
-        f"AND regexp_matches(TRIM({qs}), '^[0-9eE.+-]+$') "
-        f"THEN CAST({qs} AS REAL) ELSE 0 END"
-    )
 
 
 def _build_date_extract_sql(
@@ -302,7 +228,7 @@ def _build_reporting_pivot(
     qs = quote_id(spend_column)
     nn = _non_null_condition(qc)
     yr_expr, mo_expr = _build_date_extract_sql(qc, dominant_format)
-    spend_expr = _numeric_spend_expr(qs)
+    spend_expr = numeric_spend_expr(qs)
 
     rows = conn.execute(
         f"SELECT {yr_expr} AS yr, {mo_expr} AS mo, "
@@ -356,7 +282,7 @@ def _build_currency_crosstab_pivot(
     qcc = quote_id(currency_column)
     nn = _non_null_condition(qc)
     yr_expr, mo_expr = _build_date_extract_sql(qc, dominant_format)
-    spend_expr = _numeric_spend_expr(qs)
+    spend_expr = numeric_spend_expr(qs)
 
     rows = conn.execute(
         f"SELECT {yr_expr} AS yr, {mo_expr} AS mo, "
@@ -437,8 +363,8 @@ def run_date_analysis_sql(
         is set to ``None`` — the caller fills it in via :func:`run_date_analysis_ai`.
     """
     available = set(read_table_columns(conn, table_name))
-    available_date_cols = _find_available_date_columns(available)
-    file_name_col = find_column(available, ["FILE_NAME"])
+    available_date_cols = find_date_columns(available)
+    file_name_col = resolve_column(available, "file_name", fuzzy=False)
 
     if not available_date_cols:
         return {
@@ -448,19 +374,17 @@ def run_date_analysis_sql(
             "pivotData": None,
             "totalSpendSummary": None,
             "consistent": True,
-            "aiInsight": "No date columns found in the dataset.",
+            "aiInsight": None,
         }
 
-    if date_column is None or find_column(available, [date_column]) is None:
+    if date_column is None or date_column not in available:
         date_column = available_date_cols[0]
-    else:
-        date_column = find_column(available, [date_column]) or available_date_cols[0]
 
     format_table, all_consistent, dominant_format = _build_format_table(
         conn, table_name, date_column, file_name_col,
     )
 
-    spend_col, is_reporting = _pick_spend_column(available)
+    spend_col, is_reporting = pick_spend_column(available)
     pivot_data: dict[str, Any] | None = None
 
     if spend_col:
@@ -469,7 +393,7 @@ def run_date_analysis_sql(
                 conn, table_name, date_column, spend_col, dominant_format,
             )
         else:
-            ccy_col = _pick_currency_code_column(spend_col, available)
+            ccy_col = pick_currency_code_column(spend_col, available)
             if ccy_col:
                 pivot_data = _build_currency_crosstab_pivot(
                     conn, table_name, date_column, spend_col,
@@ -484,7 +408,7 @@ def run_date_analysis_sql(
     if spend_col:
         tbl = quote_id(table_name)
         qs = quote_id(spend_col)
-        spend_expr = _numeric_spend_expr(qs)
+        spend_expr = numeric_spend_expr(qs)
 
         if is_reporting:
             ts_row = conn.execute(
@@ -496,7 +420,7 @@ def run_date_analysis_sql(
                 "column": spend_col,
             }
         else:
-            ccy_code_col = _pick_currency_code_column(spend_col, available)
+            ccy_code_col = pick_currency_code_column(spend_col, available)
             if ccy_code_col:
                 qcc = quote_id(ccy_code_col)
                 ccy_rows = conn.execute(
@@ -560,6 +484,6 @@ def run_date_analysis_ai(
         sql_result["aiInsight"] = generate_date_insight(ai_payload, api_key)
     except Exception as exc:
         logger.warning("Date AI insight generation failed: %s", exc)
-        sql_result["aiInsight"] = "AI insight generation failed."
+        sql_result["aiInsight"] = ["AI insight generation failed."]
 
     return sql_result

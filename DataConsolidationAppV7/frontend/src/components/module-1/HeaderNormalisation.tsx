@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import ReactDOM from "react-dom";
-import { ArrowRight, Columns3, Loader2, SkipForward, Maximize2, Minimize2, Download, Upload, CheckSquare, Square, ChevronDown, ChevronRight, PenLine } from "lucide-react";
+import { ArrowRight, Columns3, Loader2, SkipForward, Maximize2, Minimize2, Download, Upload, CheckSquare, Square, ChevronDown, ChevronRight, PenLine, FileSpreadsheet } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { PrimaryButton, SecondaryButton, SurfaceCard } from "../common/ui";
 
@@ -596,6 +596,39 @@ export default function HeaderNormalisation({
     }
   };
 
+  const [downloadingSummary, setDownloadingSummary] = useState(false);
+
+  const handleDownloadSummary = async () => {
+    setDownloadingSummary(true);
+    try {
+      const payload: Record<string, any[]> = {};
+      for (const [tableKey, arr] of Object.entries(edited)) {
+        payload[tableKey] = arr.map((d) => ({
+          source_col: d.source_col,
+          action: d.action,
+          mapped_to: d.mapped_to || d.suggested_std_field || null,
+        }));
+      }
+      const res = await fetch("/api/header-norm-download-summary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, decisions: payload }),
+      });
+      if (!res.ok) throw new Error("Download failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "header_mapping_summary.xlsx";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Summary download error:", err);
+    } finally {
+      setDownloadingSummary(false);
+    }
+  };
+
   if (!apiKey?.trim()) {
     return (
       <SurfaceCard className="p-6">
@@ -636,7 +669,7 @@ export default function HeaderNormalisation({
           </div>
         ) : (
           <>
-            {/* Manual Excel workflow toggle */}
+            {/* Toolbar: manual Excel workflow + summary download */}
             <div className="flex items-center gap-4 flex-wrap p-3 rounded-xl border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50">
               <button
                 type="button"
@@ -648,6 +681,16 @@ export default function HeaderNormalisation({
                   : <Square className="w-4 h-4 text-neutral-400" />
                 }
                 Manual Excel Workflow
+              </button>
+
+              <button
+                type="button"
+                onClick={handleDownloadSummary}
+                disabled={downloadingSummary || loading || tableKeys.length === 0}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 hover:border-emerald-300 dark:hover:border-emerald-800 hover:text-emerald-600 transition-all disabled:opacity-50 ml-auto"
+              >
+                {downloadingSummary ? <Loader2 className="w-3 h-3 animate-spin" /> : <FileSpreadsheet className="w-3 h-3" />}
+                Download Mapping Summary
               </button>
               {manualExcelMode && (
                 <div className="flex items-center gap-3 text-xs text-neutral-500 dark:text-neutral-400">

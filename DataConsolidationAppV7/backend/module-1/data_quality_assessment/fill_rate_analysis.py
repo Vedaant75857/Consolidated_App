@@ -11,62 +11,32 @@ from typing import Any
 
 from shared.db import DuckDBConnection, quote_id, read_table_columns, table_row_count
 
-from .metrics import _non_null_condition, _safe_pct, find_column
+from .column_resolver import pick_currency_code_column, pick_spend_column, resolve_column
+from .metrics import (
+    NULL_PROXY_VALUES,
+    _non_null_condition,
+    _safe_pct,
+    numeric_spend_expr,
+    raw_numeric_expr,
+)
 
 logger = logging.getLogger(__name__)
 
 _SYSTEM_COLUMNS: set[str] = {"FILE_NAME", "RECORD_ID"}
 
-_REPORTING_SPEND_COLS: list[str] = [
-    "Total Amount paid in Reporting Currency",
-    "PO Total Amount in reporting currency",
-]
 
-_LOCAL_SPEND_COLS: list[str] = [
-    "Total Amount paid in Local Currency",
-    "PO Total Amount in Local Currency",
-]
-
-_CURRENCY_CODE_FOR_SPEND: dict[str, str] = {
-    "Total Amount paid in Local Currency": "Local Currency Code",
-    "PO Total Amount in Local Currency": "PO Local Currency Code",
-}
+def _null_proxy_condition(qc: str) -> str:
+    """SQL fragment: true when value is a known null-proxy (case-insensitive)."""
+    conditions = " OR ".join(
+        f"LOWER(TRIM({qc})) = '{v}'" for v in NULL_PROXY_VALUES
+    )
+    return f"({conditions})"
 
 
-def _pick_spend_column(available: set[str]) -> tuple[str | None, bool]:
-    """Pick the best spend column (reporting first, then local).
-
-    Returns:
-        (column_name, is_reporting_currency)
-    """
-    reporting = find_column(available, _REPORTING_SPEND_COLS)
-    if reporting is not None:
-        return reporting, True
-    local = find_column(available, _LOCAL_SPEND_COLS)
-    if local is not None:
-        return local, False
-    return None, False
-
-
-def _pick_currency_code_column(
-    spend_col: str | None, available: set[str],
-) -> str | None:
-    """Return the currency code column paired with a local spend column."""
-    if spend_col is None:
-        return None
-    matched_key = find_column(set(_CURRENCY_CODE_FOR_SPEND.keys()), [spend_col])
-    if not matched_key:
-        return None
-    code_col = _CURRENCY_CODE_FOR_SPEND[matched_key]
-    return find_column(available, [code_col])
-
-
-def _numeric_spend_expr(qs: str) -> str:
-    """SQL expression that safely casts a spend column to REAL (0 for non-numeric)."""
+def _effective_non_null_condition(qc: str) -> str:
+    """SQL fragment: non-null, non-empty, AND not a null-proxy value."""
     return (
-        f"CASE WHEN regexp_matches(TRIM({qs}), '[0-9]') "
-        f"AND regexp_matches(TRIM({qs}), '^[0-9eE.+-]+$') "
-        f"THEN CAST({qs} AS REAL) ELSE 0 END"
+        f"{_non_null_condition(qc)} AND NOT {_null_proxy_condition(qc)}"
     )
 
 
@@ -103,13 +73,14 @@ def run_fill_rate_analysis(
     tbl = quote_id(table_name)
     total_rows = table_row_count(conn, table_name)
 
-    spend_col, is_reporting = _pick_spend_column(available)
+    spend_col, is_reporting = pick_spend_column(available)
     qs = quote_id(spend_col) if spend_col else None
-    spend_expr = _numeric_spend_expr(qs) if qs else None
+    spend_expr = numeric_spend_expr(qs) if qs else None
 
     # ── Batch fill rates: single query for all columns ────────────────────
+    # Uses effective non-null (excludes null-proxy values like "N/A", "unknown")
     fill_parts = [
-        f"COUNT(CASE WHEN {_non_null_condition(quote_id(c))} THEN 1 END)"
+        f"COUNT(CASE WHEN {_effective_non_null_condition(quote_id(c))} THEN 1 END)"
         for c in columns
     ]
     fill_sql = f"SELECT {', '.join(fill_parts)} FROM {tbl}"
@@ -128,7 +99,7 @@ def run_fill_rate_analysis(
     ccy_col = None
     ccy_totals: dict[str, float] = {}
     if spend_col and not is_reporting:
-        ccy_col = _pick_currency_code_column(spend_col, available)
+        ccy_col = pick_currency_code_column(spend_col, available)
         if ccy_col:
             qcc = quote_id(ccy_col)
             ccy_rows = conn.execute(
@@ -144,7 +115,7 @@ def run_fill_rate_analysis(
     reporting_coverage: dict[str, float] = {}
     if spend_col and is_reporting and spend_expr and total_spend > 0:
         spend_parts = [
-            f"SUM(CASE WHEN {_non_null_condition(quote_id(c))} THEN {spend_expr} ELSE 0 END)"
+            f"SUM(CASE WHEN {_effective_non_null_condition(quote_id(c))} THEN {spend_expr} ELSE 0 END)"
             for c in columns
         ]
         spend_sql = f"SELECT {', '.join(spend_parts)} FROM {tbl}"
@@ -161,7 +132,7 @@ def run_fill_rate_analysis(
         qcc = quote_id(ccy_col)
         for col in columns:
             qc = quote_id(col)
-            nn_cond = _non_null_condition(qc)
+            nn_cond = _effective_non_null_condition(qc)
             ccy_rows = conn.execute(
                 f"SELECT UPPER(TRIM({qcc})) AS code, "
                 f"SUM({spend_expr}) AS cs "
@@ -230,20 +201,14 @@ def run_spend_bifurcation(
         JSON-serialisable dict with ``type``, spend totals, and ``column``.
     """
     available = set(read_table_columns(conn, table_name))
-    spend_col, is_reporting = _pick_spend_column(available)
+    spend_col, is_reporting = pick_spend_column(available)
     tbl = quote_id(table_name)
 
     if spend_col is None:
         return {"type": "none", "column": None}
 
     qs = quote_id(spend_col)
-    spend_expr = _numeric_spend_expr(qs)
-    # Separate expression that preserves actual numeric value (including negatives)
-    raw_num = (
-        f"CASE WHEN regexp_matches(TRIM({qs}), '[0-9]') "
-        f"AND regexp_matches(TRIM({qs}), '^[0-9eE.+-]+$') "
-        f"THEN CAST({qs} AS REAL) ELSE NULL END"
-    )
+    raw_num = raw_numeric_expr(qs)
 
     if is_reporting:
         row = conn.execute(
@@ -260,7 +225,7 @@ def run_spend_bifurcation(
         }
 
     # Local spend — group by currency
-    ccy_col = _pick_currency_code_column(spend_col, available)
+    ccy_col = pick_currency_code_column(spend_col, available)
     if not ccy_col:
         # No currency column: single total like reporting
         row = conn.execute(

@@ -260,11 +260,13 @@ export async function postDqaCurrency(
   apiKey: string,
   tableName: string,
   tableKey?: string,
+  currencyColumn?: string,
 ): Promise<any> {
   return jsonPost("/dqa/currency", {
     sessionId, apiKey,
     tableName: tableName || undefined,
     tableKey,
+    currencyColumn: currencyColumn || undefined,
   });
 }
 
@@ -273,11 +275,13 @@ export async function postDqaPaymentTerms(
   apiKey: string,
   tableName: string,
   tableKey?: string,
+  paymentTermsColumn?: string,
 ): Promise<any> {
   return jsonPost("/dqa/payment-terms", {
     sessionId, apiKey,
     tableName: tableName || undefined,
     tableKey,
+    paymentTermsColumn: paymentTermsColumn || undefined,
   });
 }
 
@@ -286,11 +290,13 @@ export async function postDqaCountryRegion(
   apiKey: string,
   tableName: string,
   tableKey?: string,
+  countryColumn?: string,
 ): Promise<any> {
   return jsonPost("/dqa/country-region", {
     sessionId, apiKey,
     tableName: tableName || undefined,
     tableKey,
+    countryColumn: countryColumn || undefined,
   });
 }
 
@@ -299,8 +305,23 @@ export async function postDqaSupplier(
   apiKey: string,
   tableName: string,
   tableKey?: string,
+  vendorColumn?: string,
 ): Promise<any> {
   return jsonPost("/dqa/supplier", {
+    sessionId, apiKey,
+    tableName: tableName || undefined,
+    tableKey,
+    vendorColumn: vendorColumn || undefined,
+  });
+}
+
+export async function postDqaSuggestColumns(
+  sessionId: string,
+  apiKey: string,
+  tableName: string,
+  tableKey?: string,
+): Promise<Record<string, string[]>> {
+  return jsonPost("/dqa/suggest-columns", {
     sessionId, apiKey,
     tableName: tableName || undefined,
     tableKey,
