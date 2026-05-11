@@ -261,23 +261,14 @@ export interface DescriptionQualityItem {
   aiInsight: string[];
 }
 
-export interface SpendBifurcationCurrency {
-  code: string;
-  positiveSpend: number;
-  negativeSpend: number;
-}
-
-export interface SpendBifurcationReporting {
-  positiveSpend: number;
-  negativeSpend: number;
-  negPctOfPos?: number;
-  negRowCount?: number;
-  netSpend?: number;
-}
-
 export interface SpendBifurcationResult {
-  reporting: SpendBifurcationReporting | null;
-  local: SpendBifurcationCurrency[] | SpendBifurcationReporting | null;
+  positiveSpend: number | null;
+  positivePctOfNet: number | null;
+  negativeSpend: number | null;
+  negativePctOfNet: number | null;
+  netSpend: number | null;
+  feasible: boolean;
+  message?: string;
 }
 
 export interface DatePeriodResult {
@@ -291,19 +282,22 @@ export interface DatePeriodResult {
 
 export interface SpendBreakdownResult {
   ltmSpend: number;
+  ltmPeriodLabel?: string;
   currentFySpend: number;
   priorFySpend: number;
   currentFyLabel: string;
   priorFyLabel: string;
   yoyAbs: number;
   yoyPct: number;
+  latestFullYearSpend?: number | null;
+  latestFullYearLabel?: string | null;
   feasible: boolean;
   message?: string;
 }
 
 export interface SupplierBreakdownResult {
   totalSuppliers: number;
-  suppliersTo80Pct: number;
+  suppliersTo80Pct: number | null;
   top10: { supplier: string; spend: number; sharePct: number }[];
   duplicateNameFlags: number;
   feasible: boolean;
@@ -325,6 +319,7 @@ export interface CategorizationEffortResult {
     uniqueCount: number;
     distinctPairs: number;
     sampledCount: number;
+    topVendorPairsCount?: number | null;
   };
   buckets: CategorizationBuckets | null;
   bucketsPct: CategorizationBuckets | null;
@@ -337,28 +332,10 @@ export interface CategorizationEffortResult {
   message?: string;
 }
 
-export interface FlagsResult {
-  spendConsistency: {
-    flaggedMonths: { month: string; spend: number; deviationPct: number }[];
-    avgMonthlySpend: number;
-  } | null;
-  descriptionQuality: {
-    fillRate: number;
-    avgWordCount: number;
-    message: string;
-  } | null;
-  vendorQuality: {
-    fillRate: number;
-    populatedCount: number;
-    totalRows: number;
-  } | null;
-  nullColumns: {
-    flaggedColumns: { name: string; fillRate: number; spendCoverage: number }[];
-  } | null;
-}
-
 export interface ColumnFillRateItem {
   columnName: string;
+  sourceColumn: string;
+  order: number;
   fillRate: number;
   spendCoverage: number | null;
 }
@@ -368,13 +345,28 @@ export interface ColumnFillRateResult {
   feasible: boolean;
 }
 
+export interface ExecutiveSummaryRow {
+  key:
+    | "timePeriod"
+    | "ltmSpend"
+    | "supplierConcentration"
+    | "descriptionQuality"
+    | "categorizationMethod";
+  label: string;
+  text: string;
+}
+
+export interface ExecutiveSummaryRowsResult {
+  rows: ExecutiveSummaryRow[];
+}
+
 export interface ExecutiveSummaryResult {
   totalRows: number;
+  executiveSummary: ExecutiveSummaryRowsResult;
   datePeriod: DatePeriodResult;
   spendBreakdown: SpendBreakdownResult;
   supplierBreakdown: SupplierBreakdownResult;
   categorizationEffort: CategorizationEffortResult;
-  flags: FlagsResult;
   columnFillRate: ColumnFillRateResult;
   datePivot: DatePivotResult;
   spendBifurcation: SpendBifurcationResult;

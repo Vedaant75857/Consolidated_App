@@ -23,9 +23,22 @@ def _resolve_sessions_dir() -> str:
     explicit = os.environ.get("SESSION_DB_DIR")
     if explicit:
         return explicit
+    # Default outside the repo/workdir to avoid creating runtime DB artifacts
+    # in project folders during dev/test runs.
+    creator_temp = os.path.join(
+        os.environ.get("PUBLIC", r"C:\Users\Public"),
+        "Documents",
+        "Wondershare",
+        "CreatorTemp",
+    )
+    if os.path.isdir(creator_temp):
+        return os.path.join(creator_temp, "ProcIP", "sessions", "module1")
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data and os.path.isdir(local_app_data):
+        return os.path.join(local_app_data, "ProcIP", "sessions", "module1")
     if getattr(sys, "frozen", False):
         return os.path.join(os.path.dirname(sys.executable), ".sessions")
-    return os.path.join(os.getcwd(), ".sessions")
+    return os.path.join(os.path.expanduser("~"), ".sessions")
 
 
 _DB_DIR = _resolve_sessions_dir()

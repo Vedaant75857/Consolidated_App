@@ -21,7 +21,7 @@ The DataStitcher helps users combine multiple data files into one clean, merged 
 | 7 | Add more files | Click "Add Files" after staging some to add more from the file picker. |
 | 8 | ZIP packaging | When you drop multiple non-ZIP files, the app automatically zips them together (shows a "Zipping files…" spinner). ZIP files found inside a folder are automatically extracted — their contents are treated as individual files. |
 | 9 | API key entry | Type or paste your Portkey API key into a password field. This key is needed for AI-powered steps. |
-| 10 | Initialize workspace | Click "Initialize Workspace" to upload everything and move to Data Preview. The button is disabled while uploading or if no files are selected. |
+| 10 | Initialize workspace | Click "Initialize Workspace" to upload everything and move to Data Preview. The button is disabled while uploading or if no files are selected. Excel files load every cell as text first (same idea as CSV), so extra label rows in date columns do not block extraction. |
 | 11 | Real-time upload progress | During the server processing phase, the overlay shows which file is currently being loaded (e.g. "Loading file 2 of 3") with the file name displayed below as a detail line. Progress updates stream from the server in real time. |
 
 ### Data Preview
@@ -37,7 +37,7 @@ The DataStitcher helps users combine multiple data files into one clean, merged 
 | 7 | Confirm/cancel header | Click "Confirm Row N" to apply your chosen header, or "Cancel" to close without changes. |
 | 8 | Delete table | Click the trash icon on a table, then confirm, to remove that table from the session entirely. |
 | 8b | Select tables for bulk delete | Use the checkbox to the left of each table to select it. A "Select All" checkbox at the top lets you check or uncheck every table at once. |
-| 8c | Bulk delete tables | When one or more tables are selected, a red bar appears showing the count and a "Delete Selected" button. Click it, confirm, and all selected tables are removed. Click "Clear" to deselect without deleting. |
+| 8c | Bulk delete tables | When one or more tables are selected, a red bar appears showing the count and a "Delete Selected" button. Click it, confirm, and all selected tables are removed in a single fast request — the screen shows "Deleting N tables…" while it works. If any of the selected tables can no longer be found, nothing is deleted and an error explains which ones were missing. Click "Clear" to deselect without deleting. |
 | 9 | Select rows | Use checkboxes in the preview table to select individual rows. |
 | 10 | Delete selected rows | Click "Delete Selected Rows" to remove the checked rows (asks for confirmation first). |
 | 11 | Clear row selection | Click "Clear" to uncheck all selected rows. |
@@ -447,15 +447,17 @@ The Spend Summarizer takes a procurement dataset and produces charts, quality as
 
 | # | Feature | Details |
 |---|---------|---------|
-| 1 | Auto-run | The assessment runs automatically when you reach this step (if session and API key are set). |
+| 1 | Auto-run | The assessment runs automatically when you reach this step (if session and API key are set). If the API key is entered or changed after step 4 loads, the assessment starts automatically without needing a manual retry. |
+| 1b | Inline API key field | If the API key is missing when you reach this step, a password field appears at the top so you can paste it right here without going back to the Upload step. The field disappears once a key is entered. |
 | 2 | Loading state | While running, a large spinner shows with "Generating Spend Quality Assessment" and a note that it takes 15–30 seconds. |
 | 3 | Total rows stat | The header shows the total number of rows being assessed. |
 | 4 | Re-run assessment | Click the refresh icon in the header to re-run the entire assessment. |
-| 5 | Date-spend pivot panel | Expand this panel to see a pivot table of spend by year and month. Cells with zero spend are dimmed. |
+| 4b | Executive Summary table | A two-column table lists five key points: the time period covered; LTM spend and, when the data allows it, spend for the latest full calendar year that has all twelve months present; supplier concentration; description quality (a quality level plus one short sentence explaining it, based on a random sample of up to 1000 different descriptions from the suppliers that account for the top 80% of spend); and categorisation method (recommended approach, estimated cost, and how many unique supplier-and-description combinations need manual validation for that same top-80% supplier group). |
+| 5 | Date-spend pivot panel | Expand this panel to see a pivot table of spend by year and month. Cells with zero spend are dimmed. A bold "Total" row at the bottom shows the sum of all months for each year. |
 | 5b | Date period summary | Shows the date range of the data (e.g. "Jan 2024 – Jan 2025"), the number of months covered, and start/end dates. |
-| 5c | Spend breakdown panel | Shows last-twelve-months spend, current and prior fiscal year totals, and the year-over-year change (amount and percentage). |
+| 5c | Spend breakdown panel | Shows last-twelve-months spend, current and prior fiscal year totals, and the year-over-year change (amount and percentage). When the dataset includes at least one complete calendar year with data in every month, it also shows total spend for that latest full year. |
 | 5d | Supplier breakdown panel | Shows total supplier count, how many suppliers make up 80% of spend, top 10 suppliers with share percentages, and a count of possible duplicate supplier names. |
-| 5e | Categorization effort panel | Displays description quality metrics (fill rate, avg word count, unique counts), an estimated AI categorization cost, and an AI-recommended method (MapAI or Creactives). |
+| 5e | Categorization effort panel | Displays description quality metrics (fill rate, avg word count, unique counts), bucket counts, an estimated AI categorization cost, and an AI-recommended method (MapAI or Creactives). It also shows how many distinct supplier-and-description pairs fall under the suppliers that cover the top 80% of spend (used as the manual-validation scope in the Executive Summary). |
 | 5f | Quality flags panel | Highlights potential data quality issues: months with abnormal spend (+/- 20% from average), poor description quality, low vendor fill rate, and columns with significant gaps. |
 | 5g | Column fill rate panel | A table showing every mapped column's fill rate (%) and spend coverage (%). Sorted by spend coverage descending. |
 | 5b | Spend Bifurcation panel | Shown after the Date-spend pivot. Shows positive vs negative spend. A toggle lets you switch between "Reporting Currency" (single total) and "Local Currency" (table with per-currency breakdown). Handles missing columns gracefully. |

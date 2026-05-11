@@ -4,6 +4,44 @@ Kept in a dedicated file so prompts can be reviewed and iterated
 independently of the computation logic.
 """
 
+EXECUTIVE_SUMMARY_PROMPT = """\
+You are a senior procurement data-quality consultant writing a concise client
+executive summary.
+
+You will receive a compact JSON payload containing only aggregate metrics. Do
+not infer beyond the payload. Do not mention missing columns unless a metric is
+marked unavailable. Do not add currency symbols or currency names.
+
+Return a JSON object with exactly this structure:
+
+```json
+{
+  "rows": [
+    { "key": "timePeriod", "label": "Time period", "text": "<one sentence>" },
+    { "key": "ltmSpend", "label": "LTM spend", "text": "<one sentence>" },
+    { "key": "supplierConcentration", "label": "Suppliers", "text": "<one sentence>" },
+    { "key": "descriptionQuality", "label": "Description quality", "text": "<placeholder>" },
+    { "key": "categorizationMethod", "label": "Categorization method", "text": "<placeholder>" }
+  ]
+}
+```
+
+Rules:
+- Return exactly the 5 rows above, in that order.
+- For **timePeriod**, **ltmSpend**, and **supplierConcentration**: each text must
+  be one client-ready sentence, 12-24 words.
+- For **descriptionQuality** and **categorizationMethod**: you may use a short
+  placeholder (e.g. "—"); the server replaces these rows with deterministic text.
+- Use the already-formatted amount strings from the payload.
+- Use **bold** markdown only around the key numbers or verdict.
+- Keep the tone factual and procurement-consulting appropriate.
+- Do not include flags, warnings, or recommendations outside these rows.
+- For **ltmSpend**, when ``latestFullYearAmountText`` and ``latestFullYearLabel``
+  are present in the payload, you MUST include both in the same sentence as the
+  LTM figures (latest full annual year is calendar-year spend where all 12 months
+  have data).
+"""
+
 DESCRIPTION_QUALITY_PROMPT = """\
 You are a senior procurement data-quality consultant. You will receive a JSON
 payload with:
@@ -54,17 +92,22 @@ You will receive a JSON payload with:
 3. **avgCharLength** – average character length per description (populated rows).
 4. **fillRate** – percentage of rows with a non-empty description.
 5. **uniqueCount** – number of distinct description values.
-6. **distinctVendorDescPairs** – distinct (vendor, description) combinations.
-7. **top1000Descriptions** – up to 1000 unique descriptions ranked by spend
-   descending. Each entry has ``description`` (text) and ``spend`` (float).
-8. **mapAICostUsd** – pre-computed estimated cost to categorise via MapAI (USD).
-9. **forcedMethodByRowCount** – set to ``"Creactives"`` when the row count
+6. **distinctVendorDescPairs** – distinct (vendor, description) combinations (full dataset).
+7. **topVendorPairsCount** – distinct (vendor, description) pairs limited to rows whose
+   vendor is in the top-80%-spend vendor cohort (manual-validation scope).
+8. **random1000Descriptions** – up to 1000 distinct description strings: a uniformly random
+   sample from the rows whose vendor sits in that top-80%-spend vendor cohort (or from the
+   full dataset when the cohort cannot be determined). There is no spend ranking — classify
+   each string as written.
+9. **mapAICost** – pre-computed estimated cost to categorise via MapAI (for context only;
+   do not repeat this number inside ``reasoning``).
+10. **forcedMethodByRowCount** – set to ``"Creactives"`` when the row count
    exceeds the threshold, or ``null`` otherwise. If set, you **must** use this
    value as ``recommendedMethod``.
 
 ### Your task
 
-Analyse every description in ``top1000Descriptions`` and classify each into one
+Analyse every description in ``random1000Descriptions`` and classify each into one
 of three quality tiers:
 
 - **high**: more than 2 words AND contains identifiable attributes such as
@@ -90,7 +133,7 @@ Return a JSON object with exactly these keys:
   "buckets": { "high": <int>, "medium": <int>, "low": <int> },
   "qualityVerdict": "high" | "medium" | "low",
   "recommendedMethod": "MapAI" | "Creactives",
-  "reasoning": "<1-2 sentences explaining the verdict, citing bucket distribution and the MapAI cost in USD when MapAI is recommended>"
+  "reasoning": "<exactly one sentence, max 25 words: why this verdict, citing the dominant bucket>"
 }
 ```
 
@@ -98,11 +141,11 @@ Rules:
 - ``buckets`` counts must sum to the number of descriptions analysed (≤ 1000).
 - ``qualityVerdict`` is the overall verdict — use ``"low"`` when the combined
   high+medium descriptions account for less than ~30% of the sample, or when
-  most spend sits in the low bucket. Use ``"high"`` when high-bucket
+  most of the sample sits in the low bucket. Use ``"high"`` when high-bucket
   descriptions dominate (>50%). Otherwise ``"medium"``.
 - If ``forcedMethodByRowCount`` is set, you **must** use that exact value as
   ``recommendedMethod``. Otherwise recommend ``"MapAI"``.
-- Reference the ``mapAICostUsd`` value in the ``reasoning`` when recommending
-  MapAI (e.g. "…with an estimated cost of approximately USD 10K").
-- Keep ``reasoning`` to 1-2 concise sentences.
+- Do **not** mention ``mapAICost``, dollar amounts, or currency inside ``reasoning``.
+- ``reasoning`` must be exactly one sentence (≤ 25 words). It will be shown verbatim
+  in the client executive summary next to the quality verdict.
 """

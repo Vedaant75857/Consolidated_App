@@ -113,9 +113,12 @@ def _on_exit():
     logger.info("[Module-1] Shutdown: deleted %d session(s).", cleaned)
 
 
-atexit.register(_on_exit)
-
 if __name__ == "__main__":
+    # Only the dev/launcher entrypoint should delete session DBs on exit.
+    # Importing app.py from tests or debug scripts must NOT trigger cleanup,
+    # which would wipe the active .sessions/*.duckdb files in use.
+    atexit.register(_on_exit)
+
     t = threading.Thread(target=_session_cleanup_loop, daemon=True)
     t.start()
 

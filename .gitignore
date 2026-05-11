@@ -3,7 +3,10 @@ build/
 dist/
 coverage/
 .sessions/
+.sessions_test/
 sessions/
+pytest-cache-files-*/
+.pytest_cache/
 **/sessions/*.sqlite*
 **/sessions/*.duckdb*
 **/.sessions/*.duckdb*

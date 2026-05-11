@@ -8,8 +8,7 @@ Produces the following panels for the Executive Summary:
   5. Spend Breakdown (LTM, FY current/prior, YoY)
   6. Supplier Breakdown (count, 80% threshold, top-10, duplicates)
   7. Categorization Effort (description stats + AI cost estimate)
-  8. Flags (spend consistency, description/vendor quality, null columns)
-  9. Column Fill Rate (fill rate + spend coverage per column)
+  8. Column Fill Rate (fill rate + spend coverage per original column)
 
 Operates on the ``analysis_data`` table produced by column mapping.
 """
@@ -21,12 +20,17 @@ from typing import Any
 
 import pandas as pd
 
+from shared.ai_client import call_ai_json
 from shared.duckdb_compat import DuckDBConnection
 from services.spend_quality_assessment.description_quality import (
     DESCRIPTION_FIELD_KEYS,
     run_description_quality_analysis,
     _generate_categorization_recommendation,
+    _sample_random_descriptions_from_top_vendors,
+    _sample_random_unique_descriptions_all,
 )
+from services.spend_quality_assessment.ai_prompts import EXECUTIVE_SUMMARY_PROMPT
+from services.upload.file_loader import _get_registry
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +47,13 @@ GPT_OUTPUT_RATE_PER_TOKEN = 10.00 / 1_000_000  # $10.00 per 1M output tokens
 AVG_CHARS_PER_TOKEN = 4  # standard OpenAI estimate
 AVG_OUTPUT_TOKENS_PER_ROW = 20  # estimated tokens per categorization label
 ROW_COUNT_THRESHOLD_CREACTIVES = 400_000
+EXECUTIVE_SUMMARY_KEYS = [
+    "timePeriod",
+    "ltmSpend",
+    "supplierConcentration",
+    "descriptionQuality",
+    "categorizationMethod",
+]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -55,6 +66,27 @@ def _quote_id(name: str) -> str:
 
 def _nn(qc: str) -> str:
     return f"{qc} IS NOT NULL AND TRIM(CAST({qc} AS TEXT)) != ''"
+
+
+def _format_amount(value: float | int | None) -> str:
+    if value is None:
+        return "N/A"
+    val = float(value)
+    abs_val = abs(val)
+    sign = "-" if val < 0 else ""
+    if abs_val >= 1_000_000_000:
+        return f"{sign}{abs_val / 1_000_000_000:.1f}B"
+    if abs_val >= 1_000_000:
+        return f"{sign}{abs_val / 1_000_000:.1f}M"
+    if abs_val >= 1_000:
+        return f"{sign}{abs_val / 1_000:.0f}K"
+    return f"{round(val):,}"
+
+
+def _month_index_to_label(month_index: int) -> str:
+    year = (month_index - 1) // 12
+    month = (month_index - 1) % 12 + 1
+    return f"{MONTH_NAMES[month - 1]} {year}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -292,81 +324,40 @@ def _compute_spend_bifurcation(
     conn: DuckDBConnection,
     available: set[str],
 ) -> dict[str, Any]:
-    """Compute positive/negative spend for both reporting and local currencies.
-
-    Returns both views so the frontend can toggle between them.
-    """
-    result: dict[str, Any] = {"reporting": None, "local": None}
-
-    # Reporting currency (total_spend)
-    if "total_spend" in available:
-        row = conn.execute(
-            """
-            SELECT
-                SUM(CASE WHEN TRY_CAST(total_spend AS DOUBLE) > 0
-                    THEN CAST(total_spend AS REAL) ELSE 0 END) AS pos,
-                SUM(CASE WHEN TRY_CAST(total_spend AS DOUBLE) < 0
-                    THEN CAST(total_spend AS REAL) ELSE 0 END) AS neg
-            FROM "analysis_data"
-            """
-        ).fetchone()
-        pos = float(row[0] or 0)
-        neg = float(row[1] or 0)
-
-        neg_row_count = conn.execute(
-            'SELECT COUNT(*) FROM "analysis_data" '
-            "WHERE TRY_CAST(total_spend AS DOUBLE) < 0"
-        ).fetchone()[0]
-
-        result["reporting"] = {
-            "positiveSpend": round(pos),
-            "negativeSpend": round(neg),
-            "negPctOfPos": round(abs(neg) / pos * 100, 1) if pos > 0 else 0,
-            "negRowCount": int(neg_row_count or 0),
-            "netSpend": round(pos + neg),
+    """Compute the five reporting-spend bifurcation attributes."""
+    if "total_spend" not in available:
+        return {
+            "positiveSpend": None,
+            "positivePctOfNet": None,
+            "negativeSpend": None,
+            "negativePctOfNet": None,
+            "netSpend": None,
+            "feasible": False,
+            "message": "total_spend not mapped.",
         }
 
-    # Local currency (grouped by currency code when available, aggregate otherwise)
-    if "local_spend" in available and "currency" in available:
-        rows = conn.execute(
-            """
-            SELECT
-                UPPER(TRIM(CAST(currency AS TEXT))) AS code,
-                SUM(CASE WHEN TRY_CAST(local_spend AS DOUBLE) > 0
-                    THEN CAST(local_spend AS REAL) ELSE 0 END) AS pos,
-                SUM(CASE WHEN TRY_CAST(local_spend AS DOUBLE) < 0
-                    THEN CAST(local_spend AS REAL) ELSE 0 END) AS neg
-            FROM "analysis_data"
-            WHERE currency IS NOT NULL AND TRIM(CAST(currency AS TEXT)) != ''
-            GROUP BY UPPER(TRIM(CAST(currency AS TEXT)))
-            ORDER BY pos DESC
-            """
-        ).fetchall()
-        result["local"] = [
-            {
-                "code": str(r[0]),
-                "positiveSpend": round(float(r[1] or 0)),
-                "negativeSpend": round(float(r[2] or 0)),
-            }
-            for r in rows
-        ]
-    elif "local_spend" in available:
-        row = conn.execute(
-            """
-            SELECT
-                SUM(CASE WHEN TRY_CAST(local_spend AS DOUBLE) > 0
-                    THEN CAST(local_spend AS REAL) ELSE 0 END) AS pos,
-                SUM(CASE WHEN TRY_CAST(local_spend AS DOUBLE) < 0
-                    THEN CAST(local_spend AS REAL) ELSE 0 END) AS neg
-            FROM "analysis_data"
-            """
-        ).fetchone()
-        result["local"] = {
-            "positiveSpend": round(float(row[0] or 0)),
-            "negativeSpend": round(float(row[1] or 0)),
-        }
+    row = conn.execute(
+        """
+        SELECT
+            SUM(CASE WHEN TRY_CAST(total_spend AS DOUBLE) > 0
+                THEN TRY_CAST(total_spend AS DOUBLE) ELSE 0 END) AS pos,
+            SUM(CASE WHEN TRY_CAST(total_spend AS DOUBLE) < 0
+                THEN TRY_CAST(total_spend AS DOUBLE) ELSE 0 END) AS neg
+        FROM "analysis_data"
+        """
+    ).fetchone()
+    pos = float(row[0] or 0)
+    neg = float(row[1] or 0)
+    net = pos + neg
 
-    return result
+    return {
+        "positiveSpend": round(pos),
+        "positivePctOfNet": round(pos / net * 100, 1) if net else None,
+        "negativeSpend": round(neg),
+        "negativePctOfNet": round(neg / net * 100, 1) if net else None,
+        "netSpend": round(net),
+        "feasible": True,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -477,7 +468,10 @@ def _compute_spend_breakdown(
     max_year = max_date.year
     max_month = max_date.month
 
-    # LTM: 12 months prior to and including the max date month
+    # LTM: last 12 complete months, excluding the latest month in the file.
+    max_month_index = max_year * 12 + max_month
+    ltm_end_index = max_month_index - 1
+    ltm_start_index = ltm_end_index - 11
     ltm_row = conn.execute(
         f"""
         SELECT SUM(TRY_CAST(total_spend AS DOUBLE))
@@ -487,11 +481,11 @@ def _compute_spend_breakdown(
           AND (
             CAST(strftime('%Y', TRY_CAST(invoice_date AS TIMESTAMP)) AS INTEGER) * 12 +
             CAST(strftime('%m', TRY_CAST(invoice_date AS TIMESTAMP)) AS INTEGER)
-          ) > ({max_year} * 12 + {max_month} - 12)
+          ) >= {ltm_start_index}
           AND (
             CAST(strftime('%Y', TRY_CAST(invoice_date AS TIMESTAMP)) AS INTEGER) * 12 +
             CAST(strftime('%m', TRY_CAST(invoice_date AS TIMESTAMP)) AS INTEGER)
-          ) <= ({max_year} * 12 + {max_month})
+          ) <= {ltm_end_index}
         """
     ).fetchone()
     ltm_spend = float(ltm_row[0] or 0)
@@ -521,14 +515,41 @@ def _compute_spend_breakdown(
         if prior_fy_spend != 0 else 0.0
     )
 
+    # Latest full annual year = most recent year with all 12 months present
+    full_year_rows = conn.execute(
+        """
+        SELECT
+            CAST(strftime('%Y', TRY_CAST(invoice_date AS TIMESTAMP)) AS INTEGER) AS yr,
+            COUNT(DISTINCT CAST(strftime('%m', TRY_CAST(invoice_date AS TIMESTAMP)) AS INTEGER)) AS month_ct
+        FROM "analysis_data"
+        WHERE TRY_CAST(invoice_date AS TIMESTAMP) IS NOT NULL
+          AND TRY_CAST(total_spend AS DOUBLE) IS NOT NULL
+        GROUP BY yr
+        HAVING month_ct = 12
+        ORDER BY yr DESC
+        LIMIT 1
+        """
+    ).fetchone()
+
+    latest_full_year: int | None = int(full_year_rows[0]) if full_year_rows else None
+    latest_full_year_spend: float | None = (
+        year_spend.get(latest_full_year) if latest_full_year else None
+    )
+
     return {
         "ltmSpend": round(ltm_spend),
         "currentFySpend": round(current_fy_spend),
         "priorFySpend": round(prior_fy_spend),
         "currentFyLabel": f"FY{max_year}",
         "priorFyLabel": f"FY{max_year - 1}",
+        "ltmPeriodLabel": (
+            f"{_month_index_to_label(ltm_start_index)} - "
+            f"{_month_index_to_label(ltm_end_index)}"
+        ),
         "yoyAbs": round(yoy_abs),
         "yoyPct": round(yoy_pct, 1),
+        "latestFullYearSpend": round(latest_full_year_spend) if latest_full_year_spend is not None else None,
+        "latestFullYearLabel": str(latest_full_year) if latest_full_year else None,
         "feasible": True,
     }
 
@@ -536,6 +557,60 @@ def _compute_spend_breakdown(
 # ═══════════════════════════════════════════════════════════════════════════
 # D4. Supplier Breakdown
 # ═══════════════════════════════════════════════════════════════════════════
+
+def _top_80_vendor_cohort(
+    conn: DuckDBConnection,
+    available: set[str],
+) -> list[str]:
+    """Return supplier names covering the top 80% of positive spend.
+
+    Used as a single source of truth for both manual-validation pair counts
+    and description-quality sampling so the two executive-summary points are
+    always consistent.
+
+    Args:
+        conn: DuckDB session connection.
+        available: Set of column names in analysis_data.
+
+    Returns:
+        List of supplier name strings (trimmed). Empty when supplier or
+        total_spend isn't mapped, or net spend is non-positive.
+    """
+    if "supplier" not in available or "total_spend" not in available:
+        return []
+
+    rows = conn.execute(
+        """
+        SELECT
+            TRIM(CAST(supplier AS TEXT)) AS sup,
+            SUM(TRY_CAST(total_spend AS DOUBLE)) AS spend
+        FROM "analysis_data"
+        WHERE supplier IS NOT NULL
+          AND TRIM(CAST(supplier AS TEXT)) != ''
+          AND TRY_CAST(total_spend AS DOUBLE) IS NOT NULL
+        GROUP BY sup
+        ORDER BY spend DESC
+        """
+    ).fetchall()
+
+    if not rows:
+        return []
+
+    grand_total = sum(float(r[1] or 0) for r in rows)
+    if grand_total <= 0:
+        return []
+
+    threshold = grand_total * 0.80
+    cumulative = 0.0
+    cohort: list[str] = []
+    for r in rows:
+        cumulative += float(r[1] or 0)
+        cohort.append(str(r[0]))
+        if cumulative >= threshold:
+            break
+
+    return cohort
+
 
 def _compute_supplier_breakdown(
     conn: DuckDBConnection,
@@ -574,16 +649,17 @@ def _compute_supplier_breakdown(
 
     total_suppliers = len(rows)
     grand_total = sum(float(r[1] or 0) for r in rows)
+    if grand_total <= 0:
+        return {
+            "totalSuppliers": total_suppliers,
+            "suppliersTo80Pct": None,
+            "top10": [],
+            "duplicateNameFlags": 0,
+            "feasible": False,
+            "message": "Net supplier spend is zero or negative.",
+        }
 
-    # Find how many suppliers cover 80% of spend
-    cumulative = 0.0
-    suppliers_to_80 = 0
-    threshold_80 = grand_total * 0.80
-    for r in rows:
-        cumulative += float(r[1] or 0)
-        suppliers_to_80 += 1
-        if cumulative >= threshold_80:
-            break
+    suppliers_to_80 = len(_top_80_vendor_cohort(conn, available))
 
     # Top 10 suppliers
     top10 = []
@@ -657,13 +733,12 @@ def _compute_categorization_effort(
         available: Set of column names in analysis_data.
 
     Returns:
-        Dict with metrics, mapAICost, forcedMethod, top1000Descriptions,
+        Dict with metrics, mapAICost, forcedMethod, random1000Descriptions,
         and feasible flag.
     """
     if "description" not in available:
         return {"feasible": False, "message": "description not mapped."}
 
-    has_spend = "total_spend" in available
     has_supplier = "supplier" in available
     qd = _quote_id("description")
     nn_d = _nn(qd)
@@ -706,24 +781,29 @@ def _compute_categorization_effort(
     else:
         distinct_pairs = unique_count
 
-    # Top 1000 descriptions by spend
-    top1000: list[dict[str, Any]] = []
-    if has_spend:
-        top_rows = conn.execute(
-            f"""
-            SELECT TRIM(CAST({qd} AS TEXT)) AS desc_val,
-                   SUM(TRY_CAST(total_spend AS DOUBLE)) AS spend
-            FROM "analysis_data"
-            WHERE {nn_d}
-            GROUP BY desc_val
-            ORDER BY spend DESC
-            LIMIT 1000
-            """
-        ).fetchall()
-        top1000 = [
-            {"description": str(r[0]), "spend": round(float(r[1] or 0))}
-            for r in top_rows
-        ]
+    # Top-80% vendor cohort for sampling and manual-validation count
+    cohort = _top_80_vendor_cohort(conn, available)
+
+    if cohort:
+        random1000 = _sample_random_descriptions_from_top_vendors(
+            conn, "description", cohort, 1000,
+        )
+    else:
+        random1000 = _sample_random_unique_descriptions_all(conn, "description", 1000)
+
+    # Distinct (vendor, description) pairs in the top-80% vendor cohort
+    if cohort:
+        placeholders = ", ".join(["?"] * len(cohort))
+        vp_row = conn.execute(
+            f"SELECT COUNT(DISTINCT ("
+            f"  TRIM(CAST(supplier AS TEXT)) || '|||' || TRIM(CAST({qd} AS TEXT))"
+            f")) FROM \"analysis_data\" "
+            f"WHERE {nn_d} AND TRIM(CAST(supplier AS TEXT)) IN ({placeholders})",
+            cohort,
+        ).fetchone()
+        top_vendor_pairs_count = int(vp_row[0] or 0)
+    else:
+        top_vendor_pairs_count = distinct_pairs
 
     # Cost calculator
     avg_chars_per_pair = avg_char_length if avg_char_length > 0 else 1.0
@@ -744,244 +824,136 @@ def _compute_categorization_effort(
             "fillRate": round(fill_rate, 1),
             "uniqueCount": unique_count,
             "distinctPairs": distinct_pairs,
-            "sampledCount": len(top1000),
+            "sampledCount": len(random1000),
+            "topVendorPairsCount": top_vendor_pairs_count,
         },
         "mapAICost": round(map_ai_cost, 2),
         "forcedMethod": forced_method,
-        "top1000Descriptions": top1000,
+        "random1000Descriptions": random1000,
         "feasible": True,
     }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# D6. Flags
-# ═══════════════════════════════════════════════════════════════════════════
+# D6. Column Fill Rate
+# ===========================================================================
 
-_PRIORITY_COLUMNS = [
-    "supplier", "description", "invoice_date", "total_spend",
-    "currency", "po_material_description", "business_unit",
-    "plant_name", "vendor_country",
-]
+def _clean_original_header(value: Any) -> str:
+    text = str(value).strip() if value is not None else ""
+    return text or "UNNAMED"
 
 
-def _compute_flags(
-    conn: DuckDBConnection,
-    available: set[str],
-    date_pivot_cells: dict[str, dict[str, float]] | None = None,
-) -> dict[str, Any]:
-    """Compute conditional quality flags for the dataset.
+def _normalise_header(value: Any) -> str:
+    text = str(value).strip().upper() if value is not None else ""
+    return text or "UNNAMED"
 
-    Args:
-        conn: DuckDB session connection.
-        available: Set of column names in analysis_data.
-        date_pivot_cells: Optional cells dict from _compute_date_spend_pivot result.
 
-    Returns:
-        Dict with flag keys: spendConsistency, descriptionQuality, vendorQuality,
-        nullColumns. Each is None if conditions not met, else a dict with details.
-    """
-    total_rows = conn.execute('SELECT COUNT(*) FROM "analysis_data"').fetchone()[0]
-    total_rows = int(total_rows or 0)
+def _display_headers_from_raw(raw_headers: list[Any]) -> dict[str, str]:
+    """Return {normalised_deduped_header: display_header} for a raw header row."""
+    seen: dict[str, int] = {}
+    display_by_col: dict[str, str] = {}
 
-    # --- Spend Consistency ---
-    spend_consistency = None
-    if date_pivot_cells:
-        monthly_spends: list[tuple[str, float]] = []
-        for yr_str, months in date_pivot_cells.items():
-            for mo_str, spend in months.items():
-                label = f"{MONTH_NAMES[int(mo_str) - 1]} {yr_str}"
-                monthly_spends.append((label, float(spend)))
+    for raw in raw_headers:
+        base_norm = _normalise_header(raw)
+        count = seen.get(base_norm, 0)
+        seen[base_norm] = count + 1
 
-        if monthly_spends:
-            total_monthly = sum(s for _, s in monthly_spends)
-            avg_monthly = total_monthly / len(monthly_spends) if monthly_spends else 0
+        data_col = base_norm if count == 0 else f"{base_norm}_{count}"
+        display = _clean_original_header(raw)
+        display_by_col[data_col] = display if count == 0 else f"{display}_{count}"
 
-            if avg_monthly > 0:
-                flagged = []
-                for label, spend in monthly_spends:
-                    if spend > 0:
-                        deviation = ((spend - avg_monthly) / avg_monthly) * 100
-                        if spend > avg_monthly * 1.2 or spend < avg_monthly * 0.8:
-                            flagged.append({
-                                "month": label,
-                                "spend": round(spend),
-                                "deviationPct": round(deviation, 1),
-                            })
-                if flagged:
-                    spend_consistency = {
-                        "flaggedMonths": flagged,
-                        "avgMonthlySpend": round(avg_monthly),
-                    }
+    return display_by_col
 
-    # --- Description Quality ---
-    desc_quality_flag = None
-    if "description" in available and total_rows > 0:
-        qd = _quote_id("description")
-        nn_d = _nn(qd)
-        desc_stats = conn.execute(
-            f"""
-            SELECT
-                COUNT(CASE WHEN {nn_d} THEN 1 END) AS populated,
-                AVG(CASE WHEN {nn_d}
-                    THEN LENGTH(TRIM(CAST({qd} AS TEXT))) -
-                         LENGTH(REPLACE(TRIM(CAST({qd} AS TEXT)), ' ', '')) + 1
-                END) AS avg_words
-            FROM "analysis_data"
-            """
-        ).fetchone()
-        desc_populated = int(desc_stats[0] or 0)
-        desc_fill = (desc_populated / total_rows * 100) if total_rows > 0 else 0
-        desc_avg_words = float(desc_stats[1] or 0)
 
-        if desc_fill < 70 or desc_avg_words < 2:
-            msg_parts = []
-            if desc_fill < 70:
-                msg_parts.append(f"Fill rate {desc_fill:.1f}% is below 70% threshold")
-            if desc_avg_words < 2:
-                msg_parts.append(f"Avg word count {desc_avg_words:.1f} suggests low-quality entries")
-            desc_quality_flag = {
-                "fillRate": round(desc_fill, 1),
-                "avgWordCount": round(desc_avg_words, 1),
-                "message": "; ".join(msg_parts),
-            }
+def _raw_header_display_map(conn: DuckDBConnection, raw_table: str) -> dict[str, str]:
+    raw_cols = conn.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = ? ORDER BY ordinal_position",
+        (raw_table,),
+    ).fetchall()
+    if not raw_cols:
+        return {}
 
-    # --- Vendor Quality ---
-    vendor_quality_flag = None
-    if "supplier" in available and total_rows > 0:
-        qs = _quote_id("supplier")
-        nn_s = _nn(qs)
-        vendor_stats = conn.execute(
-            f'SELECT COUNT(CASE WHEN {nn_s} THEN 1 END) FROM "analysis_data"'
-        ).fetchone()
-        vendor_populated = int(vendor_stats[0] or 0)
-        vendor_fill = (vendor_populated / total_rows * 100) if total_rows > 0 else 0
-
-        if vendor_fill < 75:
-            vendor_quality_flag = {
-                "fillRate": round(vendor_fill, 1),
-                "populatedCount": vendor_populated,
-                "totalRows": total_rows,
-            }
-
-    # --- Null Columns ---
-    null_columns_flag = None
-    # Compute total base spend for spend_coverage
-    has_spend = "total_spend" in available
-    total_base_spend = 0.0
-    if has_spend:
-        ts_row = conn.execute(
-            'SELECT SUM(TRY_CAST(total_spend AS DOUBLE)) FROM "analysis_data"'
-        ).fetchone()
-        total_base_spend = float(ts_row[0] or 0)
-
-    flagged_columns: list[dict[str, Any]] = []
-    for col in _PRIORITY_COLUMNS:
-        if col not in available:
-            continue
-        qc = _quote_id(col)
-        nn_c = _nn(qc)
-
-        col_fill_row = conn.execute(
-            f'SELECT COUNT(CASE WHEN {nn_c} THEN 1 END) FROM "analysis_data"'
-        ).fetchone()
-        col_populated = int(col_fill_row[0] or 0)
-        col_fill_rate = (col_populated / total_rows * 100) if total_rows > 0 else 0.0
-
-        col_spend_coverage = 100.0
-        if has_spend and total_base_spend > 0:
-            sc_row = conn.execute(
-                f"""
-                SELECT SUM(TRY_CAST(total_spend AS DOUBLE))
-                FROM "analysis_data"
-                WHERE {nn_c}
-                """
-            ).fetchone()
-            populated_spend = float(sc_row[0] or 0)
-            col_spend_coverage = (populated_spend / total_base_spend * 100)
-
-        if col_fill_rate < 80 or col_spend_coverage < 90:
-            flagged_columns.append({
-                "name": col,
-                "fillRate": round(col_fill_rate, 1),
-                "spendCoverage": round(col_spend_coverage, 1),
-            })
-
-    if flagged_columns:
-        null_columns_flag = {"flaggedColumns": flagged_columns}
+    col_list = ", ".join(_quote_id(str(r[0])) for r in raw_cols)
+    row = conn.execute(f'SELECT {col_list} FROM "{raw_table}" LIMIT 1').fetchone()
+    if not row:
+        return {}
 
     return {
-        "spendConsistency": spend_consistency,
-        "descriptionQuality": desc_quality_flag,
-        "vendorQuality": vendor_quality_flag,
-        "nullColumns": null_columns_flag,
+        col: display
+        for col, display in _display_headers_from_raw(list(row)).items()
+        if col != "RECORD_ID"
     }
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-# D7. Column Fill Rate
-# ═══════════════════════════════════════════════════════════════════════════
 
 def _compute_column_fill_rate(
     conn: DuckDBConnection,
     available: set[str],
 ) -> dict[str, Any]:
-    """Compute fill rate and spend coverage for every mapped column.
+    """Compute fill rate and net-spend coverage for original uploaded columns."""
+    registry = _get_registry(conn)
+    if not registry:
+        return {"columns": [], "feasible": True}
 
-    Args:
-        conn: DuckDB session connection.
-        available: Set of column names in analysis_data.
+    frames: list[pd.DataFrame] = []
+    display_by_col: dict[str, str] = {}
+    ordered_cols: list[str] = []
 
-    Returns:
-        Dict with columns list (sorted by spend_coverage desc, nulls last)
-        and feasible flag.
-    """
-    total_rows = conn.execute('SELECT COUNT(*) FROM "analysis_data"').fetchone()[0]
-    total_rows = int(total_rows or 0)
+    for entry in registry:
+        data_table = entry["data_table"]
+        raw_table = entry["raw_table"]
+        try:
+            df = conn._conn.execute(f'SELECT * FROM "{data_table}"').df()
+        except Exception as exc:
+            logger.warning("Failed to load original table '%s': %s", data_table, exc)
+            continue
 
+        if "RECORD_ID" in df.columns:
+            df = df.drop(columns=["RECORD_ID"])
+
+        header_map = _raw_header_display_map(conn, raw_table)
+        for col in df.columns:
+            if col not in display_by_col:
+                display_by_col[col] = header_map.get(col, col)
+                ordered_cols.append(col)
+
+        frames.append(df)
+
+    if not frames:
+        return {"columns": [], "feasible": True}
+
+    original_df = pd.concat(frames, ignore_index=True)
+    total_rows = len(original_df)
     if total_rows == 0:
         return {"columns": [], "feasible": True}
 
-    has_spend = "total_spend" in available
-    total_base_spend = 0.0
-    if has_spend:
-        ts_row = conn.execute(
-            'SELECT SUM(TRY_CAST(total_spend AS DOUBLE)) FROM "analysis_data"'
-        ).fetchone()
-        total_base_spend = float(ts_row[0] or 0)
+    spend_series: pd.Series | None = None
+    total_net_spend = 0.0
+    if "total_spend" in available:
+        spend_df = conn._conn.execute('SELECT total_spend FROM "analysis_data"').df()
+        if len(spend_df) == total_rows:
+            spend_series = pd.to_numeric(spend_df["total_spend"], errors="coerce").fillna(0)
+            total_net_spend = float(spend_series.sum())
 
     columns: list[dict[str, Any]] = []
-    for col in sorted(available):
-        qc = _quote_id(col)
-        nn_c = _nn(qc)
-
-        fill_row = conn.execute(
-            f'SELECT COUNT(CASE WHEN {nn_c} THEN 1 END) FROM "analysis_data"'
-        ).fetchone()
-        col_populated = int(fill_row[0] or 0)
-        fill_rate = (col_populated / total_rows * 100) if total_rows > 0 else 0.0
+    for idx, col in enumerate(ordered_cols):
+        series = original_df[col] if col in original_df else pd.Series([], dtype=str)
+        populated_mask = series.notna() & (series.astype(str).str.strip() != "")
+        populated_count = int(populated_mask.sum())
+        fill_rate = populated_count / total_rows * 100
 
         spend_coverage: float | None = None
-        if has_spend and total_base_spend > 0:
-            sc_row = conn.execute(
-                f"""
-                SELECT SUM(TRY_CAST(total_spend AS DOUBLE))
-                FROM "analysis_data"
-                WHERE {nn_c}
-                """
-            ).fetchone()
-            populated_spend = float(sc_row[0] or 0)
-            spend_coverage = round(populated_spend / total_base_spend * 100, 1)
+        if spend_series is not None and total_net_spend != 0:
+            populated_spend = float(spend_series[populated_mask].sum())
+            spend_coverage = round(populated_spend / total_net_spend * 100, 1)
 
         columns.append({
-            "columnName": col,
+            "columnName": display_by_col.get(col, col),
+            "sourceColumn": col,
+            "order": idx,
             "fillRate": round(fill_rate, 1),
             "spendCoverage": spend_coverage,
         })
-
-    # Sort by spend_coverage descending, nulls last
-    columns.sort(
-        key=lambda x: (x["spendCoverage"] is None, -(x["spendCoverage"] or 0))
-    )
 
     return {"columns": columns, "feasible": True}
 
@@ -1036,7 +1008,6 @@ def run_executive_summary_sql(
         "spendBreakdown": _compute_spend_breakdown(conn, available),
         "supplierBreakdown": _compute_supplier_breakdown(conn, available),
         "categorizationEffort": _compute_categorization_effort(conn, available),
-        "flags": _compute_flags(conn, available, date_pivot.get("cells")),
         "columnFillRate": _compute_column_fill_rate(conn, available),
         "datePivot": date_pivot,
         "spendBifurcation": spend_bifurcation,
@@ -1045,59 +1016,276 @@ def run_executive_summary_sql(
     }
 
 
+def _description_quality_sentence(desc: dict[str, Any]) -> str:
+    """Build a deterministic one-liner for the Description quality executive row.
+
+    Args:
+        desc: The ``descriptionQuality`` section of the executive summary payload.
+
+    Returns:
+        Markdown-formatted sentence: verdict + one-liner reasoning.
+    """
+    if not desc.get("available") or not desc.get("qualityVerdict"):
+        return "Description quality is unavailable because the description column is not mapped."
+
+    verdict = desc.get("qualityVerdict")
+    reasoning = (desc.get("reasoning") or "").strip()
+
+    sentence = f"Descriptions are **{verdict}** quality"
+    if reasoning:
+        if not reasoning.endswith("."):
+            reasoning += "."
+        sentence += f" — {reasoning}"
+    else:
+        sentence += "."
+    return sentence
+
+
+def _categorization_method_sentence(cat: dict[str, Any]) -> str:
+    """Build a deterministic one-liner for the Categorization Method executive row.
+
+    Args:
+        cat: The ``categorizationMethod`` section of the executive summary payload.
+
+    Returns:
+        Markdown-formatted sentence: method, cost, and manual validation count.
+    """
+    if not cat.get("available"):
+        return "Categorization method is unavailable because description data is not mapped."
+
+    method = cat.get("recommendedMethod", "MapAI")
+    cost_text = cat.get("mapAICostText", "N/A")
+    n = cat.get("manualValidationCount")
+
+    sentence = f"Recommended method is **{method}**, with an estimated cost of **{cost_text}**"
+    if n is not None:
+        sentence += f", along with manual validation of **{n:,}** rows"
+    return sentence + "."
+
+
+def _fallback_executive_summary_rows(payload: dict[str, Any]) -> list[dict[str, str]]:
+    period = payload.get("timePeriod", {})
+    ltm = payload.get("ltmSpend", {})
+    suppliers = payload.get("supplierConcentration", {})
+    desc = payload.get("descriptionQuality", {})
+    cat = payload.get("categorizationMethod", {})
+
+    if period.get("available"):
+        time_text = (
+            f"Data covers **{period.get('periodLabel')}** across "
+            f"**{period.get('monthsCovered')}** distinct months."
+        )
+    else:
+        time_text = "Time period is unavailable because invoice date is not mapped or valid."
+
+    if ltm.get("available"):
+        ltm_text = (
+            f"LTM spend is **{ltm.get('amountText')}** for "
+            f"**{ltm.get('periodLabel')}**, excluding the latest month."
+        )
+        fy_amt = ltm.get("latestFullYearAmountText")
+        fy_lbl = ltm.get("latestFullYearLabel")
+        if fy_amt and fy_lbl:
+            ltm_text += (
+                f" Latest full annual year (**{fy_lbl}**) spend was **{fy_amt}**."
+            )
+    else:
+        ltm_text = "LTM spend is unavailable because mapped date or spend values are missing."
+
+    if suppliers.get("available"):
+        supplier_text = (
+            f"Total suppliers are **{suppliers.get('totalSuppliers'):,}**; "
+            f"**{suppliers.get('suppliersTo80Pct'):,}** suppliers cover 80% of net spend."
+        )
+    elif suppliers.get("totalSuppliers") is not None:
+        supplier_text = (
+            f"Total suppliers are **{suppliers.get('totalSuppliers'):,}**; "
+            "80% supplier concentration is unavailable because net spend is not positive."
+        )
+    else:
+        supplier_text = "Supplier concentration is unavailable because supplier or spend is not mapped."
+
+    return [
+        {"key": "timePeriod", "label": "Time period", "text": time_text},
+        {"key": "ltmSpend", "label": "LTM spend", "text": ltm_text},
+        {"key": "supplierConcentration", "label": "Suppliers", "text": supplier_text},
+        {"key": "descriptionQuality", "label": "Description quality", "text": _description_quality_sentence(desc)},
+        {"key": "categorizationMethod", "label": "Categorization method", "text": _categorization_method_sentence(cat)},
+    ]
+
+
+def _build_executive_summary_payload(sql_result: dict[str, Any]) -> dict[str, Any]:
+    date_period = sql_result.get("datePeriod") or {}
+    spend = sql_result.get("spendBreakdown") or {}
+    suppliers = sql_result.get("supplierBreakdown") or {}
+    cat = sql_result.get("categorizationEffort") or {}
+    cat_metrics = cat.get("metrics") or {}
+
+    return {
+        "timePeriod": {
+            "available": bool(date_period.get("feasible")),
+            "periodLabel": date_period.get("periodLabel"),
+            "monthsCovered": date_period.get("monthsCovered"),
+            "startDate": date_period.get("startDate"),
+            "endDate": date_period.get("endDate"),
+            "message": date_period.get("message"),
+        },
+        "ltmSpend": {
+            "available": bool(spend.get("feasible")),
+            "amount": spend.get("ltmSpend"),
+            "amountText": _format_amount(spend.get("ltmSpend")),
+            "periodLabel": spend.get("ltmPeriodLabel"),
+            "latestFullYearAmount": spend.get("latestFullYearSpend"),
+            "latestFullYearAmountText": _format_amount(spend.get("latestFullYearSpend")),
+            "latestFullYearLabel": spend.get("latestFullYearLabel"),
+            "message": spend.get("message"),
+        },
+        "supplierConcentration": {
+            "available": bool(suppliers.get("feasible")),
+            "totalSuppliers": suppliers.get("totalSuppliers"),
+            "suppliersTo80Pct": suppliers.get("suppliersTo80Pct"),
+            "message": suppliers.get("message"),
+        },
+        "descriptionQuality": {
+            "available": bool(cat.get("feasible")),
+            "qualityVerdict": cat.get("qualityVerdict"),
+            "reasoning": cat.get("reasoning"),
+            "fillRate": cat_metrics.get("fillRate"),
+            "avgWordCount": cat_metrics.get("avgWordCount"),
+            "sampledCount": cat_metrics.get("sampledCount"),
+            "message": cat.get("message"),
+        },
+        "categorizationMethod": {
+            "available": bool(cat.get("feasible")),
+            "recommendedMethod": cat.get("recommendedMethod"),
+            "mapAICostText": _format_amount(cat.get("mapAICost")),
+            "manualValidationCount": cat_metrics.get("topVendorPairsCount"),
+            "message": cat.get("message"),
+        },
+    }
+
+
+def _normalise_executive_summary_rows(raw: Any, fallback: list[dict[str, str]]) -> list[dict[str, str]]:
+    if not isinstance(raw, dict) or not isinstance(raw.get("rows"), list):
+        return fallback
+
+    by_key = {
+        str(row.get("key")): row
+        for row in raw["rows"]
+        if isinstance(row, dict) and row.get("key") and row.get("text")
+    }
+    labels = {row["key"]: row["label"] for row in fallback}
+
+    rows: list[dict[str, str]] = []
+    for key in EXECUTIVE_SUMMARY_KEYS:
+        source = by_key.get(key)
+        if source:
+            rows.append({
+                "key": key,
+                "label": str(source.get("label") or labels[key]),
+                "text": str(source.get("text")),
+            })
+        else:
+            rows.append(next(row for row in fallback if row["key"] == key))
+    return rows
+
+
+def _generate_executive_summary_rows(
+    sql_result: dict[str, Any],
+    api_key: str,
+) -> dict[str, Any]:
+    payload = _build_executive_summary_payload(sql_result)
+    fallback = _fallback_executive_summary_rows(payload)
+    try:
+        raw = call_ai_json(EXECUTIVE_SUMMARY_PROMPT, payload, api_key=api_key)
+        rows = _normalise_executive_summary_rows(raw, fallback)
+    except Exception as exc:
+        logger.warning("Executive summary AI failed: %s", exc)
+        rows = fallback
+
+    # Override description quality and categorization rows with deterministic text.
+    desc_payload = payload.get("descriptionQuality", {})
+    if desc_payload.get("available") and desc_payload.get("qualityVerdict"):
+        desc_sentence = _description_quality_sentence(desc_payload)
+        for row in rows:
+            if row["key"] == "descriptionQuality":
+                row["text"] = desc_sentence
+                break
+
+    cat_payload = payload.get("categorizationMethod", {})
+    if cat_payload.get("available"):
+        cat_sentence = _categorization_method_sentence(cat_payload)
+        for row in rows:
+            if row["key"] == "categorizationMethod":
+                row["text"] = cat_sentence
+                break
+
+    return {"rows": rows}
+
+
 def run_executive_summary_ai(
     sql_result: dict[str, Any],
     api_key: str,
 ) -> dict[str, Any]:
-    """AI phase: generate categorization effort recommendation.
+    """AI phase: generate description classification and summary one-liners.
 
-    Calls the LLM to produce a categorization recommendation based on the
-    pre-computed description metrics. Safe to call without any database lock held.
+    Safe to call without any database lock held.
     """
     cat_effort = sql_result.get("categorizationEffort")
-    if not cat_effort or not cat_effort.get("feasible"):
-        return sql_result
 
-    try:
-        ai_response = _generate_categorization_recommendation(cat_effort, api_key)
-    except Exception as exc:
-        logger.warning("Categorization recommendation AI failed: %s", exc)
-        ai_response = {
-            "buckets": {},
-            "qualityVerdict": "unknown",
-            "recommendedMethod": "MapAI",
-            "reasoning": f"AI recommendation unavailable: {exc}",
+    if cat_effort and cat_effort.get("feasible"):
+        try:
+            ai_response = _generate_categorization_recommendation(cat_effort, api_key)
+        except Exception as exc:
+            logger.warning("Categorization recommendation AI failed: %s", exc)
+            ai_response = {
+                "buckets": {"high": 0, "medium": 0, "low": 0},
+                "qualityVerdict": "low",
+                "recommendedMethod": cat_effort.get("forcedMethod") or "MapAI",
+                "reasoning": f"AI recommendation unavailable: {exc}",
+            }
+
+        # Extract AI fields
+        raw_buckets = ai_response.get("buckets", {})
+        buckets = {
+            "high": int(raw_buckets.get("high") or 0),
+            "medium": int(raw_buckets.get("medium") or 0),
+            "low": int(raw_buckets.get("low") or 0),
         }
+        quality_verdict = ai_response.get("qualityVerdict", "low")
+        if quality_verdict not in {"high", "medium", "low"}:
+            quality_verdict = "low"
+        recommended_method = ai_response.get("recommendedMethod", "MapAI")
+        reasoning = ai_response.get("reasoning", "")
 
-    # Extract AI fields
-    buckets = ai_response.get("buckets", {})
-    quality_verdict = ai_response.get("qualityVerdict", "unknown")
-    recommended_method = ai_response.get("recommendedMethod", "MapAI")
-    reasoning = ai_response.get("reasoning", "")
+        # Rule engine override: force Creactives for large datasets
+        row_count = cat_effort.get("metrics", {}).get("rowCount", 0)
+        if row_count > ROW_COUNT_THRESHOLD_CREACTIVES:
+            recommended_method = "Creactives"
 
-    # Rule engine override: force Creactives for large datasets
-    row_count = cat_effort.get("metrics", {}).get("rowCount", 0)
-    if row_count > ROW_COUNT_THRESHOLD_CREACTIVES:
-        recommended_method = "Creactives"
+        # Compute bucket percentages
+        bucket_total = sum(buckets.values())
+        buckets_pct = {}
+        if bucket_total > 0:
+            buckets_pct = {
+                k: round(v / bucket_total * 100, 1)
+                for k, v in buckets.items()
+            }
 
-    # Compute bucket percentages
-    bucket_total = sum(buckets.values()) if buckets else 0
-    buckets_pct = {}
-    if bucket_total > 0:
-        buckets_pct = {
-            k: round(v / bucket_total * 100, 1)
-            for k, v in buckets.items()
-        }
+        quality_warning = quality_verdict == "low"
 
-    quality_warning = quality_verdict == "low"
+        # Merge AI results into categorizationEffort
+        cat_effort["buckets"] = buckets
+        cat_effort["bucketsPct"] = buckets_pct
+        cat_effort["qualityVerdict"] = quality_verdict
+        cat_effort["recommendedMethod"] = recommended_method
+        cat_effort["reasoning"] = reasoning
+        cat_effort["qualityWarning"] = quality_warning
 
-    # Merge AI results into categorizationEffort
-    cat_effort["buckets"] = buckets
-    cat_effort["bucketsPct"] = buckets_pct
-    cat_effort["qualityVerdict"] = quality_verdict
-    cat_effort["recommendedMethod"] = recommended_method
-    cat_effort["reasoning"] = reasoning
-    cat_effort["qualityWarning"] = quality_warning
+    sql_result.pop("flags", None)
+    sql_result["executiveSummary"] = _generate_executive_summary_rows(
+        sql_result, api_key
+    )
 
     return sql_result
 

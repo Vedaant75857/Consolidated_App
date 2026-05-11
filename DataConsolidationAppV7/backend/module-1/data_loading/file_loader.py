@@ -10,6 +10,7 @@ import time
 import zipfile
 from typing import Any, Callable, Iterator
 
+import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -116,6 +117,66 @@ def _df_row_to_list(row: tuple) -> list:
     return [None if pd.isna(v) else v for v in row]
 
 
+def _cell_to_str_or_none(val: Any) -> str | None:
+    """Turn one cell into a string for DuckDB ingest, or None if blank/missing."""
+    if val is None:
+        return None
+    if isinstance(val, str):
+        stripped = val.strip()
+        return None if stripped == "" else val
+    try:
+        if pd.isna(val):
+            return None
+    except (ValueError, TypeError):
+        pass
+    if isinstance(val, (float, np.floating)) and np.isnan(val):
+        return None
+    return str(val)
+
+
+def _coerce_dataframe_cells_to_str(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy where every cell is str or None.
+
+    Used when DuckDB would otherwise see mixed dates and text in the same
+    column as TIMESTAMP and reject non-timestamp strings during native ingest.
+    """
+    return df.apply(lambda col: col.map(_cell_to_str_or_none))
+
+
+def _read_excel_sheet_dataframe(
+    excel_file: pd.ExcelFile, sheet_name: str, table_key: str
+) -> pd.DataFrame:
+    """Read one sheet as strings so DuckDB register() never infers TIMESTAMP columns.
+
+    Tries pandas dtype=str (matches CSV loading). Falls back to default dtypes
+    plus per-cell string coercion if the engine rejects dtype=str.
+
+    Args:
+        excel_file: Open workbook from ``pd.ExcelFile``.
+        sheet_name: Sheet to read.
+        table_key: Logical key for logging only (e.g. ``path.xlsx::Sheet1``).
+
+    Returns:
+        DataFrame with ``header=None`` and all cells safe for ``store_df_native``.
+    """
+    try:
+        return pd.read_excel(
+            excel_file,
+            sheet_name=sheet_name,
+            header=None,
+            dtype=str,
+            keep_default_na=False,
+        )
+    except (TypeError, ValueError) as exc:
+        logger.warning(
+            "read_excel dtype=str failed for %s (%s); using fallback coercion",
+            table_key,
+            exc,
+        )
+        df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
+        return _coerce_dataframe_cells_to_str(df)
+
+
 def _load_excel_sheet(
     conn: DuckDBConnection,
     table_key: str,
@@ -128,9 +189,11 @@ def _load_excel_sheet(
 
     Uses DuckDB native DataFrame ingestion for the raw table, then builds
     the data table from the raw table via SQL — no Python row iteration.
+    Excel cells are read as plain text first so mixed label/date cells do
+    not cause DuckDB timestamp errors during register/ingest.
     """
     try:
-        df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
+        df = _read_excel_sheet_dataframe(excel_file, sheet_name, table_key)
         if df.empty:
             return
 
@@ -352,17 +415,16 @@ def get_raw_array_from_table(
     raw_name = safe_table_name("raw", table_key)
     if not table_exists(conn, raw_name):
         return []
-    cols = read_table_columns(conn, raw_name)
-    if not cols:
-        return []
-    select_cols = ", ".join(quote_id(c) for c in cols)
-    sql = f"SELECT {select_cols} FROM {quote_id(raw_name)}"
+    tbl = quote_id(raw_name)
+    sql = f"SELECT * FROM {tbl}"
     params: tuple[Any, ...] = ()
     if limit is not None:
         sql += " LIMIT ?"
         params = (int(limit),)
     rows = conn.execute(sql, params).fetchall()
-    return [[r[c] for c in cols] for r in rows]
+    # Positional values only — avoids mismatch if information_schema listed
+    # extra column names vs actual row width (tuple index out of range in DictRow).
+    return [list(r) for r in rows]
 
 
 def _build_columns_from_header(
@@ -416,27 +478,69 @@ def rebuild_table_from_raw_table(
         f")"
     )
 
-    header_row = conn.execute(
-        f"{numbered_cte} SELECT {select_cols} FROM numbered WHERE _rn = ?",
-        (header_row_index + 1,),
-    ).fetchone()
+    shape_error = "Raw table shape mismatch; please re-upload cleaned file."
+    try:
+        header_row = conn.execute(
+            f"{numbered_cte} SELECT {select_cols} FROM numbered WHERE _rn = ?",
+            (header_row_index + 1,),
+        ).fetchone()
+    except Exception as exc:
+        raise ValueError(shape_error) from exc
     if not header_row:
         raise ValueError("Header row not found in raw table.")
 
-    header_values = [header_row[c] for c in raw_cols]
-    final_columns = _build_columns_from_header(header_values, custom_column_names)
+    header_vals = list(header_row)
+    actual_col_count = len(header_vals)
+    expected_col_count = len(raw_cols)
+    if actual_col_count != expected_col_count:
+        logger.warning(
+            "Header-row width mismatch for %s: expected=%d actual=%d",
+            table_key,
+            expected_col_count,
+            actual_col_count,
+        )
+        safe_count = min(expected_col_count, actual_col_count)
+        raw_cols = raw_cols[:safe_count]
+        header_vals = header_vals[:safe_count]
+    if not raw_cols:
+        raise ValueError(shape_error)
+
+    if len(raw_cols) != expected_col_count:
+        select_cols = ", ".join(quote_id(c) for c in raw_cols)
+        numbered_cte = (
+            f"WITH numbered AS ("
+            f"  SELECT {select_cols}, ROW_NUMBER() OVER() AS _rn "
+            f"  FROM {quote_id(raw_name)}"
+            f")"
+        )
+
+    final_columns = _build_columns_from_header(header_vals, custom_column_names)
     if not final_columns:
         raise ValueError("Could not infer any columns from selected header row.")
 
     # Pass 1: detect columns that are entirely empty below the selected header row.
     has_value = [False] * len(final_columns)
-    row_cursor = conn.execute(
-        f"{numbered_cte} SELECT {select_cols} FROM numbered WHERE _rn > ?",
-        (header_row_index + 1,),
-    )
+    try:
+        row_cursor = conn.execute(
+            f"{numbered_cte} SELECT {select_cols} FROM numbered WHERE _rn > ?",
+            (header_row_index + 1,),
+        )
+    except Exception as exc:
+        raise ValueError(shape_error) from exc
+    width_warned = False
     for row in row_cursor:
+        vals = list(row)
+        if len(vals) != len(raw_cols) and not width_warned:
+            logger.warning(
+                "Data-row width mismatch for %s: expected=%d actual=%d",
+                table_key,
+                len(raw_cols),
+                len(vals),
+            )
+            width_warned = True
+        safe_width = min(len(vals), len(final_columns))
         for i in range(len(final_columns)):
-            raw_val = row[raw_cols[i]] if i < len(raw_cols) else None
+            raw_val = vals[i] if i < safe_width else None
             if raw_val is not None and str(raw_val).strip() != "":
                 has_value[i] = True
 
@@ -449,15 +553,28 @@ def rebuild_table_from_raw_table(
 
     def _data_gen():
         record_id = 0
-        cur = conn.execute(
-            f"{numbered_cte} SELECT {select_cols} FROM numbered WHERE _rn > ?",
-            (header_row_index + 1,),
-        )
+        try:
+            cur = conn.execute(
+                f"{numbered_cte} SELECT {select_cols} FROM numbered WHERE _rn > ?",
+                (header_row_index + 1,),
+            )
+        except Exception as exc:
+            raise ValueError(shape_error) from exc
+        width_warned_local = False
         for row in cur:
+            vals = list(row)
+            if len(vals) != len(raw_cols) and not width_warned_local:
+                logger.warning(
+                    "Streaming row width mismatch for %s: expected=%d actual=%d",
+                    table_key,
+                    len(raw_cols),
+                    len(vals),
+                )
+                width_warned_local = True
             out_row: list[str | None] = []
             non_empty = False
             for i in valid_idx:
-                raw_val = row[raw_cols[i]] if i < len(raw_cols) else None
+                raw_val = vals[i] if i < len(vals) else None
                 val = _to_str(raw_val)
                 out_row.append(val)
                 if val is not None and val.strip() != "":

@@ -209,6 +209,71 @@ def _sample_descriptions_for_ai(
     return random.sample(top80_descs, sample_size)
 
 
+def _sample_random_descriptions_from_top_vendors(
+    conn: DuckDBConnection,
+    field_key: str,
+    top_vendors: list[str],
+    sample_size: int = 1000,
+) -> list[str]:
+    """Sample up to *sample_size* unique descriptions from the top-80% vendor cohort.
+
+    Selects DISTINCT descriptions from rows whose supplier is in *top_vendors*,
+    then randomly samples down to *sample_size*.
+
+    Args:
+        conn: DuckDB connection with ``analysis_data`` table.
+        field_key: Description column name (e.g. ``description``).
+        top_vendors: Supplier names in the top-80% spend cohort.
+        sample_size: Max descriptions to return (default 1000).
+
+    Returns:
+        List of unique description strings. Empty when *top_vendors* is empty.
+    """
+    if not top_vendors:
+        return []
+
+    qd = _quote_id(field_key)
+    nn_d = _nn(qd)
+    placeholders = ", ".join(["?"] * len(top_vendors))
+
+    rows = conn.execute(
+        f"SELECT DISTINCT TRIM(CAST({qd} AS TEXT)) AS desc_val "
+        f"FROM \"analysis_data\" "
+        f"WHERE {nn_d} "
+        f"  AND TRIM(CAST(supplier AS TEXT)) IN ({placeholders})",
+        top_vendors,
+    ).fetchall()
+
+    descs = [str(r[0]) for r in rows if r[0]]
+
+    if len(descs) <= sample_size:
+        return descs
+
+    return random.sample(descs, sample_size)
+
+
+def _sample_random_unique_descriptions_all(
+    conn: DuckDBConnection,
+    field_key: str,
+    sample_size: int = 1000,
+) -> list[str]:
+    """Sample up to *sample_size* distinct description values from the full dataset.
+
+    Used when the top-80% vendor cohort is empty (e.g. supplier not mapped) so
+    categorisation AI still receives a random sample instead of nothing.
+    """
+    qd = _quote_id(field_key)
+    nn_d = _nn(qd)
+    rows = conn.execute(
+        f"SELECT DISTINCT TRIM(CAST({qd} AS TEXT)) AS desc_val "
+        f"FROM \"analysis_data\" WHERE {nn_d}"
+    ).fetchall()
+    descs = [str(r[0]) for r in rows if r[0]]
+    if len(descs) <= sample_size:
+        return descs
+    return random.sample(descs, sample_size)
+
+
 def _top_descriptions_by_frequency(
     conn: DuckDBConnection,
     field_key: str,
@@ -385,7 +450,7 @@ def _generate_categorization_recommendation(
 
     Args:
         categorization_data: Dict containing metrics, mapAICost, forcedMethod,
-                            and top1000Descriptions from _compute_categorization_effort().
+                            and random1000Descriptions from _compute_categorization_effort().
         api_key: API key for LLM calls.
 
     Returns:
@@ -399,8 +464,9 @@ def _generate_categorization_recommendation(
         "fillRate": metrics.get("fillRate", 0),
         "uniqueCount": metrics.get("uniqueCount", 0),
         "distinctVendorDescPairs": metrics.get("distinctPairs", 0),
-        "top1000Descriptions": categorization_data.get("top1000Descriptions", []),
-        "mapAICostUsd": categorization_data.get("mapAICost", 0),
+        "topVendorPairsCount": metrics.get("topVendorPairsCount"),
+        "random1000Descriptions": categorization_data.get("random1000Descriptions", []),
+        "mapAICost": categorization_data.get("mapAICost", 0),
         "forcedMethodByRowCount": categorization_data.get("forcedMethod"),
     }
     try:

@@ -219,16 +219,28 @@ def read_table(conn: DuckDBConnection, table_name: str, limit: int | None = None
 def read_table_columns(conn: DuckDBConnection, table_name: str) -> list[str]:
     """Return ordered column names for a table.
 
-    Uses DuckDB's information_schema instead of SQLite's PRAGMA table_info.
+    Uses DuckDB's information_schema. Restricts to the ``main`` schema and
+    deduplicates names so catalog quirks (duplicate rows for the same table
+    name across schemas) cannot produce more names than the table has columns.
     """
     if not table_exists(conn, table_name):
         return []
     rows = conn.execute(
         "SELECT column_name FROM information_schema.columns "
-        "WHERE LOWER(table_name) = LOWER(?) ORDER BY ordinal_position",
-        (table_name,),
+        "WHERE LOWER(table_name) = LOWER(?) "
+        "AND LOWER(table_schema) = LOWER(?) "
+        "ORDER BY ordinal_position",
+        (table_name, "main"),
     ).fetchall()
-    return [r["column_name"] for r in rows]
+    seen: set[str] = set()
+    out: list[str] = []
+    for r in rows:
+        name = r["column_name"]
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
 
 
 def table_exists(conn: DuckDBConnection, table_name: str) -> bool:

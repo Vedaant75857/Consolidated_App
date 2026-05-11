@@ -11,8 +11,10 @@ A complete list of every Python function in the app, organised by module and ste
 | Function | File | What it does |
 |----------|------|--------------|
 | `upload` | `routes/data_loading_routes.py` | Receives the uploaded files from the browser, loads them into the session database, and streams real-time progress events (SSE) back to the browser so the user can see which file is being processed. |
-| `delete_table_route` | `routes/data_loading_routes.py` | Removes a table from the session when the user clicks delete. |
-| `set_header_row` | `routes/data_loading_routes.py` | Changes which row is used as the column header for a table. |
+| `delete_table_route` | `routes/data_loading_routes.py` | Removes a table from the session when the user clicks delete. Uses a session-wide lock so concurrent requests cannot leave the database half-deleted. |
+| `delete_tables_route` | `routes/data_loading_routes.py` | Deletes many selected tables in one go. Checks that every table exists first — if any are missing the whole request fails and nothing is deleted. Returns a 404 with the missing names so the user knows what went wrong. |
+| `_drop_table_artifacts` | `routes/data_loading_routes.py` | Helper that removes one table's data, raw copy, raw-array notes, and registry entry. Used by both the single delete and bulk delete routes so they behave the same. |
+| `set_header_row` | `routes/data_loading_routes.py` | Changes which row is used as the column header for a table. Now wrapped in a session lock and returns just the affected table's preview (not every preview) so the UI updates faster. |
 | `_rebuild_meta` | `routes/data_loading_routes.py` | Refreshes the session's summary information (like column counts and row stats) after something changes. |
 | `_file_name_from_key` | `data_loading/file_loader.py` | Turns an internal table identifier into a human-readable file name for display. |
 | `_clean_header` | `data_loading/file_loader.py` | Tidies up a header cell — trims spaces, converts to text — so column names are consistent. |
@@ -23,7 +25,10 @@ A complete list of every Python function in the app, organised by module and ste
 | `_is_empty_row` | `data_loading/file_loader.py` | Checks whether a row is completely blank or has no meaningful data. |
 | `_iter_csv_rows` | `data_loading/file_loader.py` | Reads a CSV file and produces rows one at a time for processing. |
 | `_pad_row` | `data_loading/file_loader.py` | Makes a row the right width by adding empty cells or trimming extras so all rows match. |
-| `_load_excel_sheet` | `data_loading/file_loader.py` | Reads one sheet from an Excel file using DuckDB native ingestion for the raw table, then builds the data table from the raw table via SQL — no Python row iteration. |
+| `_cell_to_str_or_none` | `data_loading/file_loader.py` | Turns one spreadsheet cell into text (or empty) for saving to the database, so date columns that also contain words do not confuse the system. |
+| `_coerce_dataframe_cells_to_str` | `data_loading/file_loader.py` | Walks an entire sheet grid and converts every cell to text (or empty) — used only as a backup when the normal text read path is not supported. |
+| `_read_excel_sheet_dataframe` | `data_loading/file_loader.py` | Reads one Excel sheet with every cell as text first (same idea as CSV), with a backup path that stringifies cells if the spreadsheet reader rejects that mode. |
+| `_load_excel_sheet` | `data_loading/file_loader.py` | Reads one sheet from an Excel file using DuckDB native ingestion for the raw table, then builds the data table from the raw table via SQL — no Python row iteration. Uses all-text Excel reading so label-like rows mixed with dates do not fail loading. |
 | `_load_csv` | `data_loading/file_loader.py` | Reads a CSV file using native DataFrame ingestion + SQL. Reads CSV once into memory, ingests natively, then builds the data table via SQL — no Python row loops. |
 | `load_zip_to_session` | `data_loading/file_loader.py` | Opens a ZIP file, finds all spreadsheets (.xlsx, .xlsm, .xlsb, .xltx, .xltm), CSVs, and nested ZIP files inside, and loads each one into the session database. Nested ZIPs are extracted one level deep. Accepts an optional progress callback that fires after each file is loaded so the upload route can stream per-file progress to the browser. |
 | `_build_columns_from_header` | `data_loading/file_loader.py` | Takes the chosen header row and builds a list of column names and their metadata. |
@@ -42,8 +47,8 @@ A complete list of every Python function in the app, organised by module and ste
 | Function | File | What it does |
 |----------|------|--------------|
 | `get_preview` | `routes/data_loading_routes.py` | Returns the first 50 rows of a single table as a preview. Called on-demand when the user expands a table card. |
-| `get_raw_preview` | `routes/data_loading_routes.py` | Sends back the raw grid of a table (before any header is chosen) so the user can pick the right header row. |
-| `get_raw_array_from_table` | `data_loading/file_loader.py` | Reads a chunk of raw rows from the database for the preview screen. |
+| `get_raw_preview` | `routes/data_loading_routes.py` | Sends back the raw grid of a table (before any header is chosen) so the user can pick the right header row. Cleans up unusual cell values (dates, decimals, numpy numbers, etc.) so the browser always gets valid JSON, and returns a clear "not found" message when the table key is unknown. |
+| `get_raw_array_from_table` | `data_loading/file_loader.py` | Reads a chunk of raw rows from the database for the header-row picker. Uses ``SELECT *`` and builds each row as a plain list so column metadata can never disagree with the number of values in a row. |
 | `pick_best_rows` | `shared/db/table_ops.py` | Takes a list of row dicts and returns the ones with the most filled-in columns, so previews show the most informative data instead of sparse rows. |
 | `pick_best_raw_rows` | `shared/db/table_ops.py` | Same as pick_best_rows but works on raw list-of-lists data (used for the raw grid preview before headers are chosen). |
 
@@ -351,7 +356,7 @@ A complete list of every Python function in the app, organised by module and ste
 | `store_table_streaming` | `shared/db/table_ops.py` | Saves rows into a database table in smaller chunks, for very large datasets that won't fit in memory at once. |
 | `store_df_native` | `shared/db/table_ops.py` | Saves a pandas DataFrame into a database table using DuckDB's zero-copy path — no Python row iteration, orders of magnitude faster for large datasets. |
 | `read_table` | `shared/db/table_ops.py` | Reads rows from a database table and returns them as a list of row-objects. |
-| `read_table_columns` | `shared/db/table_ops.py` | Returns the ordered list of column names for a table. |
+| `read_table_columns` | `shared/db/table_ops.py` | Returns the ordered list of column names for a table, using only the ``main`` schema and dropping duplicate names so the list always matches the real table. |
 | `table_exists` | `shared/db/table_ops.py` | Checks whether a specific table exists in the database. |
 | `drop_table` | `shared/db/table_ops.py` | Deletes a table from the database if it exists. |
 | `table_row_count` | `shared/db/table_ops.py` | Returns how many rows a table has. |
@@ -511,7 +516,7 @@ A complete list of every Python function in the app, organised by module and ste
 | `store_table_streaming` | `db/table_ops.py` | Saves rows into a database table in smaller chunks, for large datasets. |
 | `store_df_native` | `db/table_ops.py` | Saves a pandas DataFrame into a database table using DuckDB's zero-copy path — no Python row iteration. |
 | `read_table` | `db/table_ops.py` | Reads rows from a database table and returns them as a list of row-objects. |
-| `read_table_columns` | `db/table_ops.py` | Returns the ordered list of column names for a table. |
+| `read_table_columns` | `db/table_ops.py` | Returns the ordered list of column names for a table, using only the ``main`` schema and dropping duplicate names so the list always matches the real table. |
 | `table_exists` | `db/table_ops.py` | Checks whether a specific table exists in the database. |
 | `drop_table` | `db/table_ops.py` | Deletes a table from the database if it exists. |
 | `table_row_count` | `db/table_ops.py` | Returns how many rows a table has. |
@@ -608,24 +613,28 @@ A complete list of every Python function in the app, organised by module and ste
 | `_compute_date_spend_pivot` | `services/spend_quality_assessment/data_quality.py` | Builds a year-by-month pivot table showing total spend per period. Rows with non-numeric spend are excluded (not counted as zero). |
 | `_compute_spend_bifurcation` | `services/spend_quality_assessment/data_quality.py` | Splits spend into positive and negative totals. Returns both a reporting currency view (using total_spend) and a local currency view (using local_spend grouped by currency). Supports a frontend toggle between the two views. |
 | `_compute_pareto_analysis` | `services/spend_quality_assessment/data_quality.py` | Calculates supplier concentration — groups all invoices by supplier, sums their spend, ranks suppliers from biggest to smallest, then walks down the list to find how many suppliers make up 80%, 85%, 90%, 95%, and 99% of total positive spend. For each threshold, also counts the total invoice rows and unique transaction types belonging to those suppliers. |
+| `_top_80_vendor_cohort` | `services/spend_quality_assessment/data_quality.py` | Lists supplier names in descending spend order until cumulative spend reaches 80% of total supplier spend. Used so manual-validation counts and the random description sample stay aligned. |
+| `_description_quality_sentence` | `services/spend_quality_assessment/data_quality.py` | Builds the Description quality row for the Executive Summary: the verdict plus the AI reasoning sentence (no method or cost here). |
+| `_categorization_method_sentence` | `services/spend_quality_assessment/data_quality.py` | Builds the Categorization method row: recommended method, formatted estimated cost, and manual validation row count. |
 | `run_executive_summary` | `services/spend_quality_assessment/data_quality.py` | Convenience wrapper that runs both SQL and AI phases sequentially. Prefer calling the split functions so the AI phase runs outside the lock. |
 | `run_executive_summary_sql` | `services/spend_quality_assessment/data_quality.py` | Runs the SQL-only phase: date-spend pivot, spend bifurcation, Pareto analysis, and description column stats (no AI). Must be called under the session lock. |
 | `run_executive_summary_ai` | `services/spend_quality_assessment/data_quality.py` | Runs the AI phase: generates a categorization method recommendation from pre-computed SQL data. Safe to call without any lock. |
 | `_compute_date_period` | `services/spend_quality_assessment/data_quality.py` | Finds the earliest and latest invoice date in the dataset, formats a period label (e.g. "Jan 2024 – Dec 2025"), and counts how many distinct months the data spans. |
-| `_compute_spend_breakdown` | `services/spend_quality_assessment/data_quality.py` | Computes last-twelve-months spend, current and prior fiscal year spend, and the year-over-year change (both absolute and percentage). |
-| `_compute_supplier_breakdown` | `services/spend_quality_assessment/data_quality.py` | Counts total suppliers, finds how many cover 80% of spend, lists the top 10 by share, and flags suppliers that look like duplicates (same name with different casing). |
-| `_compute_categorization_effort` | `services/spend_quality_assessment/data_quality.py` | Measures description quality (word count, character length, fill rate, unique values) and estimates how much it would cost to run AI-based categorization on the dataset. |
-| `_compute_flags` | `services/spend_quality_assessment/data_quality.py` | Checks the dataset for quality issues: months with abnormal spend, poor description fill rate or word count, low supplier fill rate, and columns with significant gaps or missing spend coverage. |
+| `_compute_spend_breakdown` | `services/spend_quality_assessment/data_quality.py` | Computes last-twelve-months spend, current and prior fiscal year spend, year-over-year change, and the latest calendar year that has all twelve months of invoice data (full-year spend). |
+| `_compute_supplier_breakdown` | `services/spend_quality_assessment/data_quality.py` | Counts total suppliers, uses the same top-80% cohort helper as categorisation to count how many suppliers cover 80% of spend, lists the top 10 by share, and flags suppliers that look like duplicates (same name with different casing). |
+| `_compute_categorization_effort` | `services/spend_quality_assessment/data_quality.py` | Measures description quality (word count, character length, fill rate, unique values), counts distinct supplier-and-description pairs for the top-80% supplier cohort, draws up to 1000 random distinct descriptions from that cohort (or from the whole dataset if the cohort cannot be built), and estimates AI categorisation cost from distinct pairs. |
 | `_compute_column_fill_rate` | `services/spend_quality_assessment/data_quality.py` | For every mapped column, calculates what percentage of rows are filled and what percentage of total spend sits in populated rows. |
 | `_quote_id` | `services/spend_quality_assessment/description_quality.py` | Same as above — wraps a name in quotes for safe database use. |
 | `_nn` | `services/spend_quality_assessment/description_quality.py` | Same as above — checks if a cell has real content. |
 | `_build_null_proxy_sql` | `services/spend_quality_assessment/description_quality.py` | Creates conditions to catch placeholder descriptions that look filled in but are actually meaningless (e.g. "N/A", "TBD", "---"). |
 | `_compute_description_column_stats` | `services/spend_quality_assessment/description_quality.py` | Calculates per-column stats: how much spend is covered, top 10 most common values, average length, word count, and null-proxy rates. |
 | `_sample_descriptions_for_ai` | `services/spend_quality_assessment/description_quality.py` | Picks a sample of the most impactful descriptions (covering ~80% of spend) to send to the AI for quality assessment. |
+| `_sample_random_descriptions_from_top_vendors` | `services/spend_quality_assessment/description_quality.py` | Collects distinct descriptions from rows whose supplier is in the top-80% spend cohort, then randomly picks up to 1000 for the categorisation AI. |
+| `_sample_random_unique_descriptions_all` | `services/spend_quality_assessment/description_quality.py` | When the top-80% cohort is empty, randomly samples up to 1000 distinct descriptions from the full mapped dataset so the AI still gets a sample. |
 | `_top_descriptions_by_frequency` | `services/spend_quality_assessment/description_quality.py` | Returns the most common description values along with how often they appear and how much spend they cover. |
 | `_normalise_insight` | `services/spend_quality_assessment/description_quality.py` | Makes sure the AI insight output is always a list of up to 3 short strings, handling both old single-string and new array formats. |
 | `_generate_description_insight` | `services/spend_quality_assessment/description_quality.py` | Asks the AI to assess description quality and returns exactly 3 concise bullet points (verdict, key issue, categorisation suitability). |
-| `_generate_categorization_recommendation` | `services/spend_quality_assessment/description_quality.py` | Asks the AI to recommend a categorization method (MapAI vs Creactives) based on description metrics, and returns quality buckets plus a verdict. |
+| `_generate_categorization_recommendation` | `services/spend_quality_assessment/description_quality.py` | Sends random1000Descriptions (strings), metrics, topVendorPairsCount, and mapAICost to the AI; returns quality buckets, verdict, recommended method, and a one-sentence reasoning (shown in the Executive Summary description row). |
 | `run_description_quality_analysis` | `services/spend_quality_assessment/description_quality.py` | Runs the full description quality check. When api_key is None, runs SQL only and leaves AI insight as None for the caller to fill in later. |
 | `get_searchable_columns` | `services/spend_quality_assessment/not_procurable.py` | Returns the list of text columns in the analysis data that can be searched for keywords (e.g. Description, PO Material Description, L1–L4, Vendor Name). Only returns columns that actually exist in the session. |
 | `search_keyword_spend` | `services/spend_quality_assessment/not_procurable.py` | Searches for a keyword across one or more selected columns using case-insensitive matching, and returns how many rows matched and the total spend (reporting currency) for those rows. |

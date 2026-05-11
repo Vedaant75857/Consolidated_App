@@ -96,7 +96,8 @@ interface DataLoadingProps {
   onProceedToAppend: () => void;
   onProceedSingleTable?: () => void;
   onDeleteTable: (tableKey: string) => void;
-  onSetHeaderRow: (tableKey: string, rowIndex: number, customNames?: Record<number, string>) => void;
+  onBulkDeleteTables?: (tableKeys: string[]) => void;
+  onSetHeaderRow: (tableKey: string, rowIndex: number, customNames?: Record<number, string>) => Promise<void>;
   onDeleteRows?: (tableKey: string, rowIds: (string | number)[]) => void;
   onFetchPreview?: (tableKey: string) => void;
 }
@@ -109,7 +110,7 @@ function HeaderRowEditor({
 }: {
   sessionId: string;
   tableKey: string;
-  onSetHeaderRow: (tableKey: string, rowIndex: number, customNames?: Record<number, string>) => void;
+  onSetHeaderRow: (tableKey: string, rowIndex: number, customNames?: Record<number, string>) => Promise<void>;
   onCancel: () => void;
 }) {
   const [rawPreview, setRawPreview] = useState<any[][] | null>(null);
@@ -117,6 +118,8 @@ function HeaderRowEditor({
   const [rawError, setRawError] = useState<string | null>(null);
   const [selectedRow, setSelectedRow] = useState<number | null>(null);
   const [customNames, setCustomNames] = useState<Record<number, string>>({});
+  const [savingHeader, setSavingHeader] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const fetchRaw = async () => {
     setRawError(null);
@@ -127,11 +130,27 @@ function HeaderRowEditor({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, tableKey }),
       });
-      if (!res.ok) throw new Error("Failed to fetch raw data");
+      if (!res.ok) {
+        let detail = "";
+        try {
+          const errBody = await res.json();
+          if (errBody && typeof errBody.error === "string" && errBody.error.trim()) {
+            detail = errBody.error.trim();
+          }
+        } catch {
+          /* ignore non-JSON */
+        }
+        console.error("get-raw-preview failed", res.status, detail || res.statusText);
+        throw new Error(detail || `Failed to fetch raw data (${res.status})`);
+      }
       const data = await res.json();
       setRawPreview(data.rawPreview || []);
-    } catch {
-      setRawError("Failed to load raw data. Click Retry to try again.");
+    } catch (e) {
+      const msg =
+        e instanceof Error && e.message
+          ? `${e.message} -- Click Retry to try again.`
+          : "Failed to load raw data. Click Retry to try again.";
+      setRawError(msg);
     } finally {
       setLoadingRaw(false);
     }
@@ -142,9 +161,18 @@ function HeaderRowEditor({
 
   const candidateHeaders = selectedRow !== null && rawPreview ? rawPreview[selectedRow] : null;
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
     if (selectedRow === null) return;
-    onSetHeaderRow(tableKey, selectedRow, Object.keys(customNames).length > 0 ? customNames : undefined);
+    setSubmitError(null);
+    setSavingHeader(true);
+    try {
+      await onSetHeaderRow(tableKey, selectedRow, Object.keys(customNames).length > 0 ? customNames : undefined);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Failed to set header row.";
+      if (message !== "Action cancelled") setSubmitError(message);
+    } finally {
+      setSavingHeader(false);
+    }
   };
 
   if (loadingRaw) {
@@ -189,20 +217,29 @@ function HeaderRowEditor({
             <button
               type="button"
               onClick={handleConfirm}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors"
+              disabled={savingHeader}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
             >
-              <Check className="w-3 h-3" /> Confirm Row {selectedRow}
+              {savingHeader ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+              {savingHeader ? "Applying..." : `Confirm Row ${selectedRow}`}
             </button>
           )}
           <button
             type="button"
             onClick={onCancel}
-            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-lg border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors"
+            disabled={savingHeader}
+            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-lg border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
           >
             <X className="w-3 h-3" /> Cancel
           </button>
         </div>
       </div>
+
+      {submitError && (
+        <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 px-3 py-2 text-xs font-medium text-red-600 dark:text-red-400">
+          {submitError}
+        </div>
+      )}
 
       {candidateHeaders && (
         <div className="bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 rounded-xl p-3 space-y-2">
@@ -263,6 +300,7 @@ function HeaderRowEditor({
                   <button
                     type="button"
                     onClick={() => { setSelectedRow(ri); setCustomNames({}); }}
+                    disabled={savingHeader}
                     className={`w-7 h-6 rounded text-[10px] font-bold transition-colors ${
                       selectedRow === ri
                         ? "bg-blue-600 text-white"
@@ -303,6 +341,7 @@ export default function DataLoading({
   onProceedToAppend,
   onProceedSingleTable,
   onDeleteTable,
+  onBulkDeleteTables,
   onSetHeaderRow,
   onDeleteRows,
   onFetchPreview,
@@ -363,7 +402,7 @@ export default function DataLoading({
   };
 
   const handleDeleteSelectedRows = (tableKey: string) => {
-    const ids = Array.from(selectedRowIds[tableKey] || []);
+    const ids: (string | number)[] = Array.from(selectedRowIds[tableKey] || new Set<string | number>());
     if (ids.length === 0 || !onDeleteRows) return;
     if (!window.confirm(`Delete ${ids.length} selected row(s)?`)) return;
     onDeleteRows(tableKey, ids);
@@ -389,11 +428,16 @@ export default function DataLoading({
   };
 
   const handleBulkDeleteTables = async () => {
-    const keys = Array.from(selectedTables);
+    const keys: string[] = Array.from(selectedTables) as string[];
     if (keys.length === 0) return;
     if (!window.confirm(`Delete ${keys.length} selected table${keys.length !== 1 ? "s" : ""}?`)) return;
-    for (const key of keys) {
-      onDeleteTable(key);
+    if (onBulkDeleteTables) {
+      onBulkDeleteTables(keys);
+    } else {
+      // Sequential fallback so deletes don't race when running against an older parent.
+      for (const key of keys) {
+        onDeleteTable(key);
+      }
     }
     setSelectedTables(new Set());
     setExpandedTable(null);
@@ -865,7 +909,10 @@ export default function DataLoading({
                     <HeaderRowEditor
                       sessionId={sessionId}
                       tableKey={inv.table_key}
-                      onSetHeaderRow={(tk, ri, cn) => { onSetHeaderRow(tk, ri, cn); setHeaderEditTable(null); }}
+                      onSetHeaderRow={async (tk, ri, cn) => {
+                        await onSetHeaderRow(tk, ri, cn);
+                        setHeaderEditTable(null);
+                      }}
                       onCancel={() => setHeaderEditTable(null)}
                     />
                   )}

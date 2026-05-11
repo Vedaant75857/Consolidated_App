@@ -256,6 +256,15 @@ export default function App() {
     return () => window.removeEventListener("beforeunload", handleUnload);
   }, []);
 
+  // Lazy-load available views when entering step 5 if they weren't pre-fetched
+  useEffect(() => {
+    if (step === 5 && sessionId && availableViews.length === 0) {
+      getAvailableViews(sessionId)
+        .then((r) => setAvailableViews(r.views))
+        .catch((err) => setError(err.message || "Failed to load available views"));
+    }
+  }, [step, sessionId, availableViews.length]);
+
   /* ──── Upload (step 1 -> 2) ──── */
 
   const doUpload = useCallback(async () => {
@@ -474,9 +483,15 @@ export default function App() {
         const result = await confirmMapping(sessionId, mapping);
         setCastReport(result.castReport);
         if (result.procurementViews) setCachedProcurementViews(result.procurementViews);
-        const viewsResult = await getAvailableViews(sessionId);
-        setAvailableViews(viewsResult.views);
         setStep(4);
+
+        // Load available views in background — failure here should not block step 4
+        getAvailableViews(sessionId)
+          .then((viewsResult) => setAvailableViews(viewsResult.views))
+          .catch((err) => {
+            console.error("Failed to pre-load available views:", err);
+          });
+
         return result.castReport;
       } finally {
         setLoading(false);
@@ -905,6 +920,7 @@ export default function App() {
                       <DataQualityStep
                         sessionId={sessionId}
                         apiKey={apiKey}
+                        setApiKey={setApiKey}
                         onProceed={() => setStep(5)}
                       />
                     )}

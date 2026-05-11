@@ -183,6 +183,20 @@ def _es_lock(session_id: str) -> threading.RLock:
         return lock
 
 
+def _is_current_executive_summary_cache(cached) -> bool:
+    """Reject legacy 4-row caches so clients always get the current schema."""
+    if not isinstance(cached, dict) or "flags" in cached:
+        return False
+    es = cached.get("executiveSummary")
+    if not isinstance(es, dict):
+        return False
+    rows = es.get("rows")
+    if not isinstance(rows, list) or len(rows) != 5:
+        return False
+    keys = {str(r.get("key")) for r in rows if isinstance(r, dict)}
+    return "categorizationMethod" in keys
+
+
 @views_bp.route("/executive-summary", methods=["POST"])
 def executive_summary():
     """Run the Executive Summary DQA on the analysis_data table.
@@ -209,7 +223,7 @@ def executive_summary():
         with lock:
             if not force:
                 cached = get_meta(conn, "executive_summary")
-                if cached:
+                if _is_current_executive_summary_cache(cached):
                     return jsonify(cached)
 
             sql_result = run_executive_summary_sql(conn)

@@ -102,6 +102,7 @@ export default function App() {
   // Step 2: Data Preview
   const [inventory, setInventory] = useState<any[]>([]);
   const [previews, setPreviews] = useState<Record<string, { columns: string[]; rows: any[] }>>({});
+  const previewMutationVersionRef = useRef<Record<string, number>>({});
   const [showDataPreview, setShowDataPreview] = useState(false);
   const [showResultsPreview, setShowResultsPreview] = useState(false);
   const [resultsPreviews, setResultsPreviews] = useState<Record<string, { columns: string[]; rows: any[] }>>({});
@@ -214,7 +215,10 @@ export default function App() {
   // ── Step-aware cache invalidation ──────────────────────────────────
   const [pendingInvalidation, setPendingInvalidation] = useState<{
     step: number;
-    action: () => void;
+    action: () => void | Promise<void>;
+    resolve?: () => void;
+    reject?: (reason?: unknown) => void;
+    rejectOnCancel?: boolean;
   } | null>(null);
 
   const invalidateDownstream = useCallback(
@@ -280,12 +284,27 @@ export default function App() {
   );
 
   const guardedAction = useCallback(
-    (targetStep: number, action: () => void) => {
+    (targetStep: number, action: () => void | Promise<void>, options: { rejectOnCancel?: boolean } = {}) => {
       if (maxStepReached > targetStep) {
-        setPendingInvalidation({ step: targetStep, action });
-      } else {
-        action();
+        return new Promise<void>((resolve, reject) => {
+          setPendingInvalidation({
+            step: targetStep,
+            action: async () => {
+              try {
+                await action();
+                resolve();
+              } catch (err) {
+                reject(err);
+                throw err;
+              }
+            },
+            resolve,
+            reject,
+            rejectOnCancel: options.rejectOnCancel,
+          });
+        });
       }
+      return Promise.resolve(action());
     },
     [maxStepReached],
   );
@@ -632,10 +651,12 @@ export default function App() {
   };
 
   const fetchPreview = async (tableKey: string) => {
+    const requestVersion = previewMutationVersionRef.current[tableKey] || 0;
     try {
       const res = await fetch(`/api/get-preview?sessionId=${encodeURIComponent(sessionId)}&tableKey=${encodeURIComponent(tableKey)}`);
       if (!res.ok) return;
       const data = await res.json();
+      if ((previewMutationVersionRef.current[tableKey] || 0) !== requestVersion) return;
       if (data.preview) {
         setPreviews((prev) => ({ ...prev, [tableKey]: data.preview }));
       }
@@ -675,6 +696,47 @@ export default function App() {
     }
   };
 
+  const doBulkDeleteTables = async (tableKeys: string[]) => {
+    if (tableKeys.length === 0) return;
+    if (maxStepReached > 2) await invalidateDownstream(2);
+    setLoading(true);
+    setLoadingMessage(`Deleting ${tableKeys.length} table${tableKeys.length !== 1 ? "s" : ""}…`);
+    setError(null);
+    try {
+      const res = await fetch("/api/delete-tables", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, tableKeys }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        const missing = Array.isArray(body?.missing) && body.missing.length > 0
+          ? ` Missing: ${body.missing.join(", ")}`
+          : "";
+        throw new Error((body?.error || "Failed to delete tables") + missing);
+      }
+      const data = await res.json();
+      setInventory(data.inventory);
+      setPreviews(data.previews || {});
+      addLog("Data Preview", "success", `Deleted ${data.deletedCount ?? tableKeys.length} table(s)`);
+    } catch (err: any) {
+      setError(err.message);
+      addLog("Data Preview", "error", err.message);
+    } finally {
+      setLoading(false);
+      setLoadingMessage("");
+    }
+  };
+
+  const handleBulkDeleteTables = (tableKeys: string[]) => {
+    if (tableKeys.length === 0) return;
+    if (maxStepReached > 2) {
+      guardedAction(2, () => doBulkDeleteTables(tableKeys));
+    } else {
+      doBulkDeleteTables(tableKeys);
+    }
+  };
+
   const doDeleteRows = async (tableKey: string, rowIds: (string | number)[]) => {
     if (maxStepReached > 2) await invalidateDownstream(2);
     setLoading(true);
@@ -708,8 +770,14 @@ export default function App() {
     }
   };
 
-  const doSetHeaderRow = async (tableKey: string, headerRowIndex: number, customColumnNames?: Record<number, string>) => {
-    if (maxStepReached > 2) await invalidateDownstream(2);
+  const doSetHeaderRow = async (
+    tableKey: string,
+    headerRowIndex: number,
+    customColumnNames?: Record<number, string>,
+    options: { skipInvalidate?: boolean } = {},
+  ) => {
+    previewMutationVersionRef.current[tableKey] = (previewMutationVersionRef.current[tableKey] || 0) + 1;
+    if (!options.skipInvalidate && maxStepReached > 2) await invalidateDownstream(2);
     setLoading(true);
     setError(null);
     try {
@@ -721,11 +789,16 @@ export default function App() {
       if (!res.ok) throw new Error((await res.json()).error || "Failed to set header row");
       const data = await res.json();
       setInventory(data.inventory);
-      setPreviews(data.previews || {});
+      if (data.preview) {
+        setPreviews((prev) => ({ ...prev, [tableKey]: data.preview }));
+      } else if (data.previews) {
+        setPreviews(data.previews);
+      }
       addLog("Data Preview", "success", `Header row set to row ${headerRowIndex} for "${tableKey}"`);
     } catch (err: any) {
       setError(err.message);
       addLog("Data Preview", "error", err.message);
+      throw err;
     } finally {
       setLoading(false);
     }
@@ -733,10 +806,9 @@ export default function App() {
 
   const handleSetHeaderRow = (tableKey: string, headerRowIndex: number, customColumnNames?: Record<number, string>) => {
     if (maxStepReached > 2) {
-      guardedAction(2, () => doSetHeaderRow(tableKey, headerRowIndex, customColumnNames));
-    } else {
-      doSetHeaderRow(tableKey, headerRowIndex, customColumnNames);
+      return guardedAction(2, () => doSetHeaderRow(tableKey, headerRowIndex, customColumnNames, { skipInvalidate: true }), { rejectOnCancel: true });
     }
+    return doSetHeaderRow(tableKey, headerRowIndex, customColumnNames);
   };
 
   const doCleanTable = async (tableKey: string, config: any) => {
@@ -1755,6 +1827,7 @@ export default function App() {
                   onProceedToAppend={() => setStep(3)}
                   onProceedSingleTable={handleProceedSingleTable}
                   onDeleteTable={handleDeleteTable}
+                  onBulkDeleteTables={handleBulkDeleteTables}
                   onSetHeaderRow={handleSetHeaderRow}
                   onDeleteRows={handleDeleteRows}
                   onFetchPreview={fetchPreview}
@@ -1952,13 +2025,24 @@ export default function App() {
 
       <StepChangeWarningDialog
         open={!!pendingInvalidation}
-        onCancel={() => setPendingInvalidation(null)}
+        onCancel={() => {
+          if (pendingInvalidation?.rejectOnCancel) {
+            pendingInvalidation.reject?.(new Error("Action cancelled"));
+          } else {
+            pendingInvalidation?.resolve?.();
+          }
+          setPendingInvalidation(null);
+        }}
         onConfirm={async () => {
           if (pendingInvalidation) {
-            await invalidateDownstream(pendingInvalidation.step);
-            const action = pendingInvalidation.action;
+            const pending = pendingInvalidation;
             setPendingInvalidation(null);
-            action();
+            try {
+              await invalidateDownstream(pending.step);
+              await pending.action();
+            } catch (err) {
+              pending.reject?.(err);
+            }
           }
         }}
       />
