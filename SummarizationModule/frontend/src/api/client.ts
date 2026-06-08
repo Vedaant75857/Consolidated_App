@@ -310,6 +310,12 @@ export interface CategorizationBuckets {
   low: number;
 }
 
+export interface MapAICostRange {
+  low: number;
+  high: number;
+  text: string;
+}
+
 export interface CategorizationEffortResult {
   metrics: {
     rowCount: number;
@@ -326,6 +332,7 @@ export interface CategorizationEffortResult {
   qualityVerdict: "high" | "medium" | "low" | null;
   recommendedMethod: "MapAI" | "Creactives" | null;
   mapAICost: number;
+  mapAICostRange?: MapAICostRange;
   reasoning: string | null;
   qualityWarning: boolean;
   feasible: boolean;

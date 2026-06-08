@@ -5,9 +5,13 @@ import json
 import logging
 import math
 import os
+import sys as _sys
 import threading
 import time
 import uuid
+
+_sys.dont_write_bytecode = True
+os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -15,7 +19,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("module1")
 
-import sys as _sys
 from dotenv import load_dotenv
 if not getattr(_sys, "frozen", False):
     load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env.local"))

@@ -8,7 +8,11 @@ touch the developer's real ``.sessions/`` folder.
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
+import atexit
+import time
+import uuid
 
 _creator_temp = os.path.join(
     os.environ.get("PUBLIC", r"C:\Users\Public"),
@@ -22,8 +26,26 @@ _TEST_SESSIONS_ROOT = os.path.join(
     "test-sessions",
 )
 os.makedirs(_TEST_SESSIONS_ROOT, exist_ok=True)
-_TEST_SESSIONS_DIR = tempfile.mkdtemp(
-    prefix="module1_test_sessions_",
-    dir=_TEST_SESSIONS_ROOT,
+_TEST_SESSIONS_DIR = os.path.join(
+    _TEST_SESSIONS_ROOT,
+    f"module1_test_sessions_{int(time.time())}_{os.getpid()}_{uuid.uuid4().hex[:8]}",
 )
+os.makedirs(_TEST_SESSIONS_DIR, exist_ok=True)
 os.environ.setdefault("SESSION_DB_DIR", _TEST_SESSIONS_DIR)
+
+
+def _cleanup_test_sessions_dir() -> None:
+    try:
+        from shared.db import cleanup_all_sessions
+
+        cleanup_all_sessions()
+    except Exception:
+        pass
+    shutil.rmtree(_TEST_SESSIONS_DIR, ignore_errors=True)
+
+
+atexit.register(_cleanup_test_sessions_dir)
+
+
+def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
+    _cleanup_test_sessions_dir()

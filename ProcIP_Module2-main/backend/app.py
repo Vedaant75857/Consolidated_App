@@ -3,10 +3,15 @@ import json
 import logging
 import math
 import os
+import sys as _sys
 import io
 import re as _re
 import uuid
 import warnings
+
+_sys.dont_write_bytecode = True
+os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
+
 from flask import Flask, current_app, request, jsonify, send_file, g
 from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS
@@ -74,7 +79,6 @@ from agents.normalization import (
 )
 from agents.fx_rates import load_fx_table
 
-import sys as _sys
 warnings.filterwarnings('ignore')
 if not getattr(_sys, "frozen", False):
     load_dotenv()
@@ -96,6 +100,9 @@ AGENT_MAPPING = {
 import zipfile
 import requests as _requests
 
+SOURCE_EXCEL_EXTS = ('.xls', '.xlsx', '.xlsm', '.xlsb', '.xltx', '.xltm')
+SOURCE_DATA_EXTS = SOURCE_EXCEL_EXTS + ('.csv',)
+
 # ── Session startup / shutdown cleanup ─────────────────────────────────────────
 
 def _on_exit():
@@ -107,6 +114,38 @@ atexit.register(_on_exit)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _load_source_file_to_session(conn, name: str, data: bytes, inventory: list[dict]) -> None:
+    """Load one supported source file into the normalizer session."""
+    lower = name.lower()
+    if lower.endswith(SOURCE_EXCEL_EXTS):
+        excel_file = pd.ExcelFile(io.BytesIO(data), engine='calamine')
+        try:
+            for sheet in excel_file.sheet_names:
+                key = f"{name}::{sheet}"
+                df = pd.read_excel(excel_file, sheet_name=sheet, header=None)
+                if not df.empty:
+                    raw_sql = safe_table_name("raw", key)
+                    data_sql = safe_table_name("data", key)
+                    df_to_sqlite(conn, raw_sql, df, commit=False)
+                    conn.execute(f"DROP TABLE IF EXISTS {quote_id(data_sql)}")
+                    conn.execute(f"CREATE TABLE {quote_id(data_sql)} AS SELECT * FROM {quote_id(raw_sql)}")
+                    register_table(conn, key, data_sql, commit=False)
+                    inventory.append({"table_key": key, "rows": len(df), "cols": len(df.columns)})
+        finally:
+            excel_file.close()
+    elif lower.endswith('.csv'):
+        key = f"{name}::"
+        df = pd.read_csv(io.BytesIO(data), header=None)
+        if not df.empty:
+            raw_sql = safe_table_name("raw", key)
+            data_sql = safe_table_name("data", key)
+            df_to_sqlite(conn, raw_sql, df, commit=False)
+            conn.execute(f"DROP TABLE IF EXISTS {quote_id(data_sql)}")
+            conn.execute(f"CREATE TABLE {quote_id(data_sql)} AS SELECT * FROM {quote_id(raw_sql)}")
+            register_table(conn, key, data_sql, commit=False)
+            inventory.append({"table_key": key, "rows": len(df), "cols": len(df.columns)})
+
 
 def _get_session_id() -> str:
     """Extract sessionId from the request (JSON body, form data, query param, or header)."""
@@ -334,60 +373,28 @@ def upload_file():
                         name = entry.filename
                         lower = name.lower()
                         try:
-                            if lower.endswith(('.xlsx', '.xlsm', '.xltx')):
-                                data = zf.read(name)
-                                excel_file = pd.ExcelFile(io.BytesIO(data), engine='calamine')
-                                for sheet in excel_file.sheet_names:
-                                    key = f"{name}::{sheet}"
-                                    df = pd.read_excel(excel_file, sheet_name=sheet, header=None)
-                                    if not df.empty:
-                                        raw_sql = safe_table_name("raw", key)
-                                        data_sql = safe_table_name("data", key)
-                                        df_to_sqlite(conn, raw_sql, df, commit=False)
-                                        conn.execute(f"DROP TABLE IF EXISTS {quote_id(data_sql)}")
-                                        conn.execute(f"CREATE TABLE {quote_id(data_sql)} AS SELECT * FROM {quote_id(raw_sql)}")
-                                        register_table(conn, key, data_sql, commit=False)
-                                        inventory.append({"table_key": key, "rows": len(df), "cols": len(df.columns)})
-                            elif lower.endswith('.csv'):
-                                data = zf.read(name)
-                                key = f"{name}::"
-                                df = pd.read_csv(io.BytesIO(data), header=None)
-                                if not df.empty:
-                                    raw_sql = safe_table_name("raw", key)
-                                    data_sql = safe_table_name("data", key)
-                                    df_to_sqlite(conn, raw_sql, df, commit=False)
-                                    conn.execute(f"DROP TABLE IF EXISTS {quote_id(data_sql)}")
-                                    conn.execute(f"CREATE TABLE {quote_id(data_sql)} AS SELECT * FROM {quote_id(raw_sql)}")
-                                    register_table(conn, key, data_sql, commit=False)
-                                    inventory.append({"table_key": key, "rows": len(df), "cols": len(df.columns)})
+                            if lower.endswith('.zip'):
+                                with zipfile.ZipFile(io.BytesIO(zf.read(name))) as nested_zf:
+                                    for nested_entry in nested_zf.infolist():
+                                        if nested_entry.is_dir():
+                                            continue
+                                        nested_name = nested_entry.filename
+                                        nested_lower = nested_name.lower()
+                                        if nested_lower.endswith(SOURCE_DATA_EXTS):
+                                            _load_source_file_to_session(
+                                                conn,
+                                                f"{name}/{nested_name}",
+                                                nested_zf.read(nested_name),
+                                                inventory,
+                                            )
+                            elif lower.endswith(SOURCE_DATA_EXTS):
+                                _load_source_file_to_session(conn, name, zf.read(name), inventory)
                         except Exception as e:
                             logger.error("Failed parsing %s: %s", name, e, exc_info=True)
             else:
                 try:
-                    if filename.endswith(('.xlsx', '.xlsm', '.xltx')):
-                        excel_file = pd.ExcelFile(io.BytesIO(buffer), engine='calamine')
-                        for sheet in excel_file.sheet_names:
-                            key = f"{file.filename}::{sheet}"
-                            df = pd.read_excel(excel_file, sheet_name=sheet, header=None)
-                            if not df.empty:
-                                raw_sql = safe_table_name("raw", key)
-                                data_sql = safe_table_name("data", key)
-                                df_to_sqlite(conn, raw_sql, df, commit=False)
-                                conn.execute(f"DROP TABLE IF EXISTS {quote_id(data_sql)}")
-                                conn.execute(f"CREATE TABLE {quote_id(data_sql)} AS SELECT * FROM {quote_id(raw_sql)}")
-                                register_table(conn, key, data_sql, commit=False)
-                                inventory.append({"table_key": key, "rows": len(df), "cols": len(df.columns)})
-                    elif filename.endswith('.csv'):
-                        key = f"{file.filename}::"
-                        df = pd.read_csv(io.BytesIO(buffer), header=None)
-                        if not df.empty:
-                            raw_sql = safe_table_name("raw", key)
-                            data_sql = safe_table_name("data", key)
-                            df_to_sqlite(conn, raw_sql, df, commit=False)
-                            conn.execute(f"DROP TABLE IF EXISTS {quote_id(data_sql)}")
-                            conn.execute(f"CREATE TABLE {quote_id(data_sql)} AS SELECT * FROM {quote_id(raw_sql)}")
-                            register_table(conn, key, data_sql, commit=False)
-                            inventory.append({"table_key": key, "rows": len(df), "cols": len(df.columns)})
+                    if filename.endswith(SOURCE_DATA_EXTS):
+                        _load_source_file_to_session(conn, file.filename, buffer, inventory)
                 except Exception as e:
                     logger.error("Failed parsing directly uploaded file %s: %s", file.filename, e, exc_info=True)
 

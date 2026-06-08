@@ -22,8 +22,8 @@ import pandas as pd
 
 from shared.ai_client import call_ai_json
 from shared.duckdb_compat import DuckDBConnection
+from services.pareto import compute_supplier_pareto, threshold_key
 from services.spend_quality_assessment.description_quality import (
-    DESCRIPTION_FIELD_KEYS,
     run_description_quality_analysis,
     _generate_categorization_recommendation,
     _sample_random_descriptions_from_top_vendors,
@@ -41,11 +41,10 @@ MONTH_NAMES = [
 
 PARETO_THRESHOLDS = [80, 85, 90, 95]
 
-# GPT-4o public rates as placeholder; TODO: swap to gpt-5.4 rates when provided
-GPT_INPUT_RATE_PER_TOKEN = 2.50 / 1_000_000   # $2.50 per 1M input tokens
-GPT_OUTPUT_RATE_PER_TOKEN = 10.00 / 1_000_000  # $10.00 per 1M output tokens
-AVG_CHARS_PER_TOKEN = 4  # standard OpenAI estimate
-AVG_OUTPUT_TOKENS_PER_ROW = 20  # estimated tokens per categorization label
+MAP_AI_COST_PER_ROW_BLOCK = 200
+MAP_AI_COST_ROW_BLOCK_SIZE = 5_000
+MAP_AI_COST_LOW_MULTIPLIER = 0.8
+MAP_AI_COST_HIGH_MULTIPLIER = 1.2
 ROW_COUNT_THRESHOLD_CREACTIVES = 400_000
 EXECUTIVE_SUMMARY_KEYS = [
     "timePeriod",
@@ -81,6 +80,28 @@ def _format_amount(value: float | int | None) -> str:
     if abs_val >= 1_000:
         return f"{sign}{abs_val / 1_000:.0f}K"
     return f"{round(val):,}"
+
+
+def _format_currency_whole(value: float | int | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"${int(round(float(value))):,}"
+
+
+def _map_ai_cost_base(unique_rows: int | float | None) -> float:
+    rows = max(float(unique_rows or 0), 0.0)
+    return MAP_AI_COST_PER_ROW_BLOCK * (rows / MAP_AI_COST_ROW_BLOCK_SIZE)
+
+
+def _map_ai_cost_range(base_cost: float | int | None) -> dict[str, Any]:
+    base = max(float(base_cost or 0), 0.0)
+    low = base * MAP_AI_COST_LOW_MULTIPLIER
+    high = base * MAP_AI_COST_HIGH_MULTIPLIER
+    return {
+        "low": round(low, 2),
+        "high": round(high, 2),
+        "text": f"{_format_currency_whole(low)} - {_format_currency_whole(high)}",
+    }
 
 
 def _month_index_to_label(month_index: int) -> str:
@@ -185,29 +206,7 @@ def _compute_pareto_analysis(
     conn: DuckDBConnection,
     available_columns: set[str],
 ) -> dict[str, Any]:
-    """Compute Pareto metrics at 80/85/90/95/99% spend thresholds.
-
-    Uses the same supplier-grouped approach as the Dashboard's compute_pareto:
-      1. Load rows into a DataFrame, coerce total_spend to numeric
-      2. Drop rows where supplier or total_spend is missing
-      3. Exclude negative/zero spend from the ranking
-      4. Group by supplier, sum spend per supplier
-      5. Sort descending, compute cumulative %
-      6. Walk suppliers to find the cutoff index for each threshold
-      7. For each threshold, go back to the raw rows to count transactions
-
-    Args:
-        conn: DuckDB session connection.
-        available_columns: Set of column names present in analysis_data.
-
-    Returns:
-        {
-          "thresholds": [80, 85, 90, 95, 99],
-          "metrics": { "80": {...}, "85": {...}, ... },
-          "feasible": True/False,
-          "totalDatasetSpend": float
-        }
-    """
+    """Compute Pareto metrics at 80/85/90/95% spend thresholds."""
     if "total_spend" not in available_columns:
         return {
             "thresholds": PARETO_THRESHOLDS,
@@ -217,102 +216,52 @@ def _compute_pareto_analysis(
             "totalDatasetSpend": 0,
         }
 
-    has_supplier = "supplier" in available_columns
-
-    # Determine which description columns are available for unique-transaction counting
-    desc_cols = [fk for fk in DESCRIPTION_FIELD_KEYS if fk in available_columns]
-
-    # --- Load raw data into a DataFrame (mirrors view_engine._load_analysis_df) ---
-    select_cols = ["total_spend"]
-    if has_supplier:
-        select_cols.append("supplier")
-    select_cols.extend(desc_cols)
-
-    quoted = ", ".join(_quote_id(c) for c in select_cols)
-    df = conn._conn.execute(f'SELECT {quoted} FROM "analysis_data"').df()
-
-    df["total_spend"] = pd.to_numeric(df["total_spend"], errors="coerce")
-
-    if has_supplier:
-        df["supplier"] = (
-            df["supplier"].astype(str)
-            .replace({"nan": None, "None": None, "": None})
-        )
-    else:
-        df["supplier"] = None
-
-    # Build best_description from the first non-empty description column per row
-    if desc_cols:
-        for dc in desc_cols:
-            df[dc] = df[dc].astype(str).replace({"nan": None, "None": None, "": None})
-        df["_best_desc"] = df[desc_cols].bfill(axis=1).iloc[:, 0].fillna("")
-    else:
-        df["_best_desc"] = ""
-
-    # --- Clean: drop rows with missing supplier or spend ---
-    work = df.dropna(subset=["supplier", "total_spend"]).copy()
-    work = work[work["supplier"].str.strip() != ""]
-
-    # Exclude negative/zero spend from Pareto ranking
-    positive = work[work["total_spend"] > 0].copy()
-
-    if positive.empty:
+    if "supplier" not in available_columns:
         return {
             "thresholds": PARETO_THRESHOLDS,
             "metrics": {},
             "feasible": False,
-            "message": "No positive spend data found after filtering.",
+            "message": "supplier not mapped.",
             "totalDatasetSpend": 0,
         }
 
-    # --- Group by supplier, sum spend ---
-    supplier_spend = (
-        positive.groupby("supplier")["total_spend"]
-        .sum()
-        .reset_index()
-        .sort_values("total_spend", ascending=False)
-        .reset_index(drop=True)
+    select_cols = ["total_spend", "supplier"]
+    if "description" in available_columns:
+        select_cols.append("description")
+
+    quoted = ", ".join(_quote_id(c) for c in select_cols)
+    df = conn._conn.execute(f'SELECT {quoted} FROM "analysis_data"').df()
+
+    pareto = compute_supplier_pareto(
+        df,
+        PARETO_THRESHOLDS,
+        description_col="description" if "description" in available_columns else None,
     )
-    grand_total = supplier_spend["total_spend"].sum()
-    supplier_spend["cum_pct"] = (
-        supplier_spend["total_spend"].cumsum() / max(grand_total, 1e-9) * 100
-    ).round(4)
 
-    # --- Walk thresholds ---
+    if not pareto["feasible"]:
+        return {
+            "thresholds": PARETO_THRESHOLDS,
+            "metrics": {},
+            "feasible": False,
+            "message": pareto["message"],
+            "totalDatasetSpend": round(float(pareto.get("totalSpend") or 0)),
+        }
+
     metrics: dict[str, dict[str, Any]] = {}
-
     for t in PARETO_THRESHOLDS:
-        # Find the first supplier index where cumulative % reaches the threshold
-        crossed = supplier_spend[supplier_spend["cum_pct"] >= t].index
-        if len(crossed) > 0:
-            cutoff_idx = crossed[0]
-        else:
-            cutoff_idx = len(supplier_spend) - 1
-
-        top_suppliers = supplier_spend.loc[:cutoff_idx]
-        top_names = set(top_suppliers["supplier"])
-        bucket_spend = top_suppliers["total_spend"].sum()
-
-        # Go back to the raw positive-spend rows for those suppliers
-        bucket_rows = positive[positive["supplier"].isin(top_names)]
-        txn_count = len(bucket_rows)
-        unique_txns = bucket_rows.apply(
-            lambda r: (r["supplier"] or "") + "|||" + (r["_best_desc"] or ""),
-            axis=1,
-        ).nunique()
-
+        cut = pareto["cuts"][threshold_key(t)]
         metrics[str(t)] = {
-            "totalSpend": round(bucket_spend),
-            "transactionCount": txn_count,
-            "uniqueTransactions": unique_txns,
-            "supplierCount": len(top_names),
+            "totalSpend": round(cut["totalSpend"]),
+            "transactionCount": cut["transactionCount"],
+            "uniqueTransactions": cut["uniqueTransactions"],
+            "supplierCount": cut["supplierCount"],
         }
 
     return {
         "thresholds": PARETO_THRESHOLDS,
         "metrics": metrics,
         "feasible": True,
-        "totalDatasetSpend": round(grand_total),
+        "totalDatasetSpend": round(float(pareto["totalSpend"])),
     }
 
 
@@ -562,7 +511,7 @@ def _top_80_vendor_cohort(
     conn: DuckDBConnection,
     available: set[str],
 ) -> list[str]:
-    """Return supplier names covering the top 80% of positive spend.
+    """Return supplier names covering the top 80% of signed net spend.
 
     Used as a single source of truth for both manual-validation pair counts
     and description-quality sampling so the two executive-summary points are
@@ -579,37 +528,13 @@ def _top_80_vendor_cohort(
     if "supplier" not in available or "total_spend" not in available:
         return []
 
-    rows = conn.execute(
-        """
-        SELECT
-            TRIM(CAST(supplier AS TEXT)) AS sup,
-            SUM(TRY_CAST(total_spend AS DOUBLE)) AS spend
-        FROM "analysis_data"
-        WHERE supplier IS NOT NULL
-          AND TRIM(CAST(supplier AS TEXT)) != ''
-          AND TRY_CAST(total_spend AS DOUBLE) IS NOT NULL
-        GROUP BY sup
-        ORDER BY spend DESC
-        """
-    ).fetchall()
-
-    if not rows:
+    df = conn._conn.execute(
+        'SELECT supplier, total_spend FROM "analysis_data"'
+    ).df()
+    pareto = compute_supplier_pareto(df, [80], description_col=None)
+    if not pareto["feasible"]:
         return []
-
-    grand_total = sum(float(r[1] or 0) for r in rows)
-    if grand_total <= 0:
-        return []
-
-    threshold = grand_total * 0.80
-    cumulative = 0.0
-    cohort: list[str] = []
-    for r in rows:
-        cumulative += float(r[1] or 0)
-        cohort.append(str(r[0]))
-        if cumulative >= threshold:
-            break
-
-    return cohort
+    return list(pareto["cuts"][threshold_key(80)]["suppliers"])
 
 
 def _compute_supplier_breakdown(
@@ -629,45 +554,36 @@ def _compute_supplier_breakdown(
     if "supplier" not in available or "total_spend" not in available:
         return {"feasible": False, "message": "supplier or total_spend not mapped."}
 
-    # Group by supplier, sum spend, rank descending
-    rows = conn.execute(
-        """
-        SELECT
-            TRIM(CAST(supplier AS TEXT)) AS sup,
-            SUM(TRY_CAST(total_spend AS DOUBLE)) AS spend
-        FROM "analysis_data"
-        WHERE supplier IS NOT NULL
-          AND TRIM(CAST(supplier AS TEXT)) != ''
-          AND TRY_CAST(total_spend AS DOUBLE) IS NOT NULL
-        GROUP BY sup
-        ORDER BY spend DESC
-        """
-    ).fetchall()
+    df = conn._conn.execute(
+        'SELECT supplier, total_spend FROM "analysis_data"'
+    ).df()
+    pareto = compute_supplier_pareto(df, [80], description_col=None)
+    supplier_table = pareto["supplierTable"]
 
-    if not rows:
+    if supplier_table.empty:
         return {"feasible": False, "message": "No valid supplier-spend data."}
 
-    total_suppliers = len(rows)
-    grand_total = sum(float(r[1] or 0) for r in rows)
-    if grand_total <= 0:
+    total_suppliers = int(pareto["totalSuppliers"])
+    grand_total = float(pareto["totalSpend"])
+    if not pareto["feasible"]:
         return {
             "totalSuppliers": total_suppliers,
             "suppliersTo80Pct": None,
             "top10": [],
             "duplicateNameFlags": 0,
             "feasible": False,
-            "message": "Net supplier spend is zero or negative.",
+            "message": pareto["message"],
         }
 
-    suppliers_to_80 = len(_top_80_vendor_cohort(conn, available))
+    suppliers_to_80 = int(pareto["cuts"][threshold_key(80)]["supplierCount"])
 
     # Top 10 suppliers
     top10 = []
-    for r in rows[:10]:
-        spend = float(r[1] or 0)
+    for _, r in supplier_table.head(10).iterrows():
+        spend = float(r["spend"] or 0)
         share = (spend / grand_total * 100) if grand_total > 0 else 0.0
         top10.append({
-            "supplier": str(r[0]),
+            "supplier": str(r["supplier"]),
             "spend": round(spend),
             "sharePct": round(share, 1),
         })
@@ -781,8 +697,21 @@ def _compute_categorization_effort(
     else:
         distinct_pairs = unique_count
 
+    pareto_cut_80: dict[str, Any] | None = None
+    if has_supplier and "total_spend" in available:
+        pareto_df = conn._conn.execute(
+            'SELECT supplier, total_spend, description FROM "analysis_data"'
+        ).df()
+        pareto_for_cat = compute_supplier_pareto(
+            pareto_df,
+            [80],
+            description_col="description",
+        )
+        if pareto_for_cat["feasible"]:
+            pareto_cut_80 = pareto_for_cat["cuts"][threshold_key(80)]
+
     # Top-80% vendor cohort for sampling and manual-validation count
-    cohort = _top_80_vendor_cohort(conn, available)
+    cohort = list(pareto_cut_80["suppliers"]) if pareto_cut_80 else []
 
     if cohort:
         random1000 = _sample_random_descriptions_from_top_vendors(
@@ -791,28 +720,15 @@ def _compute_categorization_effort(
     else:
         random1000 = _sample_random_unique_descriptions_all(conn, "description", 1000)
 
-    # Distinct (vendor, description) pairs in the top-80% vendor cohort
-    if cohort:
-        placeholders = ", ".join(["?"] * len(cohort))
-        vp_row = conn.execute(
-            f"SELECT COUNT(DISTINCT ("
-            f"  TRIM(CAST(supplier AS TEXT)) || '|||' || TRIM(CAST({qd} AS TEXT))"
-            f")) FROM \"analysis_data\" "
-            f"WHERE {nn_d} AND TRIM(CAST(supplier AS TEXT)) IN ({placeholders})",
-            cohort,
-        ).fetchone()
-        top_vendor_pairs_count = int(vp_row[0] or 0)
-    else:
-        top_vendor_pairs_count = distinct_pairs
-
-    # Cost calculator
-    avg_chars_per_pair = avg_char_length if avg_char_length > 0 else 1.0
-    estimated_input_tokens = distinct_pairs * (avg_chars_per_pair / AVG_CHARS_PER_TOKEN)
-    estimated_output_tokens = distinct_pairs * AVG_OUTPUT_TOKENS_PER_ROW
-    map_ai_cost = (
-        estimated_input_tokens * GPT_INPUT_RATE_PER_TOKEN +
-        estimated_output_tokens * GPT_OUTPUT_RATE_PER_TOKEN
+    # Distinct (vendor, description) pairs in the top-80% vendor cohort.
+    top_vendor_pairs_count = (
+        int(pareto_cut_80["uniqueTransactions"]) if pareto_cut_80 else distinct_pairs
     )
+
+    # MapAI cost uses full-dataset unique vendor-description pairs, not the
+    # top-80% manual-validation subset.
+    map_ai_cost = _map_ai_cost_base(distinct_pairs)
+    map_ai_cost_range = _map_ai_cost_range(map_ai_cost)
 
     forced_method = "Creactives" if row_count > ROW_COUNT_THRESHOLD_CREACTIVES else None
 
@@ -828,6 +744,7 @@ def _compute_categorization_effort(
             "topVendorPairsCount": top_vendor_pairs_count,
         },
         "mapAICost": round(map_ai_cost, 2),
+        "mapAICostRange": map_ai_cost_range,
         "forcedMethod": forced_method,
         "random1000Descriptions": random1000,
         "feasible": True,
@@ -1054,7 +971,8 @@ def _categorization_method_sentence(cat: dict[str, Any]) -> str:
         return "Categorization method is unavailable because description data is not mapped."
 
     method = cat.get("recommendedMethod", "MapAI")
-    cost_text = cat.get("mapAICostText", "N/A")
+    cost_range = cat.get("mapAICostRange") or {}
+    cost_text = cost_range.get("text") or cat.get("mapAICostText", "N/A")
     n = cat.get("manualValidationCount")
 
     sentence = f"Recommended method is **{method}**, with an estimated cost of **{cost_text}**"
@@ -1120,6 +1038,8 @@ def _build_executive_summary_payload(sql_result: dict[str, Any]) -> dict[str, An
     suppliers = sql_result.get("supplierBreakdown") or {}
     cat = sql_result.get("categorizationEffort") or {}
     cat_metrics = cat.get("metrics") or {}
+    map_ai_cost = cat.get("mapAICost")
+    map_ai_cost_range = cat.get("mapAICostRange") or _map_ai_cost_range(map_ai_cost)
 
     return {
         "timePeriod": {
@@ -1158,7 +1078,9 @@ def _build_executive_summary_payload(sql_result: dict[str, Any]) -> dict[str, An
         "categorizationMethod": {
             "available": bool(cat.get("feasible")),
             "recommendedMethod": cat.get("recommendedMethod"),
-            "mapAICostText": _format_amount(cat.get("mapAICost")),
+            "mapAICost": map_ai_cost,
+            "mapAICostText": map_ai_cost_range.get("text"),
+            "mapAICostRange": map_ai_cost_range,
             "manualValidationCount": cat_metrics.get("topVendorPairsCount"),
             "message": cat.get("message"),
         },

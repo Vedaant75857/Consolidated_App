@@ -30,7 +30,7 @@ from shared.utils import make_unique
 
 RAW_META_PREVIEW_ROWS = int(os.getenv("RAW_META_PREVIEW_ROWS", "20"))
 
-_EXCEL_EXTS = (".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm")
+_EXCEL_EXTS = (".xls", ".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm")
 
 _META_COLUMNS = ["FILE_NAME", "RECORD_ID"]
 

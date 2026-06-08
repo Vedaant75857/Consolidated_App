@@ -3,11 +3,14 @@ import json
 import logging
 import math
 import os
+import sys as _sys
+
+_sys.dont_write_bytecode = True
+os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
 from flask import Flask
 from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS
-import sys as _sys
 from dotenv import load_dotenv
 
 

@@ -1,28 +1,34 @@
 """
 Session-based DuckDB database management.
 
-Each user session gets its own on-disk .duckdb file in the .sessions/ directory.
+Each user session gets its own on-disk .duckdb file in a per-run temp directory.
 Connections are cached for reuse within the same process.
 """
 
 import os
 import re
-import sys
 import time
 import threading
 from collections import OrderedDict
 
 from .duckdb_compat import DuckDBConnection, duckdb_connect
+from .runtime_temp import (
+    cleanup_module_runtime_dir,
+    cleanup_stale_runtime_dirs,
+    sessions_dir_for,
+)
+
+_MODULE_NAME = "module2"
+_RUNTIME_MANAGED = "SESSION_DB_DIR" not in os.environ
 
 
 def _resolve_sessions_dir() -> str:
-    """Return the writable .sessions/ directory, aware of PyInstaller frozen mode."""
+    """Return the writable session DB directory for this process."""
     explicit = os.environ.get("SESSION_DB_DIR")
     if explicit:
         return explicit
-    if getattr(sys, "frozen", False):
-        return os.path.join(os.path.dirname(sys.executable), ".sessions")
-    return os.path.join(os.getcwd(), ".sessions")
+    cleanup_stale_runtime_dirs()
+    return sessions_dir_for(_MODULE_NAME)
 
 
 _DB_DIR = _resolve_sessions_dir()
@@ -187,7 +193,7 @@ def cleanup_stale_sessions(max_age_ms: int = 24 * 60 * 60 * 1000) -> int:
 
 
 def cleanup_all_sessions() -> int:
-    """Close every cached connection and delete all files in the sessions dir."""
+    """Close cached connections, delete session files, and remove runtime temp."""
     cleaned = 0
     with _db_lock:
         for sid, conn in list(_db_cache.items()):
@@ -210,6 +216,10 @@ def cleanup_all_sessions() -> int:
                 pass
     except OSError:
         pass
+
+    if _RUNTIME_MANAGED:
+        cleanup_module_runtime_dir(_MODULE_NAME)
+
     return cleaned
 
 

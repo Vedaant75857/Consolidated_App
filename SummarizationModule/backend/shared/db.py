@@ -1,18 +1,27 @@
 import json
 import os
-import sys
 import threading
 from collections import OrderedDict
 from typing import Any
 
 from shared.duckdb_compat import DuckDBConnection, duckdb_connect
+from shared.runtime_temp import (
+    cleanup_module_runtime_dir,
+    cleanup_stale_runtime_dirs,
+    sessions_dir_for,
+)
+
+_MODULE_NAME = "module3"
+_RUNTIME_MANAGED = "SESSION_DB_DIR" not in os.environ
 
 
 def _resolve_sessions_dir() -> str:
-    """Return a writable sessions directory, aware of PyInstaller frozen mode."""
-    if getattr(sys, "frozen", False):
-        return os.path.join(os.path.dirname(sys.executable), "sessions_module3")
-    return os.path.join(os.path.dirname(os.path.dirname(__file__)), "sessions")
+    """Return the writable session DB directory for this process."""
+    explicit = os.environ.get("SESSION_DB_DIR")
+    if explicit:
+        return explicit
+    cleanup_stale_runtime_dirs()
+    return sessions_dir_for(_MODULE_NAME)
 
 
 SESSIONS_DIR = _resolve_sessions_dir()
@@ -144,6 +153,8 @@ def get_all_meta_keys(conn: DuckDBConnection) -> list[str]:
 def delete_session(session_id: str):
     """Close the connection and delete all session files (DB + WAL)."""
     close_session_db(session_id)
+    with _session_locks_guard:
+        _session_locks.pop(session_id, None)
     path = db_path(session_id)
     for suffix in ("", ".wal"):
         try:
@@ -153,7 +164,7 @@ def delete_session(session_id: str):
 
 
 def cleanup_all_sessions() -> int:
-    """Close every cached connection and delete all files in the sessions dir."""
+    """Close cached connections, delete session files, and remove runtime temp."""
     cleaned = 0
     with _db_lock:
         for sid, conn in list(_db_cache.items()):
@@ -162,6 +173,8 @@ def cleanup_all_sessions() -> int:
             except Exception:
                 pass
         _db_cache.clear()
+    with _session_locks_guard:
+        _session_locks.clear()
 
     try:
         for f in os.listdir(SESSIONS_DIR):
@@ -175,4 +188,8 @@ def cleanup_all_sessions() -> int:
                 pass
     except OSError:
         pass
+
+    if _RUNTIME_MANAGED:
+        cleanup_module_runtime_dir(_MODULE_NAME)
+
     return cleaned

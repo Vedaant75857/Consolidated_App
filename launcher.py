@@ -16,10 +16,19 @@ import platform
 import shutil
 import socket
 import sys
+sys.dont_write_bytecode = True
+import tempfile
 import threading
 import time
 import urllib.request
+import uuid
 import webbrowser
+
+os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
+os.environ.setdefault(
+    "PROCIP_RUN_ID",
+    f"{int(time.time())}-{os.getpid()}-{uuid.uuid4().hex[:8]}",
+)
 
 from waitress import create_server
 
@@ -56,6 +65,75 @@ BASE = _base_path()
 def _resolve(*parts: str) -> str:
     """Join *parts* onto BASE and return an absolute path."""
     return os.path.normpath(os.path.join(BASE, *parts))
+
+
+def _runtime_root_candidates() -> list[str]:
+    roots: list[str] = []
+    explicit = os.environ.get("PROCIP_RUNTIME_ROOT")
+    if explicit:
+        roots.append(explicit)
+
+    public_root = os.environ.get("PUBLIC", r"C:\Users\Public")
+    roots.append(
+        os.path.join(
+            public_root,
+            "Documents",
+            "Wondershare",
+            "CreatorTemp",
+            "ProcIP",
+            "runtime",
+        )
+    )
+
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        roots.append(os.path.join(local_app_data, "ProcIP", "runtime"))
+
+    roots.append(os.path.join(tempfile.gettempdir(), "ProcIP", "runtime"))
+    return roots
+
+
+def _runtime_root() -> str:
+    for root in _runtime_root_candidates():
+        try:
+            os.makedirs(root, exist_ok=True)
+            return os.path.abspath(root)
+        except OSError:
+            continue
+
+    fallback = os.path.join(tempfile.gettempdir(), "ProcIP", "runtime")
+    os.makedirs(fallback, exist_ok=True)
+    return os.path.abspath(fallback)
+
+
+def _cleanup_stale_runtime_dirs(max_age_seconds: int = 24 * 60 * 60) -> int:
+    cutoff = time.time() - max_age_seconds
+    cleaned = 0
+    root = _runtime_root()
+
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return 0
+
+    for entry in entries:
+        try:
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+            if entry.stat(follow_symlinks=False).st_mtime >= cutoff:
+                continue
+            shutil.rmtree(entry.path, ignore_errors=True)
+            cleaned += 1
+        except OSError:
+            continue
+
+    try:
+        if os.path.isdir(root) and not os.listdir(root):
+            os.rmdir(root)
+    except OSError:
+        pass
+
+    return cleaned
 
 
 # ---------------------------------------------------------------------------
@@ -590,6 +668,10 @@ atexit.register(_cleanup)
 def _cleanup_stale_sessions():
     """Remove session directories from previous runs older than 24 hours."""
     cutoff = time.time() - 86400
+    cleaned_runtime_dirs = _cleanup_stale_runtime_dirs()
+    if cleaned_runtime_dirs:
+        log.info("Cleaned %d stale runtime dir(s).", cleaned_runtime_dirs)
+
     for backend_dir in [
         _resolve("DataConsolidationAppV7", "backend"),
         _resolve("ProcIP_Module2-main", "backend"),

@@ -21,7 +21,7 @@ import { motion } from "framer-motion";
 import JSZip from "jszip";
 import { SurfaceCard, PrimaryButton } from "../common/ui";
 
-const ACCEPTED_EXTENSIONS = [".csv", ".xlsx", ".xlsm", ".xltx", ".xltm", ".zip"];
+const ACCEPTED_EXTENSIONS = [".csv", ".xls", ".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm", ".zip"];
 
 function fileHasAcceptedExt(name: string) {
   const lower = name.toLowerCase();
@@ -570,7 +570,7 @@ export default function DataLoading({
                 type="file"
                 className="sr-only"
                 onChange={handleZipInputChange}
-                accept=".zip,.csv,.xlsx,.xlsm,.xltx,.xltm"
+                accept=".zip,.csv,.xls,.xlsx,.xlsm,.xlsb,.xltx,.xltm"
                 multiple
               />
               <input

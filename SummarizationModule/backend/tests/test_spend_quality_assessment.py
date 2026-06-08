@@ -12,11 +12,13 @@ from shared.duckdb_compat import duckdb_connect
 from services.spend_quality_assessment.data_quality import (
     _compute_column_fill_rate,
     _compute_categorization_effort,
+    _compute_pareto_analysis,
     _compute_spend_bifurcation,
     _compute_spend_breakdown,
     _compute_supplier_breakdown,
     run_executive_summary_ai,
 )
+from services.views.view_engine import compute_pareto
 
 
 class SpendQualityAssessmentTests(unittest.TestCase):
@@ -182,7 +184,8 @@ class SpendQualityAssessmentTests(unittest.TestCase):
                     "sampledCount": 4,
                     "topVendorPairsCount": 7,
                 },
-                "mapAICost": 1.25,
+                "mapAICost": 400,
+                "mapAICostRange": {"low": 320, "high": 480, "text": "$320 - $480"},
                 "forcedMethod": None,
                 "random1000Descriptions": ["a", "b", "c", "d"],
             },
@@ -223,6 +226,7 @@ class SpendQualityAssessmentTests(unittest.TestCase):
 
         cat_row = next(r for r in result["executiveSummary"]["rows"] if r["key"] == "categorizationMethod")
         self.assertIn("MapAI", cat_row["text"])
+        self.assertIn("$320 - $480", cat_row["text"])
         self.assertIn("7", cat_row["text"])
         self.assertIn("manual validation", cat_row["text"].lower())
 
@@ -254,6 +258,175 @@ class SpendQualityAssessmentTests(unittest.TestCase):
         sampled = result["random1000Descriptions"]
         self.assertEqual(set(sampled), {"Alpha part", "Beta line"})
         self.assertEqual(result["metrics"]["topVendorPairsCount"], 2)
+
+    def test_map_ai_cost_uses_full_dataset_unique_pairs_not_top_80_subset(self):
+        conn = duckdb_connect(":memory:")
+        conn.execute(
+            """
+            CREATE TABLE "analysis_data" AS
+            SELECT
+                1.0::DOUBLE AS total_spend,
+                'Vendor ' || i::VARCHAR AS supplier,
+                'Description ' || i::VARCHAR AS description
+            FROM range(10000) AS r(i)
+            """
+        )
+
+        result = _compute_categorization_effort(
+            conn,
+            {"total_spend", "supplier", "description"},
+        )
+        conn.close()
+
+        self.assertEqual(result["metrics"]["distinctPairs"], 10000)
+        self.assertEqual(result["metrics"]["topVendorPairsCount"], 8000)
+        self.assertEqual(result["mapAICost"], 400)
+        self.assertEqual(result["mapAICostRange"]["low"], 320)
+        self.assertEqual(result["mapAICostRange"]["high"], 480)
+        self.assertEqual(result["mapAICostRange"]["text"], "$320 - $480")
+
+    def test_map_ai_cost_prorates_non_round_unique_pair_counts(self):
+        conn = duckdb_connect(":memory:")
+        conn.execute(
+            """
+            CREATE TABLE "analysis_data" AS
+            SELECT
+                1.0::DOUBLE AS total_spend,
+                'Vendor ' || i::VARCHAR AS supplier,
+                'Description ' || i::VARCHAR AS description
+            FROM range(1234) AS r(i)
+            """
+        )
+
+        result = _compute_categorization_effort(
+            conn,
+            {"total_spend", "supplier", "description"},
+        )
+        conn.close()
+
+        self.assertEqual(result["metrics"]["distinctPairs"], 1234)
+        self.assertEqual(result["mapAICost"], 49.36)
+        self.assertEqual(result["mapAICostRange"]["low"], 39.49)
+        self.assertEqual(result["mapAICostRange"]["high"], 59.23)
+        self.assertEqual(result["mapAICostRange"]["text"], "$39 - $59")
+
+    def test_pareto_breach_vendor_and_unique_counts_match_excel_logic(self):
+        conn = duckdb_connect(":memory:")
+        conn.execute(
+            """
+            CREATE TABLE "analysis_data" (
+                total_spend DOUBLE,
+                supplier VARCHAR,
+                description VARCHAR
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO "analysis_data" VALUES
+                (500, ' A ', 'Part'),
+                (295, 'A', 'Part'),
+                (10, 'B', NULL),
+                (18, 'B', ''),
+                (25, 'C1', 'Tail 1'),
+                (25, 'C2', 'Tail 2'),
+                (25, 'C3', 'Tail 3'),
+                (25, 'C4', 'Tail 4'),
+                (25, 'C5', 'Tail 5'),
+                (25, 'C6', 'Tail 6'),
+                (25, 'C7', 'Tail 7'),
+                (2, 'C8', 'Tail 8')
+            """
+        )
+        cols = {"total_spend", "supplier", "description"}
+
+        spend_quality = _compute_pareto_analysis(conn, cols)
+        dashboard = compute_pareto(
+            conn._conn.execute('SELECT * FROM "analysis_data"').df(),
+            80,
+        )
+        categorization = _compute_categorization_effort(conn, cols)
+        conn.close()
+
+        metrics80 = spend_quality["metrics"]["80"]
+        self.assertEqual(spend_quality["totalDatasetSpend"], 1000)
+        self.assertEqual(metrics80["totalSpend"], 823)
+        self.assertEqual(metrics80["supplierCount"], 2)
+        self.assertEqual(metrics80["transactionCount"], 4)
+        self.assertEqual(metrics80["uniqueTransactions"], 2)
+
+        self.assertEqual(dashboard["suppliersInGroup"], metrics80["supplierCount"])
+        self.assertEqual(
+            [row["Supplier Name"] for row in dashboard["tableData"]],
+            ["A", "B"],
+        )
+        self.assertEqual(categorization["metrics"]["topVendorPairsCount"], 2)
+
+    def test_pareto_uses_signed_net_spend_including_credits(self):
+        conn = duckdb_connect(":memory:")
+        conn.execute(
+            """
+            CREATE TABLE "analysis_data" (
+                total_spend DOUBLE,
+                supplier VARCHAR,
+                description VARCHAR
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO "analysis_data" VALUES
+                (900, 'A', 'Hardware'),
+                (100, 'B', 'Services'),
+                (-100, 'C', 'Credit')
+            """
+        )
+        cols = {"total_spend", "supplier", "description"}
+
+        spend_quality = _compute_pareto_analysis(conn, cols)
+        dashboard = compute_pareto(
+            conn._conn.execute('SELECT * FROM "analysis_data"').df(),
+            95,
+        )
+        conn.close()
+
+        self.assertTrue(spend_quality["feasible"])
+        self.assertEqual(spend_quality["totalDatasetSpend"], 900)
+        self.assertEqual(spend_quality["metrics"]["95"]["supplierCount"], 1)
+        self.assertEqual(spend_quality["metrics"]["95"]["totalSpend"], 900)
+        self.assertEqual(dashboard["suppliersInGroup"], 1)
+
+    def test_pareto_is_infeasible_when_signed_net_spend_is_not_positive(self):
+        conn = duckdb_connect(":memory:")
+        conn.execute(
+            """
+            CREATE TABLE "analysis_data" (
+                total_spend DOUBLE,
+                supplier VARCHAR,
+                description VARCHAR
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO "analysis_data" VALUES
+                (100, 'A', 'Charge'),
+                (-100, 'B', 'Credit')
+            """
+        )
+        cols = {"total_spend", "supplier", "description"}
+
+        spend_quality = _compute_pareto_analysis(conn, cols)
+        dashboard = compute_pareto(
+            conn._conn.execute('SELECT * FROM "analysis_data"').df(),
+            80,
+        )
+        conn.close()
+
+        self.assertFalse(spend_quality["feasible"])
+        self.assertIn("zero or negative", spend_quality["message"])
+        self.assertFalse(dashboard["feasible"])
+        self.assertIn("zero or negative", dashboard["message"])
 
 
 if __name__ == "__main__":

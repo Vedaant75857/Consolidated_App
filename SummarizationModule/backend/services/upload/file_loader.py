@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 PREVIEW_POOL = 1000
+_EXCEL_EXTS = (".xls", ".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm")
 
 
 def pick_best_rows(rows: list[dict], limit: int) -> list[dict]:
@@ -207,6 +208,42 @@ def _build_table_key(zip_path: str, sheet_name: str | None) -> str:
     return f"{name}::"
 
 
+def _load_source_file(
+    conn: DuckDBConnection,
+    path: str,
+    raw: bytes,
+    table_keys: list[str],
+) -> None:
+    """Parse and register one supported source file."""
+    basename = os.path.basename(path)
+    ext = os.path.splitext(basename)[1].lower()
+
+    if ext == ".csv":
+        df, headers = _parse_csv_bytes(raw, basename)
+        if df is None or not headers:
+            return
+        table_key = _build_table_key(path, None)
+        safe = _safe_sql_name(os.path.splitext(basename)[0])
+        data_tbl = f"data__{safe}"
+        raw_tbl = f"raw__{safe}"
+        _store_raw_table(conn, raw_tbl, df)
+        _store_data_table_from_raw(conn, data_tbl, raw_tbl, headers)
+        _register_table(conn, table_key, data_tbl, raw_tbl)
+        table_keys.append(table_key)
+
+    elif ext in _EXCEL_EXTS:
+        sheets = _parse_excel_bytes(raw, basename)
+        for sheet_name, (df, headers) in sheets.items():
+            table_key = _build_table_key(path, sheet_name)
+            safe = _safe_sql_name(f"{os.path.splitext(basename)[0]}__{sheet_name}")
+            data_tbl = f"data__{safe}"
+            raw_tbl = f"raw__{safe}"
+            _store_raw_table(conn, raw_tbl, df)
+            _store_data_table_from_raw(conn, data_tbl, raw_tbl, headers)
+            _register_table(conn, table_key, data_tbl, raw_tbl)
+            table_keys.append(table_key)
+
+
 # ──────────────────────────────────────────────
 # Load ZIP / single file
 # ──────────────────────────────────────────────
@@ -220,40 +257,45 @@ def load_zip_to_session(
     table_keys: list[str] = []
 
     with zipfile.ZipFile(io.BytesIO(file_data)) as zf:
-        for entry in zf.namelist():
-            if entry.startswith("__MACOSX") or entry.startswith("."):
+        for entry in zf.infolist():
+            if entry.is_dir():
                 continue
-            basename = os.path.basename(entry)
+            name = entry.filename
+            if name.startswith("__MACOSX") or name.startswith("."):
+                continue
+            basename = os.path.basename(name)
             if not basename:
                 continue
             ext = os.path.splitext(basename)[1].lower()
 
             try:
-                raw = zf.read(entry)
-                if ext == ".csv":
-                    df, headers = _parse_csv_bytes(raw, basename)
-                    if df is None or not headers:
+                raw = zf.read(name)
+                if ext == ".zip":
+                    with zipfile.ZipFile(io.BytesIO(raw)) as nested_zf:
+                        for nested_entry in nested_zf.infolist():
+                            if nested_entry.is_dir():
+                                continue
+                            nested_name = nested_entry.filename
+                            if nested_name.startswith("__MACOSX") or nested_name.startswith("."):
+                                continue
+                            nested_basename = os.path.basename(nested_name)
+                            if not nested_basename:
+                                continue
+                            nested_ext = os.path.splitext(nested_basename)[1].lower()
+                            if nested_ext == ".zip":
+                                continue
+                            full_path = f"{name}/{nested_name}"
+                            try:
+                                _load_source_file(
+                                    conn,
+                                    full_path,
+                                    nested_zf.read(nested_name),
+                                    table_keys,
+                                )
+                            except Exception as exc:
+                                warnings.append({"file": nested_basename, "message": str(exc)})
                         continue
-                    table_key = _build_table_key(entry, None)
-                    safe = _safe_sql_name(os.path.splitext(basename)[0])
-                    data_tbl = f"data__{safe}"
-                    raw_tbl = f"raw__{safe}"
-                    _store_raw_table(conn, raw_tbl, df)
-                    _store_data_table_from_raw(conn, data_tbl, raw_tbl, headers)
-                    _register_table(conn, table_key, data_tbl, raw_tbl)
-                    table_keys.append(table_key)
-
-                elif ext in (".xlsx", ".xlsm", ".xltx", ".xltm"):
-                    sheets = _parse_excel_bytes(raw, basename)
-                    for sheet_name, (df, headers) in sheets.items():
-                        table_key = _build_table_key(entry, sheet_name)
-                        safe = _safe_sql_name(f"{os.path.splitext(basename)[0]}__{sheet_name}")
-                        data_tbl = f"data__{safe}"
-                        raw_tbl = f"raw__{safe}"
-                        _store_raw_table(conn, raw_tbl, df)
-                        _store_data_table_from_raw(conn, data_tbl, raw_tbl, headers)
-                        _register_table(conn, table_key, data_tbl, raw_tbl)
-                        table_keys.append(table_key)
+                _load_source_file(conn, name, raw, table_keys)
             except Exception as exc:
                 warnings.append({"file": basename, "message": str(exc)})
 
@@ -283,17 +325,8 @@ def load_single_file(
                 _register_table(conn, table_key, data_tbl, raw_tbl)
                 table_keys.append(table_key)
 
-        elif ext in (".xlsx", ".xlsm", ".xltx", ".xltm"):
-            sheets = _parse_excel_bytes(file_data, filename)
-            for sheet_name, (df, headers) in sheets.items():
-                table_key = _build_table_key(filename, sheet_name)
-                safe = _safe_sql_name(f"{os.path.splitext(filename)[0]}__{sheet_name}")
-                data_tbl = f"data__{safe}"
-                raw_tbl = f"raw__{safe}"
-                _store_raw_table(conn, raw_tbl, df)
-                _store_data_table_from_raw(conn, data_tbl, raw_tbl, headers)
-                _register_table(conn, table_key, data_tbl, raw_tbl)
-                table_keys.append(table_key)
+        elif ext in _EXCEL_EXTS:
+            _load_source_file(conn, filename, file_data, table_keys)
     except Exception as exc:
         warnings.append({"file": filename, "message": str(exc)})
 

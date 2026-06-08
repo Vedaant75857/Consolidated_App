@@ -60,13 +60,15 @@
     "GROSS AMOUNT",
     "INVOICEVALUEINLOCALCURRENCY",
     "UNIFIEDCURRENCYVALUE",
-    "VALUE IN OBJ. CRCY"
+    "VALUE IN OBJ. CRCY",
+    "COMPANY_CODE"
   ],
   "Vendor Code": [
     "FORNITORE",
     "VENDOR",
     "VENDOR MAPPING ID",
-    "VENDOR_ACCT_NO"
+    "VENDOR_ACCT_NO",
+    "VENDOR_1"
   ],
   "Business Unit": [
     "PROFIT CENTER",
@@ -105,7 +107,8 @@
     "UNIFIEDCURRENCY",
     "LOCAL CURRENCY CODE:1",
     "TOTAL AMOUNT PAID IN LOCAL CURRENCY:1",
-    "OBJECT CURRENCY"
+    "OBJECT CURRENCY",
+    "DOCUMENT_NUMBER"
   ],
   "Fiscal Year": [
     "YEAR/MONTH"
@@ -195,7 +198,8 @@
     "COMMODITYNAME",
     "COMMODITYTYPE",
     "COMMODITY ROLL UP",
-    "MATERIALGROUPNAME"
+    "MATERIALGROUPNAME",
+    "MATERIAL GROUP (TEXT)"
   ],
   "PO Manufacturer part number": [
     "REVISIONNUMBER"
@@ -257,16 +261,20 @@
     "PURCHASE ORDER TEXT"
   ],
   "Spend Classification Level 1": [
-    "CATEGORY1"
+    "CATEGORY1",
+    "SUPPLIER_NAME"
   ],
   "Spend Classification Level 2": [
-    "CATEGORY2"
+    "CATEGORY2",
+    "SUPPLIER_ID"
   ],
   "Spend Classification Level 3": [
-    "CATEGORY3"
+    "CATEGORY3",
+    "VENDOR"
   ],
   "Spend Classification Level 4": [
-    "CATEGORY4"
+    "CATEGORY4",
+    "COMPANY_NAME"
   ],
   "Cost Center Description": [
     "COSTCENTERDESCRIPTION",
@@ -274,7 +282,8 @@
     "CO OBJECT NAME"
   ],
   "PO Material Description": [
-    "MATERIAL"
+    "MATERIAL",
+    "MATERIAL (TEXT)"
   ],
   "Plant Code": [
     "COUNTRY CODE"
@@ -287,5 +296,11 @@
   ],
   "Procurement Contract Owner": [
     "NAME"
+  ],
+  "Price per UOM": [
+    "PURCHASE_ORDER_ITEM"
+  ],
+  "PO Line Item Quantity UOM": [
+    "ORDER PRICE UNIT"
   ]
 }

@@ -7,7 +7,8 @@ import io
 import pandas as pd
 import pytest
 
-from data_loading.file_loader import _load_excel_sheet
+from data_loading.file_loader import _EXCEL_EXTS, _load_excel_sheet
+from data_loading.service import infer_file_type
 from shared.db import duckdb_connect, quote_id, safe_table_name
 
 
@@ -68,3 +69,11 @@ def test_excel_sheet_loads_mixed_date_and_label_text(memory_conn):
     values = [r["d"] for r in rows]
     assert values[0] == "2025-01-15"
     assert values[1] == "Invoice date"
+
+
+def test_source_excel_extensions_include_legacy_and_binary_formats():
+    assert ".xls" in _EXCEL_EXTS
+    assert ".xlsb" in _EXCEL_EXTS
+    assert ".xltm" in _EXCEL_EXTS
+    assert infer_file_type("legacy.xls::Sheet1") == "excel"
+    assert infer_file_type("binary.xlsb::Sheet1") == "excel"

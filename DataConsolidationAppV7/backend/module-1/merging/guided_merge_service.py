@@ -43,7 +43,7 @@ from merging.column_metadata import (
 )
 
 
-_KNOWN_EXTS = {".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm", ".csv", ".zip"}
+_KNOWN_EXTS = {".xls", ".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm", ".csv", ".zip"}
 
 
 def _strip_file_ext(name: str) -> str:

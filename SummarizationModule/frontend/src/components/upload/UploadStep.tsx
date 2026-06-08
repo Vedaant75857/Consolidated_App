@@ -12,7 +12,9 @@ interface AccumulatedFile {
   file: File;
 }
 
-const ACCEPT = ".csv,.xlsx,.xlsm,.xltx,.xltm,.zip";
+const ACCEPT = ".csv,.xls,.xlsx,.xlsm,.xlsb,.xltx,.xltm,.zip";
+const DATA_EXTENSIONS = ["csv", "xls", "xlsx", "xlsm", "xlsb", "xltx", "xltm", "zip"];
+const FILE_EXTENSIONS = DATA_EXTENSIONS.filter((ext) => ext !== "zip");
 
 async function buildZipFromFiles(files: AccumulatedFile[]): Promise<File> {
   const zip = new JSZip();
@@ -42,7 +44,7 @@ export default function UploadStep({ onUpload, loading }: Props) {
           for (const [path, entry] of Object.entries(zip.files)) {
             if (entry.dir || path.startsWith("__MACOSX") || path.startsWith(".")) continue;
             const innerExt = path.split(".").pop()?.toLowerCase() || "";
-            if (["csv", "xlsx", "xlsm", "xltx", "xltm"].includes(innerExt)) {
+            if (DATA_EXTENSIONS.includes(innerExt)) {
               const blob = await entry.async("blob");
               const innerFile = new File([blob], path.split("/").pop() || path);
               newFiles.push({ path, file: innerFile });
@@ -51,7 +53,7 @@ export default function UploadStep({ onUpload, loading }: Props) {
         } catch {
           setError("Failed to read ZIP file");
         }
-      } else if (["csv", "xlsx", "xlsm", "xltx", "xltm"].includes(ext)) {
+      } else if (FILE_EXTENSIONS.includes(ext)) {
         newFiles.push({ path: f.name, file: f });
       }
     }

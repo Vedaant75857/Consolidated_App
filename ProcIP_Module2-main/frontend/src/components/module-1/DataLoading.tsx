@@ -4,7 +4,7 @@ import { motion } from "motion/react";
 import JSZip from "jszip";
 import { SurfaceCard, PrimaryButton } from "../common/ui";
 
-const ACCEPTED_EXTENSIONS = [".csv", ".xlsx", ".xlsm", ".xltx", ".xltm", ".zip"];
+const ACCEPTED_EXTENSIONS = [".csv", ".xls", ".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm", ".zip"];
 
 function fileHasAcceptedExt(name: string) {
   const lower = name.toLowerCase();
@@ -198,7 +198,7 @@ export default function DataLoading({
     <SurfaceCard title="Upload Data" subtitle="Upload a ZIP archive, folder, or Excel sheet to begin." icon={Upload}>
       <div className="space-y-8">
         <div className="space-y-4">
-          <input ref={zipInputRef} type="file" className="sr-only" onChange={handleZipInputChange} accept=".zip,.csv,.xlsx,.xlsm,.xltx,.xltm" multiple />
+          <input ref={zipInputRef} type="file" className="sr-only" onChange={handleZipInputChange} accept=".zip,.csv,.xls,.xlsx,.xlsm,.xlsb,.xltx,.xltm" multiple />
           <input ref={folderInputRef} type="file" className="sr-only" onChange={handleFolderInputChange} {...({ webkitdirectory: "", directory: "" } as any)} />
           
           <div

@@ -5,7 +5,7 @@ import JSZip from "jszip";
 import { SurfaceCard, EmptyState, PrimaryButton, SecondaryButton, itemVariants } from "../common/ui";
 import VirtualPreviewTable from "./VirtualPreviewTable";
 
-const ACCEPTED_EXTENSIONS = [".csv", ".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm", ".zip"];
+const ACCEPTED_EXTENSIONS = [".csv", ".xls", ".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm", ".zip"];
 
 function fileHasAcceptedExt(name: string) {
   const lower = name.toLowerCase();
@@ -606,7 +606,7 @@ export default function DataLoading({
                 type="file"
                 className="sr-only"
                 onChange={handleZipInputChange}
-                accept=".zip,.csv,.xlsx,.xlsm,.xlsb,.xltx,.xltm"
+                accept=".zip,.csv,.xls,.xlsx,.xlsm,.xlsb,.xltx,.xltm"
                 multiple
               />
               <input

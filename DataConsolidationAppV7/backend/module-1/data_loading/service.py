@@ -68,7 +68,7 @@ def infer_file_type(table_key: str) -> str:
     path = table_key.split("::")[0].lower()
     if path.endswith(".csv"):
         return "csv"
-    if any(path.endswith(ext) for ext in (".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm")):
+    if any(path.endswith(ext) for ext in (".xls", ".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm")):
         return "excel"
     return "unknown"
 

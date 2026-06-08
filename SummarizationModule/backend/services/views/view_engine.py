@@ -4,6 +4,7 @@ from typing import Any
 
 import pandas as pd
 
+from services.pareto import compute_supplier_pareto, threshold_key
 from shared.duckdb_compat import DuckDBConnection
 from shared.formatting import format_spend, format_pct
 
@@ -225,28 +226,42 @@ def compute_supplier_ranking(df: pd.DataFrame, top_n: int = 20) -> dict[str, Any
 
 
 def compute_pareto(df: pd.DataFrame, threshold: float = 80.0) -> dict[str, Any]:
-    work = df.dropna(subset=["supplier", "total_spend"]).copy()
-    work = work[work["supplier"].str.strip() != ""]
-    excluded = len(df) - len(work)
-
-    supplier = (
-        work.groupby("supplier")["total_spend"]
-        .sum()
-        .reset_index()
-        .rename(columns={"supplier": "Supplier Name", "total_spend": "Total Spend (USD)"})
-        .sort_values("Total Spend (USD)", ascending=False)
-        .reset_index(drop=True)
+    result = compute_supplier_pareto(
+        df,
+        [threshold],
+        description_col="description" if "description" in df.columns else None,
     )
-    total = supplier["Total Spend (USD)"].sum()
-    supplier["% of Total"] = (supplier["Total Spend (USD)"] / max(total, 1e-9) * 100).round(2)
-    supplier["Cumulative %"] = supplier["% of Total"].cumsum().round(2)
-    supplier.insert(0, "Rank", range(1, len(supplier) + 1))
 
-    cutoff_idx = supplier[supplier["Cumulative %"] >= threshold].index
-    if len(cutoff_idx) > 0:
-        pareto = supplier.loc[: cutoff_idx[0]].copy()
-    else:
-        pareto = supplier.copy()
+    if not result["feasible"]:
+        return {
+            "tableData": [],
+            "chartData": {
+                "labels": [],
+                "spendValues": [],
+                "cumulativePercent": [],
+            },
+            "excludedRows": result["excludedRows"],
+            "suppliersInGroup": 0,
+            "totalSuppliers": result["totalSuppliers"],
+            "threshold": threshold,
+            "feasible": False,
+            "message": result["message"],
+        }
+
+    cut = result["cuts"][threshold_key(threshold)]
+    supplier = result["supplierTable"]
+    pareto = supplier.iloc[: cut["cutoffIndex"] + 1].copy()
+    pareto = pareto.rename(
+        columns={
+            "rank": "Rank",
+            "supplier": "Supplier Name",
+            "spend": "Total Spend (USD)",
+            "percentOfTotal": "% of Total",
+            "cumulativePercent": "Cumulative %",
+        }
+    )[["Rank", "Supplier Name", "Total Spend (USD)", "% of Total", "Cumulative %"]]
+    pareto["% of Total"] = pareto["% of Total"].round(2)
+    pareto["Cumulative %"] = pareto["Cumulative %"].round(2)
 
     return {
         "tableData": _to_records(pareto),
@@ -255,10 +270,11 @@ def compute_pareto(df: pd.DataFrame, threshold: float = 80.0) -> dict[str, Any]:
             "spendValues": _safe_list(pareto["Total Spend (USD)"].tolist()),
             "cumulativePercent": _safe_list(pareto["Cumulative %"].tolist()),
         },
-        "excludedRows": excluded,
-        "suppliersInGroup": len(pareto),
-        "totalSuppliers": len(supplier),
+        "excludedRows": result["excludedRows"],
+        "suppliersInGroup": cut["supplierCount"],
+        "totalSuppliers": result["totalSuppliers"],
         "threshold": threshold,
+        "feasible": True,
     }
 
 
