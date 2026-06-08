@@ -157,7 +157,8 @@ A complete list of every Python function in the app, organised by module and ste
 |----------|------|--------------|
 | `recommend_base` | `routes/merging_routes.py` | Receives the request to recommend which table should be the "base" for merging and returns the AI's suggestion. |
 | `common_columns` | `routes/merging_routes.py` | Returns a list of columns that appear in both the base and source tables, so the user can pick join keys. |
-| `simulate` | `routes/merging_routes.py` | Runs a trial join without saving anything — returns match rates and warnings so the user can decide. |
+| `simulate` | `routes/merging_routes.py` | Runs a trial join without saving anything — returns match rates, key cardinality, and warnings so the user can decide. |
+| `suggest_keys` | `routes/merging_routes.py` | Calls the AI to suggest join key pairs between selected tables. Returns ranked suggestions with confidence levels and reasoning. |
 | `execute` | `routes/merging_routes.py` | Runs the actual merge and streams progress updates to the browser in real time. |
 | `finalize` | `routes/merging_routes.py` | Wraps up the merge — saves final metadata and marks the merge as complete. |
 | `skip` | `routes/merging_routes.py` | Records that the user chose to skip merging for this group. |
@@ -183,7 +184,8 @@ A complete list of every Python function in the app, organised by module and ste
 | `classify_single_column` | `merging/guided_merge_service.py` | Uses rules to classify what kind of data a column holds (identifier, category, amount, date, etc.). |
 | `classify_all_columns` | `merging/guided_merge_service.py` | Runs the column classifier on every column in a table at once. |
 | `classify_columns` | `merging/guided_merge_service.py` | Classifies columns using rules first, then optionally asks the AI for harder cases. |
-| `simulate_join` | `merging/guided_merge_service.py` | Runs the join in simulation mode — calculates match rates, duplicate risks, and unmatched rows without saving. |
+| `simulate_join` | `merging/guided_merge_service.py` | Runs the join in simulation mode — calculates match rates, duplicate risks, unmatched rows, and key cardinality (1:1, 1:M, M:1, M:M) without saving. |
+| `suggest_join_keys` | `merging/guided_merge_service.py` | Uses AI to suggest the best join key pairs between two tables. Analyzes column names, sample values, and match rates to recommend single or composite keys with confidence scores and reasoning. |
 | `execute_merge` | `merging/guided_merge_service.py` | Runs the actual database join, producing the merged result table. |
 | `generate_validation_report` | `merging/guided_merge_service.py` | Creates a quality report after merging, showing match rates and potential issues. |
 | `finalize_merge` | `merging/guided_merge_service.py` | Saves the final merged table, registers it in the session, and updates all metadata. |

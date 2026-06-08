@@ -35,6 +35,7 @@ from shared.db.stats_ops import column_distinct_values
 from merging.ai.prompts import (
     SYSTEM_PROMPT_BASE_RECOMMENDATION,
     SYSTEM_PROMPT_COLUMN_CLASSIFICATION,
+    SYSTEM_PROMPT_SUGGEST_JOIN_KEYS,
 )
 from merging.column_metadata import (
     COLUMN_METADATA,
@@ -477,12 +478,15 @@ def simulate_join(
     conn.execute(f"CREATE INDEX _idx_sim_src ON _sim_src ({src_idx})")
 
     try:
-        # CTE runs against slim indexed tables
+        # CTE runs against slim indexed tables with cardinality analysis
         row = conn.execute(f"""
             WITH bk AS (SELECT {base_key} AS k FROM _sim_base),
                  sk AS (SELECT {source_key} AS k FROM _sim_src),
                  sk_agg AS (
                      SELECT k, COUNT(*) AS c FROM sk GROUP BY k
+                 ),
+                 bk_agg AS (
+                     SELECT k, COUNT(*) AS c FROM bk GROUP BY k
                  ),
                  dk AS (SELECT DISTINCT k FROM bk),
                  ds AS (SELECT DISTINCT k FROM sk),
@@ -491,17 +495,29 @@ def simulate_join(
                      SELECT COUNT(*) AS cnt FROM (SELECT k FROM ds EXCEPT SELECT k FROM dk)
                  ),
                  dup_src AS (SELECT COUNT(*) AS cnt FROM sk_agg WHERE c > 1),
+                 dup_base AS (SELECT COUNT(*) AS cnt FROM bk_agg WHERE c > 1),
                  joined AS (
                      SELECT COUNT(*) AS cnt FROM bk
                      INNER JOIN sk_agg ON bk.k = sk_agg.k
-                 )
+                 ),
+                 -- Cardinality analysis: max rows per key
+                 base_max_per_key AS (SELECT MAX(c) AS max_val FROM bk_agg),
+                 source_max_per_key AS (SELECT MAX(c) AS max_val FROM sk_agg),
+                 -- Check if keys are unique (max = 1 means unique)
+                 base_unique AS (SELECT CASE WHEN (SELECT max_val FROM base_max_per_key) = 1 THEN 1 ELSE 0 END),
+                 source_unique AS (SELECT CASE WHEN (SELECT max_val FROM source_max_per_key) = 1 THEN 1 ELSE 0 END)
             SELECT
                 (SELECT COUNT(*) FROM bk) AS base_rows,
                 (SELECT COUNT(*) FROM sk) AS source_rows,
                 (SELECT cnt FROM matched) AS matched_base,
                 (SELECT cnt FROM unmatched_src) AS unmatched_source,
                 (SELECT cnt FROM dup_src) AS dup_source,
-                (SELECT cnt FROM joined) AS joined_rows
+                (SELECT cnt FROM dup_base) AS dup_base,
+                (SELECT cnt FROM joined) AS joined_rows,
+                (SELECT max_val FROM base_max_per_key) AS max_base_rows_per_key,
+                (SELECT max_val FROM source_max_per_key) AS max_source_rows_per_key,
+                (SELECT * FROM base_unique) AS base_key_unique,
+                (SELECT * FROM source_unique) AS source_key_unique
         """).fetchone()
     finally:
         conn.execute("DROP TABLE IF EXISTS _sim_base")
@@ -513,15 +529,34 @@ def simulate_join(
     match_rate = matched_base / base_rows if base_rows > 0 else 0
     explosion = row["joined_rows"] / base_rows if base_rows > 0 else 1.0
 
+    # Determine cardinality (relationship type between base and source keys)
+    base_key_unique = bool(row["base_key_unique"])
+    source_key_unique = bool(row["source_key_unique"])
+
+    if base_key_unique and source_key_unique:
+        cardinality = "1:1"
+    elif base_key_unique and not source_key_unique:
+        cardinality = "1:M"
+    elif not base_key_unique and source_key_unique:
+        cardinality = "M:1"
+    else:
+        cardinality = "M:M"
+
     return {
         "match_rate": round(match_rate * 100, 1),
         "row_explosion_factor": round(explosion, 2),
         "unmatched_base_count": base_rows - matched_base,
         "unmatched_source_count": row["unmatched_source"],
         "duplicate_source_keys": row["dup_source"],
+        "duplicate_base_keys": row["dup_base"],
         "estimated_null_rate": round((1.0 - match_rate) * 100, 1),
         "base_rows": base_rows,
         "source_rows": source_rows,
+        "key_cardinality": cardinality,
+        "base_key_unique": base_key_unique,
+        "source_key_unique": source_key_unique,
+        "max_base_rows_per_key": row["max_base_rows_per_key"],
+        "max_source_rows_per_key": row["max_source_rows_per_key"],
     }
 
 
@@ -1108,3 +1143,157 @@ def delete_merge_output(
         "merge_history": merge_history,
         "groupSchemaTableRows": new_schema,
     }
+
+
+def suggest_join_keys(
+    conn: DuckDBConnection,
+    base_sql: str,
+    source_sql: str,
+    api_key: str | None,
+) -> dict[str, Any]:
+    """Generate AI-powered join key suggestions for merging two tables.
+
+    Collects column metadata, sample values, and match rates from both tables,
+    then uses AI to suggest the best join key pairs (including composite keys).
+
+    Args:
+        conn: Database connection
+        base_sql: SQL name of the base table
+        source_sql: SQL name of the source table
+        api_key: Optional API key for AI calls
+
+    Returns:
+        Dict with "suggestions" array containing recommended key pairs
+    """
+    if not api_key or not api_key.strip():
+        return {
+            "suggestions": [],
+            "error": "API key required for AI join key suggestions",
+        }
+
+    base_cols = read_table_columns(conn, base_sql)
+    source_cols = read_table_columns(conn, source_sql)
+
+    if not base_cols or not source_cols:
+        return {"suggestions": [], "error": "No columns found in one or both tables"}
+
+    base_rows = table_row_count(conn, base_sql)
+    source_rows = table_row_count(conn, source_sql)
+
+    # Collect sample values for each column (50-100 rows)
+    sample_size = min(100, max(50, base_rows // 10, source_rows // 10))
+    base_sample = pick_best_rows(read_table(conn, base_sql, PREVIEW_POOL), sample_size)
+    source_sample = pick_best_rows(read_table(conn, source_sql, PREVIEW_POOL), sample_size)
+
+    # Build column metadata with samples
+    def build_col_info(col_list: list[str], sample_rows: list[dict]) -> list[dict]:
+        """Build column info with sample values."""
+        result = []
+        for col in col_list:
+            values = [str(r.get(col, "")) for r in sample_rows if r.get(col)]
+            # Get unique non-empty values, limit to 20
+            unique_vals = list(dict.fromkeys([v for v in values if v]))[:20]
+            result.append({
+                "name": col,
+                "sample_values": unique_vals,
+            })
+        return result
+
+    base_col_info = build_col_info(base_cols, base_sample)
+    source_col_info = build_col_info(source_cols, source_sample)
+
+    # Calculate match rates between columns using value overlap
+    match_rates: list[dict] = []
+    base_bt = quote_id(base_sql)
+    source_st = quote_id(source_sql)
+
+    for base_col in base_cols:
+        base_norm = _normalize_col(base_col)
+        for source_col in source_cols:
+            source_norm = _normalize_col(source_col)
+
+            # Quick name similarity check
+            name_score = 0
+            if base_norm == source_norm:
+                name_score = 1.0
+            elif base_norm in source_norm or source_norm in base_norm:
+                name_score = 0.5
+
+            # Calculate value overlap (limited to first 1000 values for performance)
+            try:
+                overlap_row = conn.execute(f"""
+                    SELECT COUNT(*) AS cnt FROM (
+                        SELECT DISTINCT TRIM(LOWER(CAST({quote_id(base_col)} AS TEXT))) AS v
+                        FROM {base_bt}
+                        WHERE {quote_id(base_col)} IS NOT NULL AND TRIM(CAST({quote_id(base_col)} AS TEXT)) != ''
+                        LIMIT 1000
+                    ) b
+                    WHERE b.v IN (
+                        SELECT DISTINCT TRIM(LOWER(CAST({quote_id(source_col)} AS TEXT))) AS v
+                        FROM {source_st}
+                        WHERE {quote_id(source_col)} IS NOT NULL AND TRIM(CAST({quote_id(source_col)} AS TEXT)) != ''
+                        LIMIT 1000
+                    )
+                """).fetchone()
+                overlap = overlap_row["cnt"] if overlap_row else 0
+
+                if overlap > 0 or name_score > 0:
+                    match_rates.append({
+                        "base_column": base_col,
+                        "source_column": source_col,
+                        "overlap_count": overlap,
+                        "name_similarity": name_score,
+                    })
+            except Exception:
+                # Skip columns that can't be compared
+                continue
+
+    # Sort by overlap count descending
+    match_rates.sort(key=lambda x: x["overlap_count"], reverse=True)
+
+    # Build payload for AI
+    payload = {
+        "base_table": {
+            "name": base_sql,
+            "row_count": base_rows,
+            "columns": base_col_info,
+        },
+        "source_table": {
+            "name": source_sql,
+            "row_count": source_rows,
+            "columns": source_col_info,
+        },
+        "top_matches": match_rates[:20],  # Top 20 matches by overlap
+    }
+
+    try:
+        result = call_ai_json(SYSTEM_PROMPT_SUGGEST_JOIN_KEYS, payload, api_key)
+
+        if not result or not isinstance(result, dict):
+            return {"suggestions": [], "error": "AI returned invalid response"}
+
+        suggestions = result.get("suggestions", [])
+
+        # Validate suggestions - ensure columns exist
+        valid_suggestions = []
+        for sugg in suggestions:
+            base_cols_in = sugg.get("base_columns", [])
+            source_cols_in = sugg.get("source_columns", [])
+
+            # Validate columns exist and arrays have same length
+            if (len(base_cols_in) == len(source_cols_in) and
+                all(c in base_cols for c in base_cols_in) and
+                all(c in source_cols for c in source_cols_in)):
+                valid_suggestions.append(sugg)
+
+        return {
+            "suggestions": valid_suggestions,
+            "total_suggestions": len(valid_suggestions),
+        }
+
+    except Exception as exc:
+        logger.warning("suggest_join_keys AI call failed: %s", exc)
+        return {
+            "suggestions": [],
+            "error": f"AI suggestion failed: {str(exc)}",
+        }

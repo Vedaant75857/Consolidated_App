@@ -18,6 +18,8 @@ import {
   X,
   AlertTriangle,
   Download,
+  Plus,
+  Lightbulb,
 } from "lucide-react";
 import { SurfaceCard, PrimaryButton, FillBar, itemVariants } from "../common/ui";
 import type { LogEntry } from "./StatusLog";
@@ -87,6 +89,36 @@ function getStatColor(metric: string, value: number): string {
   return "text-neutral-700 dark:text-neutral-300";
 }
 
+function getCardinalityColor(cardinality: string): string {
+  switch (cardinality) {
+    case "1:1": return "text-emerald-600 dark:text-emerald-400";
+    case "1:M":
+    case "M:1": return "text-amber-600 dark:text-amber-400";
+    case "M:M": return "text-red-600 dark:text-red-400";
+    default: return "text-neutral-700 dark:text-neutral-300";
+  }
+}
+
+function getCardinalityBgColor(cardinality: string): string {
+  switch (cardinality) {
+    case "1:1": return "bg-emerald-50 border-emerald-200 dark:bg-emerald-950/30 dark:border-emerald-800";
+    case "1:M":
+    case "M:1": return "bg-amber-50 border-amber-200 dark:bg-amber-950/30 dark:border-amber-800";
+    case "M:M": return "bg-red-50 border-red-200 dark:bg-red-950/30 dark:border-red-800";
+    default: return "bg-neutral-50 border-neutral-200 dark:bg-neutral-800 dark:border-neutral-700";
+  }
+}
+
+function getCardinalityTooltip(cardinality: string): string {
+  switch (cardinality) {
+    case "1:1": return "One-to-One: Each key value is unique in both tables. Ideal join.";
+    case "1:M": return "One-to-Many: Base keys are unique, source has duplicates. Left join will work well.";
+    case "M:1": return "Many-to-One: Base has duplicates, source keys are unique. Consider deduplicating base first.";
+    case "M:M": return "Many-to-Many: Duplicates in both tables. This will cause row explosion. Consider using composite keys.";
+    default: return "";
+  }
+}
+
 export default function Merging(props: MergingProps) {
   const {
     sessionId, apiKey, step, setStep,
@@ -120,8 +152,14 @@ export default function Merging(props: MergingProps) {
   const [columnsLoading, setColumnsLoading] = useState(false);
   const [pendingBaseCols, setPendingBaseCols] = useState<string[]>([]);
   const [recommendLoading, setRecommendLoading] = useState(false);
+  const [simError, setSimError] = useState<string | null>(null);
   const simDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastBasePreviewId = useRef<string>("");
+
+  // AI Suggestions state
+  const [showKeySuggestions, setShowKeySuggestions] = useState(false);
+  const [keySuggestions, setKeySuggestions] = useState<any[]>([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
 
   // Build lookup for common columns
   const commonByBase = new Map<string, any>();
@@ -206,7 +244,69 @@ export default function Merging(props: MergingProps) {
     setSourcePreview(null);
     setSourceColClasses({});
     setPendingBaseCols([]);
+    setShowKeySuggestions(false);
+    setKeySuggestions([]);
   }, [setMergeSourceGroupId, setMergeCommonColumns, setMergeSelectedKeys, setMergePullColumns, setMergeSimulation, setMergeValidationReport, setMergeExecuteResult]);
+
+  // --- AI Suggestion Handlers ---
+
+  const fetchKeySuggestions = useCallback(async () => {
+    if (!sessionId || !mergeBaseGroupId || !mergeSourceGroupId) return;
+    setSuggestionsLoading(true);
+    setAiLoading(true);
+    setLoadingMessage("AI is analyzing potential join keys...");
+    setShowKeySuggestions(true);
+    try {
+      const res = await fetch("/api/merge/suggest-keys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId,
+          baseGroupId: mergeBaseGroupId,
+          sourceGroupId: mergeSourceGroupId,
+          apiKey: apiKey || "",
+        }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || "Failed to fetch key suggestions");
+      }
+      const data = await res.json();
+      if (data.error) {
+        throw new Error(data.error);
+      }
+      setKeySuggestions(data.suggestions || []);
+      addLog("Merge", "info", `AI suggested ${data.suggestions?.length || 0} join key combinations`);
+    } catch (err: any) {
+      setError(err.message);
+      addLog("Merge", "error", err.message);
+      setKeySuggestions([]);
+    } finally {
+      setSuggestionsLoading(false);
+      setAiLoading(false);
+      setLoadingMessage("");
+    }
+  }, [sessionId, mergeBaseGroupId, mergeSourceGroupId, apiKey, addLog, setError, setAiLoading, setLoadingMessage]);
+
+  const applySuggestion = useCallback((suggestion: any) => {
+    // Convert suggestion to key pairs format
+    const baseCols: string[] = suggestion.base_columns || [];
+    const sourceCols: string[] = suggestion.source_columns || [];
+
+    if (baseCols.length !== sourceCols.length) {
+      setError("Invalid suggestion: mismatched column counts");
+      return;
+    }
+
+    const newKeyPairs = baseCols.map((baseCol: string, idx: number) => ({
+      base_col: baseCol,
+      source_col: sourceCols[idx],
+    }));
+
+    setMergeSelectedKeys(newKeyPairs);
+    setShowKeySuggestions(false);
+    addLog("Merge", "success", `Applied AI suggestion: ${baseCols.join(" + ")} ↔ ${sourceCols.join(" + ")}`);
+  }, [setMergeSelectedKeys, addLog, setError]);
 
   // --- Section B: Fetch Common Columns + Preview ---
 
@@ -314,7 +414,6 @@ export default function Merging(props: MergingProps) {
   // --- Section C: Simulation (debounced) ---
 
   const [simLoading, setSimLoading] = useState(false);
-  const [simError, setSimError] = useState<string | null>(null);
 
   useEffect(() => {
     if (simDebounceRef.current) clearTimeout(simDebounceRef.current);
@@ -618,7 +717,7 @@ export default function Merging(props: MergingProps) {
             </span>
             {mergeCommonColumns.length > 0 && (
               <span className="flex items-center gap-1">
-                <Link2 className="w-3 h-3 text-neutral-500" /> Common column
+                <span className="inline-flex items-center justify-center w-4 h-4 rounded bg-emerald-500 text-white"><Link2 className="w-2.5 h-2.5" /></span> Common (shown first)
               </span>
             )}
           </div>
@@ -654,9 +753,22 @@ export default function Merging(props: MergingProps) {
     document.body
   ) : null;
 
+  // Helper to reorder columns - common columns first
+  const getOrderedColumns = useCallback((columns: string[], side: "base" | "source") => {
+    const commonCols = columns.filter(col =>
+      side === "base" ? commonByBase.has(col) : commonBySource.has(col)
+    );
+    const otherCols = columns.filter(col =>
+      side === "base" ? !commonByBase.has(col) : !commonBySource.has(col)
+    );
+    return [...commonCols, ...otherCols];
+  }, [commonByBase, commonBySource]);
+
   function renderTable(side: "base" | "source", isExpanded: boolean) {
     const preview = side === "base" ? basePreview : sourcePreview;
-    const columns = preview?.columns || (side === "base" ? allBaseColumns : allSourceColumns);
+    const rawColumns = preview?.columns || (side === "base" ? allBaseColumns : allSourceColumns);
+    // Reorder: common columns first, maintaining relative order
+    const columns = getOrderedColumns(rawColumns, side);
     const rows = preview?.rows || [];
     const groupId = side === "base" ? mergeBaseGroupId : mergeSourceGroupId;
     const label = side === "base" ? "Base" : "Source";
@@ -676,11 +788,12 @@ export default function Merging(props: MergingProps) {
                     ? mergeSelectedKeys.some((k) => k.base_col === col)
                     : mergeSelectedKeys.some((k) => k.source_col === col);
                   const isPending = side === "base" && pendingBaseCols.includes(col);
+                  const isCommon = side === "base" ? commonByBase.has(col) : commonBySource.has(col);
 
                   return (
                     <td
                       key={col}
-                      className="px-2 py-1.5 text-center border-b border-neutral-200 dark:border-neutral-700"
+                      className={`px-2 py-1.5 text-center border-b ${isCommon ? "border-emerald-300 dark:border-emerald-700 bg-emerald-50/50 dark:bg-emerald-950/20" : "border-neutral-200 dark:border-neutral-700"}`}
                     >
                       <button
                         onClick={(e) => {
@@ -726,13 +839,22 @@ export default function Merging(props: MergingProps) {
                   const color = getColColor(col, side);
                   const isSourceClickable = side === "source" && !isKey;
                   const categoryLabel = cc?.category || cls?.category || "";
+                  const isCommon = !!cc;
+
+                  // Enhanced background for common columns - add green tint
+                  const enhancedBgClass = isCommon
+                    ? bgClass.replace("bg-emerald-100", "bg-emerald-200").replace("bg-amber-100", "bg-emerald-100/70").replace("bg-red-100", "bg-emerald-100/50").replace("bg-neutral-100", "bg-emerald-50")
+                      .replace("dark:bg-emerald-950/40", "dark:bg-emerald-900/60").replace("dark:bg-amber-950/40", "dark:bg-emerald-950/50").replace("dark:bg-red-950/40", "dark:bg-emerald-950/30").replace("dark:bg-neutral-800/60", "dark:bg-emerald-950/20")
+                      .replace("border-emerald-400", "border-emerald-500").replace("border-amber-400", "border-emerald-400").replace("border-red-400", "border-emerald-300").replace("border-neutral-300", "border-emerald-300")
+                      .replace("dark:border-emerald-600", "dark:border-emerald-500").replace("dark:border-amber-600", "dark:border-emerald-600").replace("dark:border-red-600", "dark:border-emerald-700").replace("dark:border-neutral-600", "dark:border-emerald-700")
+                    : bgClass;
 
                   return (
                     <th
                       key={col}
-                      className={`px-2 py-2 font-bold whitespace-nowrap border-b select-none transition-all ${bgClass} ${
+                      className={`px-2 py-2 font-bold whitespace-nowrap border-b select-none transition-all ${enhancedBgClass} ${
                         isSourceClickable ? "cursor-pointer hover:opacity-80" : ""
-                      } ${isPull ? "ring-2 ring-blue-500 ring-inset" : ""} ${isKey ? "ring-2 ring-red-500 ring-inset" : ""}`}
+                      } ${isPull ? "ring-2 ring-blue-500 ring-inset" : ""} ${isKey ? "ring-2 ring-red-500 ring-inset" : ""} ${isCommon ? "border-b-2 border-b-emerald-400 dark:border-b-emerald-600" : ""}`}
                       onClick={() => { if (side === "source") handleSourceHeaderClick(col); }}
                       title={
                         side === "source"
@@ -766,9 +888,16 @@ export default function Merging(props: MergingProps) {
                           <span className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${BADGE_COLOR_MAP[color] || BADGE_COLOR_MAP.grey}`} />
                         )}
 
+                        {/* Common column indicator - green badge */}
+                        {isCommon && (
+                          <span className="inline-flex items-center justify-center w-4 h-4 rounded bg-emerald-500 text-white shrink-0" title="Common column - found in both tables">
+                            <Link2 className="w-2.5 h-2.5" />
+                          </span>
+                        )}
+
                         <span className="truncate">{col}</span>
 
-                        {cc && <Link2 className="w-3 h-3 opacity-40 shrink-0" />}
+                        {!isCommon && cc && <Link2 className="w-3 h-3 opacity-40 shrink-0" />}
                       </span>
 
                     </th>
@@ -908,11 +1037,28 @@ export default function Merging(props: MergingProps) {
                 )}
               </div>
 
-              {/* Source dropdown */}
+              {/* Source dropdown with AI suggestions */}
               <div>
-                <label className="block text-xs font-semibold text-neutral-500 dark:text-neutral-400 mb-1.5">
-                  Source Table
-                </label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-neutral-500 dark:text-neutral-400">
+                    Source Table
+                  </label>
+                  {mergeBaseGroupId && mergeSourceGroupId && (
+                    <button
+                      onClick={fetchKeySuggestions}
+                      disabled={suggestionsLoading}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-violet-50 dark:bg-violet-950/30 border border-violet-200 dark:border-violet-800 text-[10px] font-medium text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-950/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Get AI-suggested join key pairs"
+                    >
+                      {suggestionsLoading ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Plus className="w-3 h-3" />
+                      )}
+                      AI Suggest Keys
+                    </button>
+                  )}
+                </div>
                 <select
                   value={mergeSourceGroupId}
                   onChange={(e) => handleSourceChange(e.target.value)}
@@ -925,6 +1071,70 @@ export default function Merging(props: MergingProps) {
                     </option>
                   ))}
                 </select>
+
+                {/* AI Key Suggestions Panel */}
+                {showKeySuggestions && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="mt-3 rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50/50 dark:bg-violet-950/20 overflow-hidden"
+                  >
+                    <div className="px-3 py-2 border-b border-violet-200 dark:border-violet-800 bg-violet-100/50 dark:bg-violet-900/30 flex items-center justify-between">
+                      <span className="text-xs font-semibold text-violet-800 dark:text-violet-200 flex items-center gap-1.5">
+                        <Lightbulb className="w-3.5 h-3.5" />
+                        AI Suggested Join Keys
+                      </span>
+                      <button
+                        onClick={() => setShowKeySuggestions(false)}
+                        className="text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-200"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <div className="p-2 space-y-1.5 max-h-48 overflow-y-auto">
+                      {suggestionsLoading ? (
+                        <div className="flex items-center gap-2 px-2 py-3 text-xs text-violet-600 dark:text-violet-400">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          Analyzing columns and match rates...
+                        </div>
+                      ) : keySuggestions.length === 0 ? (
+                        <div className="px-2 py-3 text-xs text-neutral-500 dark:text-neutral-400">
+                          No suggestions available. Try selecting different tables or ensure API key is configured.
+                        </div>
+                      ) : (
+                        keySuggestions.map((sugg, idx) => (
+                          <button
+                            key={idx}
+                            onClick={() => applySuggestion(sugg)}
+                            className="w-full text-left px-3 py-2 rounded-lg bg-white dark:bg-neutral-800 border border-violet-200 dark:border-violet-800/50 hover:border-violet-400 dark:hover:border-violet-600 hover:shadow-sm transition-all group"
+                          >
+                            <div className="flex items-center justify-between mb-1">
+                              <div className="flex items-center gap-2">
+                                <Key className="w-3.5 h-3.5 text-violet-500" />
+                                <span className="text-xs font-semibold text-neutral-800 dark:text-neutral-200">
+                                  {sugg.base_columns?.join(" + ")} ↔ {sugg.source_columns?.join(" + ")}
+                                </span>
+                              </div>
+                              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                                sugg.confidence === "high"
+                                  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300"
+                                  : sugg.confidence === "medium"
+                                  ? "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300"
+                                  : "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400"
+                              }`}>
+                                {sugg.confidence}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-neutral-500 dark:text-neutral-400 line-clamp-2">
+                              {sugg.reasoning}
+                            </p>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </motion.div>
+                )}
               </div>
             </div>
             <button onClick={handleSkipMerge} className="text-xs text-neutral-400 hover:text-red-500 transition-colors">
@@ -999,7 +1209,7 @@ export default function Merging(props: MergingProps) {
               </span>
               {mergeCommonColumns.length > 0 && (
                 <span className="flex items-center gap-1">
-                  <Link2 className="w-3 h-3 text-neutral-500" /> Common column
+                  <span className="inline-flex items-center justify-center w-4 h-4 rounded bg-emerald-500 text-white"><Link2 className="w-2.5 h-2.5" /></span> Common (shown first)
                 </span>
               )}
             </div>
@@ -1057,7 +1267,27 @@ export default function Merging(props: MergingProps) {
             </div>
           )}
           {mergeSimulation && (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3">
+              {/* Cardinality Card */}
+              <div
+                className={`rounded-xl border p-3 text-center ${getCardinalityBgColor(mergeSimulation.key_cardinality || "")}`}
+                title={getCardinalityTooltip(mergeSimulation.key_cardinality || "")}
+              >
+                <p className="text-[10px] font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider mb-1">Key Relationship</p>
+                <p className={`text-lg font-bold tabular-nums ${getCardinalityColor(mergeSimulation.key_cardinality || "")}`}>
+                  {mergeSimulation.key_cardinality || "N/A"}
+                </p>
+                {mergeSimulation.max_base_rows_per_key > 1 && (
+                  <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+                    Base: up to {mergeSimulation.max_base_rows_per_key} rows/key
+                  </p>
+                )}
+                {mergeSimulation.max_source_rows_per_key > 1 && (
+                  <p className="text-[9px] text-neutral-400 dark:text-neutral-500">
+                    Source: up to {mergeSimulation.max_source_rows_per_key} rows/key
+                  </p>
+                )}
+              </div>
               {[
                 { label: "Match Rate", value: `${mergeSimulation.match_rate}%`, metric: "match_rate", raw: mergeSimulation.match_rate },
                 { label: "Row Explosion", value: `${mergeSimulation.row_explosion_factor}×`, metric: "row_explosion_factor", raw: mergeSimulation.row_explosion_factor },

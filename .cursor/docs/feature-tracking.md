@@ -158,11 +158,17 @@ The DataStitcher helps users combine multiple data files into one clean, merged 
 | 4b | Skip merge | When multiple tables exist, click "Skip merge entirely" under the dropdowns to skip without joining. |
 | 4c | Prerequisite missing | If the Append Strategy step hasn't been completed yet, an "Earlier Steps Required" card appears with a "Back to Append Strategy" button. |
 | 4d | Session expired | If the session is genuinely gone, a "Session Expired" card appears with a "Back to Upload" button. |
+| 3a | AI key suggestions | Click the "+ AI Suggest Keys" button next to the source dropdown to get AI-recommended join key pairs. Shows top 5-10 suggestions with confidence levels and brief reasoning. |
+| 3b | Apply suggested keys | Click any suggestion in the panel to automatically set the join keys. The suggestion shows base columns, source columns, and why it is a good match. |
 | 5 | Side-by-side column view | See columns from both tables displayed side by side with colour coding (identifiers, descriptors, metrics, keys, etc.). |
+| 5a | Common columns first | Columns identified as common between both tables are shown first in the list, highlighted with a green badge and border. |
+| 5b | Common column highlight | Common columns display a green Link2 icon badge and have enhanced green-tinted backgrounds for easy identification. |
 | 6 | Pair join keys | Click key buttons above base columns, then matching source columns, to pair them as join keys. Key pairs appear as chips you can remove with X. |
 | 7 | Pull source columns | Click source column headers to "pull" them into the merged result. Pull chips appear and can be removed with X. |
 | 8 | Fullscreen preview | Click "Full Screen" on the matching card to see columns in a larger view (close with X or Escape). |
 | 9 | Join simulation | Once keys are selected, a simulation runs automatically showing match rates, duplicate explosion risk, unmatched-row counts, and estimated null rates. |
+| 9a | Key relationship indicator | The simulation shows the key cardinality (1:1, 1:M, M:1, M:M) with color coding - green for ideal 1:1, amber for one-sided duplicates, red for many-to-many. |
+| 9b | Duplicate row details | When keys are not unique, see the maximum number of rows per key in each table to understand the duplication pattern. |
 | 10 | Execute merge | Click "Execute Merge" to run the join. A progress bar shows the current phase (Prepare, Dedup & Merge, Validate) with percentage. |
 | 11 | Merge summary | After merging, see a summary with row/column counts and version label. |
 | 12 | Merge details | See which keys were used, how many columns were pulled, and validation results. |

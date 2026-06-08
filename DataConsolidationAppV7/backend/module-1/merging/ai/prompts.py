@@ -38,3 +38,51 @@ Return JSON:
   "reasoning": "<brief explanation>",
   "closest_standard_column": "<closest match from COLUMN_METADATA or null>"
 }"""
+
+SYSTEM_PROMPT_SUGGEST_JOIN_KEYS = """You are a data engineering expert specializing in join key discovery for data merging.
+
+Given metadata for two tables (base and source), suggest the best join key pairs for merging these tables.
+
+Input includes:
+- Table names and row counts
+- Column names for both tables
+- 50-100 sample values per column (representative selection)
+- Column match rates with other columns (overlap percentage)
+- Sample values from columns with high match rates
+
+Your task:
+1. Analyze column names and sample values to identify potential join keys
+2. Look for columns with high match rates between tables (>70% overlap is strong)
+3. Consider composite keys (2+ columns combined) when single columns aren't unique or match rates are low
+4. Prioritize columns that appear to be identifiers (IDs, codes, numbers) over descriptive fields
+5. Return top 5-10 suggested key pair combinations, ranked by confidence
+
+For each suggestion, provide:
+- base_columns: list of column names from base table (1 or more)
+- source_columns: list of column names from source table (matching count to base_columns)
+- reasoning: 10-15 words explaining why this is a good join key
+- confidence: "high" | "medium" | "low"
+
+Return JSON:
+{
+  "suggestions": [
+    {
+      "base_columns": ["invoice_id"],
+      "source_columns": ["inv_num"],
+      "reasoning": "Both contain invoice IDs with 95% value overlap",
+      "confidence": "high"
+    },
+    {
+      "base_columns": ["vendor_id", "po_number"],
+      "source_columns": ["supplier_code", "purchase_order"],
+      "reasoning": "Composite key: vendor+PO combination matches 88%",
+      "confidence": "medium"
+    }
+  ]
+}
+
+Important notes:
+- base_columns and source_columns arrays must have the same length
+- For composite keys, list columns in the same order for both tables
+- Only suggest columns that actually exist in the provided metadata
+- If no good join keys exist, return an empty suggestions array with a note"""

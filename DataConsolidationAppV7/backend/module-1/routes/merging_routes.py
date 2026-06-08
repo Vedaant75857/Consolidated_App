@@ -56,6 +56,7 @@ from merging.guided_merge_service import (
     recommend_base_file,
     simulate_join,
     skip_merge,
+    suggest_join_keys,
 )
 
 merging_bp = Blueprint("merging_bp", __name__)
@@ -150,6 +151,35 @@ def simulate():
 
             pull_columns = body.get("pullColumns", [])
             result = simulate_join(conn, base_sql, source_sql, key_pairs, pull_columns=pull_columns)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@merging_bp.route("/merge/suggest-keys", methods=["POST"])
+def suggest_keys():
+    """Get AI-suggested join key pairs for base and source tables."""
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        session_id = body.get("sessionId")
+        base_group_id = body.get("baseGroupId")
+        source_group_id = body.get("sourceGroupId")
+        api_key = body.get("apiKey")
+
+        if not session_id or not base_group_id or not source_group_id:
+            return jsonify({"error": "Missing sessionId, baseGroupId, or sourceGroupId"}), 400
+
+        with get_session_lock(session_id):
+            conn = get_session_db(session_id)
+            base_sql = lookup_sql_name(conn, base_group_id)
+            source_sql = lookup_sql_name(conn, source_group_id)
+            if not base_sql or not source_sql:
+                return jsonify({"error": "Invalid group ID(s)"}), 400
+
+            result = suggest_join_keys(conn, base_sql, source_sql, api_key)
+
         return jsonify(result)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
