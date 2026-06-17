@@ -26,6 +26,12 @@ import type { LogEntry } from "./StatusLog";
 import type { MergeOutput } from "../../types";
 import MergeReport from "./MergeReport";
 
+export interface MergeDedupConfig {
+  strategy: "first" | "spend" | "date";
+  valueColumn?: string;
+  keep?: "max" | "min";
+}
+
 export interface MergingProps {
   sessionId: string;
   apiKey: string;
@@ -66,6 +72,8 @@ export interface MergingProps {
   mergeOutputs: MergeOutput[];
   setMergeOutputs: React.Dispatch<React.SetStateAction<MergeOutput[]>>;
   setOutputsPanelOpen: (v: boolean) => void;
+  mergeDedupConfig: MergeDedupConfig;
+  setMergeDedupConfig: (config: MergeDedupConfig) => void;
 }
 
 const COLOR_MAP: Record<string, string> = {
@@ -81,6 +89,14 @@ const BADGE_COLOR_MAP: Record<string, string> = {
   red: "bg-red-500 text-white",
   grey: "bg-neutral-400 text-white",
 };
+
+/** System columns to exclude from merge analysis and preview display */
+const SYSTEM_COLUMNS_TO_EXCLUDE = new Set([
+  "File Name", "file_name", "FILE_NAME",
+  "RecordID", "record_id", "recordid", "RECORD_ID", "RECORDID",
+  "source_table", "Source Table", "__source_table", "_source_table",
+  "__source", "_source", "source",
+]);
 
 function getStatColor(metric: string, value: number): string {
   if (metric === "match_rate") return value >= 80 ? "text-emerald-600" : value >= 50 ? "text-amber-600" : "text-red-600";
@@ -137,6 +153,7 @@ export default function Merging(props: MergingProps) {
     mergeHistory, setMergeHistory,
     onRegisterMergedGroup, onDeleteMergeOutput,
     setMergeOutputs, setOutputsPanelOpen,
+    mergeDedupConfig, setMergeDedupConfig,
   } = props;
 
   const [basePreview, setBasePreview] = useState<{ columns: string[]; rows: any[] } | null>(null);
@@ -147,6 +164,8 @@ export default function Merging(props: MergingProps) {
   const [mergeProgressMessage, setMergeProgressMessage] = useState("");
   const [allBaseColumns, setAllBaseColumns] = useState<string[]>([]);
   const [allSourceColumns, setAllSourceColumns] = useState<string[]>([]);
+  const [alignedBaseColumns, setAlignedBaseColumns] = useState<string[]>([]);
+  const [alignedSourceColumns, setAlignedSourceColumns] = useState<string[]>([]);
   const [baseColClasses, setBaseColClasses] = useState<Record<string, { category: string; eligibility: string; color: string }>>({});
   const [sourceColClasses, setSourceColClasses] = useState<Record<string, { category: string; eligibility: string; color: string }>>({});
   const [columnsLoading, setColumnsLoading] = useState(false);
@@ -160,6 +179,18 @@ export default function Merging(props: MergingProps) {
   const [showKeySuggestions, setShowKeySuggestions] = useState(false);
   const [keySuggestions, setKeySuggestions] = useState<any[]>([]);
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+
+  // M:M dedup strategy configuration panel state
+  const [showDedupConfigPanel, setShowDedupConfigPanel] = useState(false);
+  const [localDedupConfig, setLocalDedupConfig] = useState<MergeDedupConfig>({ strategy: "first" });
+
+  // Reset dedup config when simulation changes or source changes
+  useEffect(() => {
+    // Reset to defaults when simulation or source changes
+    setShowDedupConfigPanel(false);
+    setLocalDedupConfig({ strategy: "first" });
+    setMergeDedupConfig({ strategy: "first" });
+  }, [mergeSimulation?.key_cardinality, mergeSourceGroupId, setMergeDedupConfig]);
 
   // Build lookup for common columns
   const commonByBase = new Map<string, any>();
@@ -308,6 +339,52 @@ export default function Merging(props: MergingProps) {
     addLog("Merge", "success", `Applied AI suggestion: ${baseCols.join(" + ")} ↔ ${sourceCols.join(" + ")}`);
   }, [setMergeSelectedKeys, addLog, setError]);
 
+  /**
+   * Get aligned columns for both base and source tables.
+   * Common columns are positioned at the same indices in both tables.
+   */
+  function getAlignedColumns(
+    baseCols: string[],
+    sourceCols: string[],
+    commonCols: Array<{ base_col: string; source_col: string }>
+  ): { baseColumns: string[]; sourceColumns: string[] } {
+    // Filter out system columns first
+    const filteredBaseCols = baseCols.filter(col => !SYSTEM_COLUMNS_TO_EXCLUDE.has(col));
+    const filteredSourceCols = sourceCols.filter(col => !SYSTEM_COLUMNS_TO_EXCLUDE.has(col));
+
+    // Build map of common columns
+    const commonByBaseLocal = new Map<string, { base_col: string; source_col: string }>();
+    for (const cc of commonCols) {
+      if (filteredBaseCols.includes(cc.base_col) && filteredSourceCols.includes(cc.source_col)) {
+        commonByBaseLocal.set(cc.base_col, cc);
+      }
+    }
+
+    // Get common columns in the order they appear in base table
+    const baseCommonCols: string[] = [];
+    const sourceCommonCols: string[] = [];
+
+    for (const col of filteredBaseCols) {
+      if (commonByBaseLocal.has(col)) {
+        const cc = commonByBaseLocal.get(col)!;
+        baseCommonCols.push(cc.base_col);
+        sourceCommonCols.push(cc.source_col);
+      }
+    }
+
+    // Get non-common columns
+    const baseNonCommon = filteredBaseCols.filter(col => !commonByBaseLocal.has(col));
+    const sourceNonCommon = filteredSourceCols.filter(col =>
+      !commonCols.some(cc => cc.source_col === col)
+    );
+
+    // Build aligned arrays
+    const alignedBaseCols: string[] = [...baseCommonCols, ...baseNonCommon];
+    const alignedSourceCols: string[] = [...sourceCommonCols, ...sourceNonCommon];
+
+    return { baseColumns: alignedBaseCols, sourceColumns: alignedSourceCols };
+  }
+
   // --- Section B: Fetch Common Columns + Preview ---
 
   const fetchColumnsAndPreviews = useCallback(async () => {
@@ -333,19 +410,51 @@ export default function Merging(props: MergingProps) {
         throw new Error(errMsg);
       }
       const data = await res.json();
-      setMergeCommonColumns(data.common_columns || []);
-      setAllBaseColumns(data.base_columns || []);
-      setAllSourceColumns(data.source_columns || []);
+      const commonCols = data.common_columns || [];
+      setMergeCommonColumns(commonCols);
+
+      // Filter system columns
+      const baseCols = (data.base_columns || []).filter((c: string) => !SYSTEM_COLUMNS_TO_EXCLUDE.has(c));
+      const sourceCols = (data.source_columns || []).filter((c: string) => !SYSTEM_COLUMNS_TO_EXCLUDE.has(c));
+      setAllBaseColumns(baseCols);
+      setAllSourceColumns(sourceCols);
+
+      // Compute aligned columns
+      const aligned = getAlignedColumns(baseCols, sourceCols, commonCols);
+      setAlignedBaseColumns(aligned.baseColumns);
+      setAlignedSourceColumns(aligned.sourceColumns);
+
       setBaseColClasses(data.base_column_classes || {});
       setSourceColClasses(data.source_column_classes || {});
+
       if (data.base_preview) {
-        setBasePreview({ columns: data.base_preview.columns, rows: data.base_preview.rows });
+        // Filter system columns from preview rows
+        const filteredBaseRows = data.base_preview.rows.map((row: Record<string, any>) => {
+          const filtered: Record<string, any> = {};
+          for (const key of Object.keys(row)) {
+            if (!SYSTEM_COLUMNS_TO_EXCLUDE.has(key)) {
+              filtered[key] = row[key];
+            }
+          }
+          return filtered;
+        });
+        setBasePreview({ columns: aligned.baseColumns, rows: filteredBaseRows });
         lastBasePreviewId.current = mergeBaseGroupId;
       }
       if (data.source_preview) {
-        setSourcePreview({ columns: data.source_preview.columns, rows: data.source_preview.rows });
+        // Filter system columns from preview rows
+        const filteredSourceRows = data.source_preview.rows.map((row: Record<string, any>) => {
+          const filtered: Record<string, any> = {};
+          for (const key of Object.keys(row)) {
+            if (!SYSTEM_COLUMNS_TO_EXCLUDE.has(key)) {
+              filtered[key] = row[key];
+            }
+          }
+          return filtered;
+        });
+        setSourcePreview({ columns: aligned.sourceColumns, rows: filteredSourceRows });
       }
-      addLog("Merge", "info", `Found ${(data.common_columns || []).length} common column(s)`);
+      addLog("Merge", "info", `Found ${commonCols.length} common column(s) (system columns excluded)`);
     } catch (err: any) {
       setError(err.message);
       addLog("Merge", "error", err.message);
@@ -474,6 +583,7 @@ export default function Merging(props: MergingProps) {
           sourceGroupId: mergeSourceGroupId,
           keyPairs: mergeSelectedKeys,
           pullColumns: mergePullColumns,
+          dedupConfig: mergeDedupConfig,
         }),
       });
 
@@ -688,23 +798,41 @@ export default function Merging(props: MergingProps) {
 
   // --- Full-screen Overlay (Portal) ---
   const fullscreenOverlay = expanded ? ReactDOM.createPortal(
-    <div className="fixed inset-0 z-[9999] bg-white dark:bg-neutral-900 flex flex-col overflow-hidden">
-      <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-200 dark:border-neutral-700 shrink-0">
-        <h3 className="text-lg font-bold text-neutral-900 dark:text-white">
-          Column Preview — Base vs Source
-        </h3>
+    <div
+      className="fixed inset-0 z-[99999] bg-white dark:bg-neutral-900 flex flex-col overflow-hidden"
+      onClick={(e) => {
+        // Close on backdrop click (but not when clicking content)
+        if (e.target === e.currentTarget) {
+          setExpanded(false);
+        }
+      }}
+    >
+      <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-200 dark:border-neutral-700 shrink-0 bg-white dark:bg-neutral-900 shadow-sm">
+        <div className="flex items-center gap-3">
+          <div className="p-2 rounded-lg bg-neutral-100 dark:bg-neutral-800">
+            <Maximize2 className="w-5 h-5 text-neutral-600 dark:text-neutral-400" />
+          </div>
+          <div>
+            <h3 className="text-lg font-bold text-neutral-900 dark:text-white">
+              Column Preview — Base vs Source
+            </h3>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              Common columns are aligned positionally across both tables
+            </p>
+          </div>
+        </div>
         <button
           onClick={() => setExpanded(false)}
-          className="flex items-center gap-2 px-4 py-2 rounded-xl bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-sm font-medium transition-colors"
+          className="flex items-center gap-2 px-4 py-2 rounded-xl bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-sm font-medium transition-colors border border-neutral-200 dark:border-neutral-700"
         >
-          <Minimize2 className="w-4 h-4" /> Close
+          <Minimize2 className="w-4 h-4" /> Close Preview
         </button>
       </div>
       {/* Legend + Keys + Pull in full screen */}
-      <div className="px-6 pt-4 shrink-0 space-y-3">
-        {!columnsLoading && allBaseColumns.length > 0 && (
+      <div className="px-6 pt-4 shrink-0 space-y-3 bg-neutral-50/50 dark:bg-neutral-900/50">
+        {!columnsLoading && alignedBaseColumns.length > 0 && (
           <div className="flex flex-wrap items-center gap-3 text-[10px]">
-            <span className="font-semibold text-neutral-400 uppercase tracking-wider">Legend (directional only):</span>
+            <span className="font-semibold text-neutral-400 uppercase tracking-wider">Legend:</span>
             <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-emerald-500" /> Identifier (high)</span>
             <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-amber-500" /> Descriptor (medium)</span>
             <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-red-500" /> Metric/Weak (low/never)</span>
@@ -717,14 +845,14 @@ export default function Merging(props: MergingProps) {
             </span>
             {mergeCommonColumns.length > 0 && (
               <span className="flex items-center gap-1">
-                <span className="inline-flex items-center justify-center w-4 h-4 rounded bg-emerald-500 text-white"><Link2 className="w-2.5 h-2.5" /></span> Common (shown first)
+                <span className="inline-flex items-center justify-center w-4 h-4 rounded bg-emerald-500 text-white"><Link2 className="w-2.5 h-2.5" /></span> Common (aligned)
               </span>
             )}
           </div>
         )}
         {mergeSelectedKeys.length > 0 && (
           <div className="flex flex-wrap gap-2">
-            <span className="text-[10px] font-semibold text-neutral-400 uppercase tracking-wider self-center mr-1">Keys:</span>
+            <span className="text-[10px] font-semibold text-neutral-400 uppercase tracking-wider self-center mr-1">Selected Keys:</span>
             {mergeSelectedKeys.map((kp, i) => (
               <span key={i} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 text-xs font-semibold text-red-700 dark:text-red-300">
                 <Key className="w-3 h-3" />
@@ -735,7 +863,7 @@ export default function Merging(props: MergingProps) {
         )}
         {mergePullColumns.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
-            <span className="text-[10px] font-semibold text-neutral-400 uppercase tracking-wider self-center mr-1">Pull:</span>
+            <span className="text-[10px] font-semibold text-neutral-400 uppercase tracking-wider self-center mr-1">Columns to Pull:</span>
             {mergePullColumns.map((col) => (
               <span key={col} className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 text-[11px] font-medium text-blue-700 dark:text-blue-300">
                 <Download className="w-2.5 h-2.5" />
@@ -745,7 +873,7 @@ export default function Merging(props: MergingProps) {
           </div>
         )}
       </div>
-      <div className="flex-1 grid grid-cols-2 gap-4 p-6 overflow-hidden">
+      <div className="flex-1 grid grid-cols-2 gap-4 p-6 overflow-hidden min-h-0">
         {renderTable("base", true)}
         {renderTable("source", true)}
       </div>
@@ -753,12 +881,13 @@ export default function Merging(props: MergingProps) {
     document.body
   ) : null;
 
-  // Helper to reorder columns - common columns first
+  // Helper to reorder columns - common columns first (legacy, filters system columns)
   const getOrderedColumns = useCallback((columns: string[], side: "base" | "source") => {
-    const commonCols = columns.filter(col =>
+    const filtered = columns.filter(col => !SYSTEM_COLUMNS_TO_EXCLUDE.has(col));
+    const commonCols = filtered.filter(col =>
       side === "base" ? commonByBase.has(col) : commonBySource.has(col)
     );
-    const otherCols = columns.filter(col =>
+    const otherCols = filtered.filter(col =>
       side === "base" ? !commonByBase.has(col) : !commonBySource.has(col)
     );
     return [...commonCols, ...otherCols];
@@ -766,9 +895,8 @@ export default function Merging(props: MergingProps) {
 
   function renderTable(side: "base" | "source", isExpanded: boolean) {
     const preview = side === "base" ? basePreview : sourcePreview;
-    const rawColumns = preview?.columns || (side === "base" ? allBaseColumns : allSourceColumns);
-    // Reorder: common columns first, maintaining relative order
-    const columns = getOrderedColumns(rawColumns, side);
+    // Use aligned columns if available, fall back to filtered columns
+    const columns = side === "base" ? alignedBaseColumns : alignedSourceColumns;
     const rows = preview?.rows || [];
     const groupId = side === "base" ? mergeBaseGroupId : mergeSourceGroupId;
     const label = side === "base" ? "Base" : "Source";
@@ -1075,62 +1203,136 @@ export default function Merging(props: MergingProps) {
                 {/* AI Key Suggestions Panel */}
                 {showKeySuggestions && (
                   <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: "auto" }}
-                    exit={{ opacity: 0, height: 0 }}
-                    className="mt-3 rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50/50 dark:bg-violet-950/20 overflow-hidden"
+                    initial={{ opacity: 0, y: -10, scale: 0.98 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -10, scale: 0.98 }}
+                    transition={{ duration: 0.2, ease: "easeOut" }}
+                    className="mt-3 rounded-xl border border-violet-200 dark:border-violet-700 bg-gradient-to-br from-violet-50 to-white dark:from-violet-950/40 dark:to-neutral-900 overflow-hidden shadow-lg shadow-violet-100/50 dark:shadow-none"
                   >
-                    <div className="px-3 py-2 border-b border-violet-200 dark:border-violet-800 bg-violet-100/50 dark:bg-violet-900/30 flex items-center justify-between">
-                      <span className="text-xs font-semibold text-violet-800 dark:text-violet-200 flex items-center gap-1.5">
-                        <Lightbulb className="w-3.5 h-3.5" />
-                        AI Suggested Join Keys
-                      </span>
+                    {/* Header */}
+                    <div className="px-4 py-3 border-b border-violet-200 dark:border-violet-800 bg-violet-100/70 dark:bg-violet-900/40 flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="p-1.5 rounded-md bg-violet-200 dark:bg-violet-800">
+                          <Sparkles className="w-3.5 h-3.5 text-violet-700 dark:text-violet-300" />
+                        </div>
+                        <div>
+                          <span className="text-xs font-bold text-violet-900 dark:text-violet-100 flex items-center gap-1.5">
+                            AI Suggested Join Keys
+                          </span>
+                          <span className="text-[10px] text-violet-600 dark:text-violet-400">
+                            Click any suggestion to auto-select key columns
+                          </span>
+                        </div>
+                      </div>
                       <button
                         onClick={() => setShowKeySuggestions(false)}
-                        className="text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-200"
+                        className="p-1.5 rounded-lg hover:bg-violet-200/70 dark:hover:bg-violet-800/70 text-violet-600 dark:text-violet-400 hover:text-violet-800 dark:hover:text-violet-200 transition-colors"
+                        title="Close suggestions"
                       >
-                        <X className="w-3.5 h-3.5" />
+                        <X className="w-4 h-4" />
                       </button>
                     </div>
-                    <div className="p-2 space-y-1.5 max-h-48 overflow-y-auto">
+
+                    {/* Suggestions List */}
+                    <div className="p-3 space-y-2 max-h-64 overflow-y-auto">
                       {suggestionsLoading ? (
-                        <div className="flex items-center gap-2 px-2 py-3 text-xs text-violet-600 dark:text-violet-400">
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          Analyzing columns and match rates...
+                        <div className="flex flex-col items-center gap-3 py-6 text-violet-600 dark:text-violet-400">
+                          <div className="relative">
+                            <Loader2 className="w-6 h-6 animate-spin" />
+                            <div className="absolute inset-0 animate-ping opacity-30">
+                              <Loader2 className="w-6 h-6" />
+                            </div>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-xs font-medium">Analyzing columns...</p>
+                            <p className="text-[10px] text-violet-500 dark:text-violet-400 mt-0.5">Comparing data patterns and match rates</p>
+                          </div>
                         </div>
                       ) : keySuggestions.length === 0 ? (
-                        <div className="px-2 py-3 text-xs text-neutral-500 dark:text-neutral-400">
-                          No suggestions available. Try selecting different tables or ensure API key is configured.
+                        <div className="flex flex-col items-center gap-2 py-5 px-4 text-center">
+                          <div className="p-2 rounded-full bg-neutral-100 dark:bg-neutral-800">
+                            <Lightbulb className="w-4 h-4 text-neutral-400" />
+                          </div>
+                          <div>
+                            <p className="text-xs font-medium text-neutral-600 dark:text-neutral-300">No suggestions available</p>
+                            <p className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-0.5 max-w-[240px]">
+                              Try selecting different tables or ensure your API key is configured for AI analysis.
+                            </p>
+                          </div>
                         </div>
                       ) : (
-                        keySuggestions.map((sugg, idx) => (
-                          <button
-                            key={idx}
-                            onClick={() => applySuggestion(sugg)}
-                            className="w-full text-left px-3 py-2 rounded-lg bg-white dark:bg-neutral-800 border border-violet-200 dark:border-violet-800/50 hover:border-violet-400 dark:hover:border-violet-600 hover:shadow-sm transition-all group"
-                          >
-                            <div className="flex items-center justify-between mb-1">
-                              <div className="flex items-center gap-2">
-                                <Key className="w-3.5 h-3.5 text-violet-500" />
-                                <span className="text-xs font-semibold text-neutral-800 dark:text-neutral-200">
-                                  {sugg.base_columns?.join(" + ")} ↔ {sugg.source_columns?.join(" + ")}
+                        <div className="grid gap-2">
+                          {keySuggestions.map((sugg, idx) => (
+                            <motion.button
+                              key={idx}
+                              onClick={() => applySuggestion(sugg)}
+                              initial={{ opacity: 0, x: -10 }}
+                              animate={{ opacity: 1, x: 0 }}
+                              transition={{ delay: idx * 0.05 }}
+                              className="group w-full text-left p-3 rounded-xl bg-white dark:bg-neutral-800 border border-violet-200/80 dark:border-violet-700/50 hover:border-violet-400 dark:hover:border-violet-500 hover:shadow-md hover:shadow-violet-100/50 dark:hover:shadow-none transition-all duration-200"
+                            >
+                              {/* Top Row: Confidence + Key Columns */}
+                              <div className="flex items-start justify-between gap-3 mb-2">
+                                <div className="flex items-center gap-2 min-w-0 flex-1">
+                                  <div className="shrink-0 p-1.5 rounded-md bg-violet-100 dark:bg-violet-900/50 group-hover:bg-violet-200 dark:group-hover:bg-violet-800/70 transition-colors">
+                                    <Key className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      {sugg.base_columns?.map((col: string, i: number) => (
+                                        <React.Fragment key={col}>
+                                          <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 text-[10px] font-semibold text-blue-700 dark:text-blue-300">
+                                            {col}
+                                          </span>
+                                          {i < (sugg.base_columns?.length || 0) - 1 && (
+                                            <span className="text-[10px] text-neutral-400">+</span>
+                                          )}
+                                        </React.Fragment>
+                                      ))}
+                                      <span className="text-xs text-neutral-400 px-0.5">↔</span>
+                                      {sugg.source_columns?.map((col: string, i: number) => (
+                                        <React.Fragment key={col}>
+                                          <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-800 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+                                            {col}
+                                          </span>
+                                          {i < (sugg.source_columns?.length || 0) - 1 && (
+                                            <span className="text-[10px] text-neutral-400">+</span>
+                                          )}
+                                        </React.Fragment>
+                                      ))}
+                                    </div>
+                                  </div>
+                                </div>
+                                <span
+                                  className={`shrink-0 text-[10px] px-2 py-1 rounded-full font-bold uppercase tracking-wide ${
+                                    sugg.confidence === "high"
+                                      ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/60 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-700"
+                                      : sugg.confidence === "medium"
+                                      ? "bg-amber-100 text-amber-700 dark:bg-amber-900/60 dark:text-amber-300 border border-amber-200 dark:border-amber-700"
+                                      : "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400 border border-neutral-200 dark:border-neutral-700"
+                                  }`}
+                                >
+                                  {sugg.confidence}
                                 </span>
                               </div>
-                              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
-                                sugg.confidence === "high"
-                                  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300"
-                                  : sugg.confidence === "medium"
-                                  ? "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300"
-                                  : "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400"
-                              }`}>
-                                {sugg.confidence}
-                              </span>
-                            </div>
-                            <p className="text-[10px] text-neutral-500 dark:text-neutral-400 line-clamp-2">
-                              {sugg.reasoning}
-                            </p>
-                          </button>
-                        ))
+
+                              {/* Reasoning */}
+                              <div className="flex items-start gap-2 pl-8">
+                                <p className="text-[11px] text-neutral-600 dark:text-neutral-400 leading-relaxed line-clamp-2">
+                                  {sugg.reasoning}
+                                </p>
+                              </div>
+
+                              {/* Apply Hint */}
+                              <div className="flex items-center gap-1.5 pl-8 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <Check className="w-3 h-3 text-violet-500" />
+                                <span className="text-[10px] font-medium text-violet-600 dark:text-violet-400">
+                                  Click to apply this suggestion
+                                </span>
+                              </div>
+                            </motion.button>
+                          ))}
+                        </div>
                       )}
                     </div>
                   </motion.div>
@@ -1270,9 +1472,20 @@ export default function Merging(props: MergingProps) {
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3">
               {/* Cardinality Card */}
               <div
-                className={`rounded-xl border p-3 text-center ${getCardinalityBgColor(mergeSimulation.key_cardinality || "")}`}
+                className={`rounded-xl border p-3 text-center relative ${getCardinalityBgColor(mergeSimulation.key_cardinality || "")}`}
                 title={getCardinalityTooltip(mergeSimulation.key_cardinality || "")}
               >
+                {/* Plus icon for M:M dedup configuration */}
+                {mergeSimulation.key_cardinality === "M:M" && (
+                  <button
+                    type="button"
+                    onClick={() => setShowDedupConfigPanel(!showDedupConfigPanel)}
+                    className="absolute top-1 right-1 w-5 h-5 rounded-full bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-800/60 flex items-center justify-center transition-colors"
+                    title="Configure deduplication strategy for M:M match"
+                  >
+                    <Plus className="w-3 h-3" />
+                  </button>
+                )}
                 <p className="text-[10px] font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider mb-1">Key Relationship</p>
                 <p className={`text-lg font-bold tabular-nums ${getCardinalityColor(mergeSimulation.key_cardinality || "")}`}>
                   {mergeSimulation.key_cardinality || "N/A"}
@@ -1301,6 +1514,168 @@ export default function Merging(props: MergingProps) {
                   <p className={`text-lg font-bold tabular-nums ${getStatColor(s.metric, s.raw)}`}>{s.value}</p>
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* M:M Deduplication Strategy Configuration Panel */}
+          {showDedupConfigPanel && mergeSimulation?.key_cardinality === "M:M" && (
+            <div className="mt-4 rounded-xl border border-red-200 dark:border-red-800 bg-red-50/60 dark:bg-red-950/20 p-4">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-xs font-bold text-red-700 dark:text-red-400">
+                  Source Table Deduplication Strategy
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowDedupConfigPanel(false)}
+                  className="text-[10px] text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
+                >
+                  Close
+                </button>
+              </div>
+              <p className="text-[11px] text-neutral-600 dark:text-neutral-400 mb-3">
+                When M:M is detected, the source table is deduplicated before joining.
+                Choose which row to keep for each duplicate key combination.
+              </p>
+
+              {/* Strategy Selection */}
+              <div className="grid grid-cols-3 gap-2 mb-4">
+                {[
+                  { key: "first" as const, label: "First Row", desc: "Keep first occurrence" },
+                  { key: "spend" as const, label: "By Spend", desc: "Keep by spend value" },
+                  { key: "date" as const, label: "By Date", desc: "Keep by date value" },
+                ].map((opt) => (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => setLocalDedupConfig({ ...localDedupConfig, strategy: opt.key })}
+                    className={`px-3 py-2 rounded-lg border text-left transition-all ${
+                      localDedupConfig.strategy === opt.key
+                        ? "bg-white dark:bg-neutral-800 border-red-300 dark:border-red-700 ring-1 ring-red-200 dark:ring-red-800"
+                        : "bg-white/50 dark:bg-neutral-800/50 border-neutral-200 dark:border-neutral-700 hover:border-red-200 dark:hover:border-red-800"
+                    }`}
+                  >
+                    <p className={`text-xs font-bold ${localDedupConfig.strategy === opt.key ? "text-red-700 dark:text-red-400" : "text-neutral-700 dark:text-neutral-300"}`}>
+                      {opt.label}
+                    </p>
+                    <p className="text-[10px] text-neutral-500 dark:text-neutral-500">{opt.desc}</p>
+                  </button>
+                ))}
+              </div>
+
+              {/* Strategy-specific configuration */}
+              {localDedupConfig.strategy === "spend" && (
+                <div className="space-y-3 pt-3 border-t border-red-200 dark:border-red-800">
+                  <div className="flex items-center gap-3">
+                    <label className="text-[11px] font-medium text-neutral-700 dark:text-neutral-300 whitespace-nowrap">
+                      Spend Column:
+                    </label>
+                    <select
+                      value={localDedupConfig.valueColumn || ""}
+                      onChange={(e) => setLocalDedupConfig({ ...localDedupConfig, valueColumn: e.target.value || undefined })}
+                      className="flex-1 text-xs border border-neutral-200 dark:border-neutral-700 rounded-lg px-2 py-1.5 bg-white dark:bg-neutral-900 focus:outline-none focus:ring-2 focus:ring-red-500"
+                    >
+                      <option value="">Select a column...</option>
+                      {allSourceColumns.map((col) => (
+                        <option key={col} value={col}>{col}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <label className="text-[11px] font-medium text-neutral-700 dark:text-neutral-300 whitespace-nowrap">
+                      Keep:
+                    </label>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setLocalDedupConfig({ ...localDedupConfig, keep: "max" })}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                          localDedupConfig.keep === "max"
+                            ? "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-700"
+                            : "bg-white dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border border-neutral-200 dark:border-neutral-700"
+                        }`}
+                      >
+                        Higher Spend
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setLocalDedupConfig({ ...localDedupConfig, keep: "min" })}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                          localDedupConfig.keep === "min"
+                            ? "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-700"
+                            : "bg-white dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border border-neutral-200 dark:border-neutral-700"
+                        }`}
+                      >
+                        Lower Spend
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {localDedupConfig.strategy === "date" && (
+                <div className="space-y-3 pt-3 border-t border-red-200 dark:border-red-800">
+                  <div className="flex items-center gap-3">
+                    <label className="text-[11px] font-medium text-neutral-700 dark:text-neutral-300 whitespace-nowrap">
+                      Date Column:
+                    </label>
+                    <select
+                      value={localDedupConfig.valueColumn || ""}
+                      onChange={(e) => setLocalDedupConfig({ ...localDedupConfig, valueColumn: e.target.value || undefined })}
+                      className="flex-1 text-xs border border-neutral-200 dark:border-neutral-700 rounded-lg px-2 py-1.5 bg-white dark:bg-neutral-900 focus:outline-none focus:ring-2 focus:ring-red-500"
+                    >
+                      <option value="">Select a column...</option>
+                      {allSourceColumns.map((col) => (
+                        <option key={col} value={col}>{col}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <label className="text-[11px] font-medium text-neutral-700 dark:text-neutral-300 whitespace-nowrap">
+                      Keep:
+                    </label>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setLocalDedupConfig({ ...localDedupConfig, keep: "max" })}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                          localDedupConfig.keep === "max"
+                            ? "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-700"
+                            : "bg-white dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border border-neutral-200 dark:border-neutral-700"
+                        }`}
+                      >
+                        Later Date
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setLocalDedupConfig({ ...localDedupConfig, keep: "min" })}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                          localDedupConfig.keep === "min"
+                            ? "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-700"
+                            : "bg-white dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border border-neutral-200 dark:border-neutral-700"
+                        }`}
+                      >
+                        Earlier Date
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Apply button */}
+              <div className="mt-4 pt-3 border-t border-red-200 dark:border-red-800 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMergeDedupConfig(localDedupConfig);
+                    setShowDedupConfigPanel(false);
+                    addLog("Merge", "info", `Deduplication strategy set: ${localDedupConfig.strategy}${localDedupConfig.valueColumn ? ` (${localDedupConfig.valueColumn}, keep ${localDedupConfig.keep})` : ""}`);
+                  }}
+                  disabled={localDedupConfig.strategy !== "first" && !localDedupConfig.valueColumn}
+                  className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-neutral-300 disabled:cursor-not-allowed text-white text-xs font-medium rounded-lg transition-colors"
+                >
+                  Apply Configuration
+                </button>
+              </div>
             </div>
           )}
         </SurfaceCard>

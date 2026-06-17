@@ -88,6 +88,7 @@ def create_app() -> Flask:
         ("routes.merging_routes", "merging_bp"),
         ("routes.insights_routes", "insights_bp"),
         ("routes.data_quality_routes", "data_quality_bp"),
+        ("routes.preview_routes", "bp"),
     ]
     for mod_path, bp_attr in _blueprints:
         try:
@@ -117,10 +118,10 @@ def _on_exit():
 
 
 if __name__ == "__main__":
-    # Only the dev/launcher entrypoint should delete session DBs on exit.
-    # Importing app.py from tests or debug scripts must NOT trigger cleanup,
-    # which would wipe the active .sessions/*.duckdb files in use.
-    atexit.register(_on_exit)
+    # Only the packaged launcher should wipe session DBs on exit. Dev restarts
+    # keep sessions so the frontend sessionStorage sessionId stays valid.
+    if getattr(_sys, "frozen", False) or os.environ.get("CLEANUP_SESSIONS_ON_EXIT", "").lower() in ("1", "true", "yes"):
+        atexit.register(_on_exit)
 
     t = threading.Thread(target=_session_cleanup_loop, daemon=True)
     t.start()

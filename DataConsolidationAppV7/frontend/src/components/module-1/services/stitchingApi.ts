@@ -1,6 +1,21 @@
 const BASE = "/api";
 const DEFAULT_TIMEOUT_MS = 120_000;
 
+/** Parse an error message from a failed fetch Response (JSON or plain text). */
+export async function parseFetchError(res: Response, fallback?: string): Promise<string> {
+  const text = await res.text();
+  try {
+    const data = JSON.parse(text);
+    if (data && typeof data.error === "string" && data.error.trim()) {
+      return data.error;
+    }
+  } catch {
+    const snippet = text.trim().slice(0, 200);
+    if (snippet) return snippet;
+  }
+  return fallback || `Request failed: ${res.status} ${res.statusText}`.trim();
+}
+
 async function jsonPost<T = any>(
   path: string,
   body: any,
@@ -19,9 +34,21 @@ async function jsonPost<T = any>(
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      const err = new Error(data.error || `Request failed: ${res.status}`);
-      (err as any).code = data.code || null;
+      const text = await res.text();
+      let code: string | null = null;
+      let message = `Request failed: ${res.status} ${res.statusText}`.trim();
+      try {
+        const data = JSON.parse(text);
+        if (data && typeof data.error === "string" && data.error.trim()) {
+          message = data.error;
+        }
+        code = data.code || null;
+      } catch {
+        const snippet = text.trim().slice(0, 200);
+        if (snippet) message = snippet;
+      }
+      const err = new Error(message);
+      (err as any).code = code;
       throw err;
     }
     return res.json();
@@ -38,8 +65,7 @@ async function jsonPost<T = any>(
 async function jsonGet<T = any>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`);
   if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `Request failed: ${res.status}`);
+    throw new Error(await parseFetchError(res));
   }
   return res.json();
 }
@@ -350,6 +376,64 @@ export async function postDqaSpendBifurcation(
     tableName: tableName || undefined,
     tableKey,
   });
+}
+
+// --- Excel Preview Operations (Unified) ---
+
+export async function previewOperation(
+  sessionId: string,
+  tableKey: string,
+  op: string,
+  params: Record<string, unknown> = {},
+): Promise<any> {
+  return jsonPost("/preview/operation", { sessionId, tableKey, op, params });
+}
+
+export async function previewApply(
+  sessionId: string,
+  tableKey: string,
+  target: { kind: string; id: string; mode?: string },
+): Promise<any> {
+  return jsonPost("/preview/apply", { sessionId, tableKey, target });
+}
+
+export async function previewState(
+  sessionId: string,
+  tableKey: string,
+  options: {
+    offset?: number;
+    limit?: number;
+    search?: string;
+    filters?: Record<string, unknown>[];
+    sort?: Record<string, unknown>[];
+  } = {},
+): Promise<any> {
+  return jsonPost("/preview/state", { sessionId, tableKey, ...options });
+}
+
+export async function previewColumnValues(
+  sessionId: string,
+  tableKey: string,
+  column: string,
+  options: {
+    search?: string;
+    filters?: Record<string, unknown>[];
+    limit?: number;
+  } = {},
+): Promise<{ values: string[]; hasBlanks: boolean; totalDistinct: number }> {
+  return jsonPost("/preview/column-values", { sessionId, tableKey, column, ...options });
+}
+
+export async function previewUndo(sessionId: string, tableKey: string): Promise<any> {
+  return jsonPost("/preview/undo", { sessionId, tableKey });
+}
+
+export async function previewRedo(sessionId: string, tableKey: string): Promise<any> {
+  return jsonPost("/preview/redo", { sessionId, tableKey });
+}
+
+export async function previewRefreshInventory(sessionId: string): Promise<any> {
+  return jsonPost("/preview/refresh-inventory", { sessionId });
 }
 
 // --- Chat ---

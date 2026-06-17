@@ -26,6 +26,9 @@ interface DedupStats {
   duplicate_rows: number;
   decrease_pct: number;
   dedup_columns?: string[];
+  strategy?: DedupStrategy;
+  value_column?: string;
+  keep?: "max" | "min";
 }
 
 interface DedupResult {
@@ -34,6 +37,18 @@ interface DedupResult {
   rows_after: number;
   duplicates_removed: number;
   decrease_pct: number;
+  strategy?: DedupStrategy;
+  value_column?: string;
+  keep?: "max" | "min";
+}
+
+type DedupStrategy = "first" | "spend" | "date";
+
+interface DedupConfig {
+  strategy: DedupStrategy;
+  columns: string[];
+  valueColumn?: string;
+  keep?: "max" | "min";
 }
 
 interface ColumnFormatAnalysis {
@@ -72,15 +87,12 @@ interface DataCleaningProps {
   concatConfigs: Record<string, ConcatColumnInfo[]>;
   loading: boolean;
   onCleanGroup: (groupId: string, config: CleaningConfig) => Promise<void>;
-  onDedupPreview: (groupId: string, columns: string[]) => Promise<DedupStats | null>;
-  onDedupApply: (groupId: string, columns: string[]) => Promise<DedupResult | null>;
+  onDedupPreview: (groupId: string, columns: string[], strategy?: DedupStrategy, valueColumn?: string, keep?: "max" | "min") => Promise<DedupStats | null>;
+  onDedupApply: (groupId: string, columns: string[], strategy?: DedupStrategy, valueColumn?: string, keep?: "max" | "min") => Promise<DedupResult | null>;
   onAnalyzeColumns: (groupId: string, columns: string[]) => Promise<ColumnFormatAnalysis[]>;
   onApplyStandardize: (groupId: string, actions: StdAction[]) => Promise<void>;
   onConcatApply: (groupId: string, columns: string[]) => Promise<any>;
   onDeleteConcatColumn: (groupId: string, columnName: string) => Promise<any>;
-  removedColumns: Record<string, string[]>;
-  onRemoveColumns: (groupId: string, columns: string[]) => Promise<any>;
-  onRestoreColumns: (groupId: string, columns: string[]) => Promise<any>;
   onProceed: () => void;
   onSkip: () => void;
 }
@@ -102,20 +114,20 @@ export default function DataCleaning({
   onApplyStandardize,
   onConcatApply,
   onDeleteConcatColumn,
-  removedColumns,
-  onRemoveColumns,
-  onRestoreColumns,
   onProceed,
   onSkip,
 }: DataCleaningProps) {
   const [subStep, setSubStep] = useState<"5a" | "5b">("5a");
-  const [innerTab, setInnerTab] = useState<"dedup" | "colstd" | "concat" | "colrem">("dedup");
+  const [innerTab, setInnerTab] = useState<"dedup" | "colstd" | "concat">("dedup");
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
   const [localConfig, setLocalConfig] = useState<CleaningConfig>(DEFAULT_CONFIG);
   const [groupPreviews, setGroupPreviews] = useState<Record<string, { columns: string[]; rows: any[] }>>({});
 
   // Dedup state
   const [dedupColumns, setDedupColumns] = useState<string[]>([]);
+  const [dedupStrategy, setDedupStrategy] = useState<DedupStrategy>("first");
+  const [dedupValueColumn, setDedupValueColumn] = useState<string>("");
+  const [dedupKeep, setDedupKeep] = useState<"max" | "min">("max");
   const [dedupPreviewStats, setDedupPreviewStats] = useState<DedupStats | null>(null);
   const [dedupPreviewLoading, setDedupPreviewLoading] = useState(false);
   const [dedupApplyLoading, setDedupApplyLoading] = useState(false);
@@ -131,11 +143,6 @@ export default function DataCleaning({
   const [concatSelectedCols, setConcatSelectedCols] = useState<string[]>([]);
   const [concatApplyLoading, setConcatApplyLoading] = useState(false);
   const [concatDeleteLoading, setConcatDeleteLoading] = useState<string | null>(null);
-
-  // Column Removal state
-  const [colRemSelected, setColRemSelected] = useState<string[]>([]);
-  const [colRemApplyLoading, setColRemApplyLoading] = useState(false);
-  const [colRemRestoreLoading, setColRemRestoreLoading] = useState<string | null>(null);
 
   useEffect(() => {
     if (groupSchema.length > 0 && !selectedGroup) {
@@ -175,12 +182,14 @@ export default function DataCleaning({
 
   useEffect(() => {
     setDedupColumns([]);
+    setDedupStrategy("first");
+    setDedupValueColumn("");
+    setDedupKeep("max");
     setDedupPreviewStats(null);
     setStdSelectedCols([]);
     setStdAnalysisResults([]);
     setStdActions({});
     setConcatSelectedCols([]);
-    setColRemSelected([]);
   }, [selectedGroup]);
 
   const currentSchema = selectedGroup ? groupSchema.find((g: any) => g.group_id === selectedGroup) : null;
@@ -190,7 +199,6 @@ export default function DataCleaning({
   const isDeduped = selectedGroup ? !!dedupResults[selectedGroup] : false;
   const isStandardized = selectedGroup ? !!standardizeConfigs[selectedGroup] : false;
   const hasConcats = selectedGroup ? (concatConfigs[selectedGroup]?.length || 0) > 0 : false;
-  const hasRemovedCols = selectedGroup ? (removedColumns[selectedGroup]?.length || 0) > 0 : false;
 
   const handleApplyCleaning = async () => {
     if (!selectedGroup) return;
@@ -208,7 +216,11 @@ export default function DataCleaning({
     if (!selectedGroup || dedupColumns.length === 0) return;
     setDedupPreviewLoading(true);
     try {
-      const stats = await onDedupPreview(selectedGroup, dedupColumns);
+      // Pass strategy-specific parameters only for spend/date strategies
+      const strategy = dedupStrategy;
+      const valueColumn = strategy !== "first" ? dedupValueColumn || undefined : undefined;
+      const keep = strategy !== "first" ? dedupKeep : undefined;
+      const stats = await onDedupPreview(selectedGroup, dedupColumns, strategy, valueColumn, keep);
       setDedupPreviewStats(stats);
     } finally {
       setDedupPreviewLoading(false);
@@ -219,7 +231,11 @@ export default function DataCleaning({
     if (!selectedGroup || dedupColumns.length === 0) return;
     setDedupApplyLoading(true);
     try {
-      await onDedupApply(selectedGroup, dedupColumns);
+      // Pass strategy-specific parameters only for spend/date strategies
+      const strategy = dedupStrategy;
+      const valueColumn = strategy !== "first" ? dedupValueColumn || undefined : undefined;
+      const keep = strategy !== "first" ? dedupKeep : undefined;
+      await onDedupApply(selectedGroup, dedupColumns, strategy, valueColumn, keep);
       setDedupPreviewStats(null);
       setGroupPreviews((prev) => { const n = { ...prev }; delete n[selectedGroup]; return n; });
       fetchGroupPreview(selectedGroup);
@@ -297,45 +313,11 @@ export default function DataCleaning({
     }
   };
 
-  // Column Removal handlers
-  const toggleColRemColumn = (col: string) => {
-    setColRemSelected((prev) => prev.includes(col) ? prev.filter((c) => c !== col) : [...prev, col]);
-  };
-
-  const handleColRemApply = async () => {
-    if (!selectedGroup || colRemSelected.length === 0) return;
-    setColRemApplyLoading(true);
-    try {
-      const result = await onRemoveColumns(selectedGroup, colRemSelected);
-      if (result) {
-        setColRemSelected([]);
-        setGroupPreviews((prev) => { const n = { ...prev }; delete n[selectedGroup!]; return n; });
-        fetchGroupPreview(selectedGroup);
-      }
-    } finally {
-      setColRemApplyLoading(false);
-    }
-  };
-
-  const handleColRemRestore = async (columnName: string) => {
-    if (!selectedGroup) return;
-    setColRemRestoreLoading(columnName);
-    try {
-      const result = await onRestoreColumns(selectedGroup, [columnName]);
-      if (result) {
-        setGroupPreviews((prev) => { const n = { ...prev }; delete n[selectedGroup!]; return n; });
-        fetchGroupPreview(selectedGroup);
-      }
-    } finally {
-      setColRemRestoreLoading(null);
-    }
-  };
-
   if (step !== 5) return null;
 
   const gn = (id: string) => groupNameMap[id] || id;
 
-  const groupSidebar = (statusKey: "clean" | "dedup" | "standardize" | "concat" | "colrem") => (
+  const groupSidebar = (statusKey: "clean" | "dedup" | "standardize" | "concat") => (
     <div className="w-64 border-r border-neutral-100 dark:border-neutral-800 bg-neutral-50/30 dark:bg-neutral-800 overflow-y-auto shrink-0">
       <div className="p-3">
         <p className="text-[10px] font-bold uppercase tracking-wider text-neutral-400 dark:text-neutral-500 px-2 mb-2">
@@ -346,8 +328,7 @@ export default function DataCleaning({
           const isDone = statusKey === "clean" ? !!cleaningConfigs[gs.group_id]
             : statusKey === "dedup" ? !!dedupResults[gs.group_id]
             : statusKey === "standardize" ? !!standardizeConfigs[gs.group_id]
-            : statusKey === "concat" ? (concatConfigs[gs.group_id]?.length || 0) > 0
-            : (removedColumns[gs.group_id]?.length || 0) > 0;
+            : (concatConfigs[gs.group_id]?.length || 0) > 0;
           return (
             <button
               key={gs.group_id}
@@ -418,7 +399,7 @@ export default function DataCleaning({
           >
             5b — Data Cleaning (Additional)
             {(() => {
-              const total = Object.keys(dedupResults).length + Object.keys(standardizeConfigs).length + Object.values(concatConfigs).flat().length + Object.values(removedColumns).flat().length;
+              const total = Object.keys(dedupResults).length + Object.keys(standardizeConfigs).length + Object.values(concatConfigs).flat().length;
               return total > 0 ? <span className="ml-1.5 text-emerald-600 dark:text-emerald-400">({total})</span> : null;
             })()}
           </button>
@@ -529,9 +510,11 @@ export default function DataCleaning({
                 {/* Data preview */}
                 {currentPreview && columns.length > 0 && (
                   <div>
-                    <p className="text-xs font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider mb-3">
-                      Data Preview ({columns.length} columns)
-                    </p>
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="text-xs font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider">
+                        Data Preview ({columns.length} columns)
+                      </p>
+                    </div>
                     <div className="overflow-x-auto border border-neutral-200 dark:border-neutral-700 rounded-xl max-h-64">
                       <table className="min-w-full text-xs">
                         <thead className="bg-neutral-50 dark:bg-neutral-800 sticky top-0">
@@ -578,7 +561,6 @@ export default function DataCleaning({
                 { key: "dedup" as const, label: "Deduplication", count: Object.keys(dedupResults).length },
                 { key: "colstd" as const, label: "Column Standardization", count: Object.keys(standardizeConfigs).length },
                 { key: "concat" as const, label: "Concatenation", count: Object.values(concatConfigs).flat().length },
-                { key: "colrem" as const, label: "Column Removal", count: Object.values(removedColumns).flat().length },
               ]).map((tab) => (
                 <button
                   key={tab.key}
@@ -600,7 +582,7 @@ export default function DataCleaning({
           </div>
 
           <div className="flex min-h-[500px]">
-            {groupSidebar(innerTab === "dedup" ? "dedup" : innerTab === "colstd" ? "standardize" : innerTab === "concat" ? "concat" : "colrem")}
+            {groupSidebar(innerTab === "dedup" ? "dedup" : innerTab === "colstd" ? "standardize" : "concat")}
 
             <div className="flex-1 overflow-y-auto">
 
@@ -623,7 +605,11 @@ export default function DataCleaning({
                   <div className="flex items-center gap-2">
                     <SecondaryButton
                       onClick={handleDedupPreview}
-                      disabled={dedupColumns.length === 0 || dedupPreviewLoading}
+                      disabled={
+                        dedupColumns.length === 0 ||
+                        dedupPreviewLoading ||
+                        (dedupStrategy !== "first" && !dedupValueColumn)
+                      }
                       className="text-xs px-3 py-2"
                     >
                       {dedupPreviewLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <BarChart3 className="w-3 h-3" />}
@@ -631,7 +617,12 @@ export default function DataCleaning({
                     </SecondaryButton>
                     <PrimaryButton
                       onClick={handleDedupApply}
-                      disabled={dedupColumns.length === 0 || dedupApplyLoading || !dedupPreviewStats}
+                      disabled={
+                        dedupColumns.length === 0 ||
+                        dedupApplyLoading ||
+                        !dedupPreviewStats ||
+                        (dedupStrategy !== "first" && !dedupValueColumn)
+                      }
                       className="text-xs px-4 py-2"
                     >
                       {dedupApplyLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
@@ -640,9 +631,150 @@ export default function DataCleaning({
                   </div>
                 </div>
 
+                {/* Strategy Selection */}
+                <div className="border border-neutral-200 dark:border-neutral-700 rounded-xl overflow-hidden">
+                  <div className="px-4 py-3 bg-emerald-50/60 dark:bg-emerald-950/20 border-b border-neutral-200 dark:border-neutral-700">
+                    <p className="text-xs font-bold text-emerald-700 dark:text-emerald-400">Deduplication Strategy</p>
+                    <p className="text-[10px] text-emerald-600/70 dark:text-emerald-500/70">Choose how to determine which row to keep</p>
+                  </div>
+                  <div className="p-4">
+                    <div className="grid grid-cols-3 gap-3">
+                      {[
+                        { key: "first" as const, label: "First Row", desc: "Keep first occurrence", icon: "1" },
+                        { key: "spend" as const, label: "By Spend", desc: "Keep by spend value", icon: "$" },
+                        { key: "date" as const, label: "By Date", desc: "Keep by date value", icon: "📅" },
+                      ].map((opt) => (
+                        <button
+                          key={opt.key}
+                          type="button"
+                          onClick={() => {
+                            setDedupStrategy(opt.key);
+                            setDedupPreviewStats(null);
+                            if (opt.key === "first") {
+                              setDedupValueColumn("");
+                            }
+                          }}
+                          className={`px-3 py-2.5 rounded-lg border text-left transition-all ${
+                            dedupStrategy === opt.key
+                              ? "bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800 ring-1 ring-red-200 dark:ring-red-800"
+                              : "bg-white dark:bg-neutral-800 border-neutral-200 dark:border-neutral-700 hover:border-red-200 dark:hover:border-red-800"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className={`text-xs font-bold ${dedupStrategy === opt.key ? "text-red-600 dark:text-red-400" : "text-neutral-500 dark:text-neutral-400"}`}>
+                              {opt.icon}
+                            </span>
+                            <span className={`text-xs font-bold ${dedupStrategy === opt.key ? "text-red-700 dark:text-red-400" : "text-neutral-700 dark:text-neutral-300"}`}>
+                              {opt.label}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-neutral-500 dark:text-neutral-500 mt-0.5">{opt.desc}</p>
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Strategy-specific configuration */}
+                    {dedupStrategy === "spend" && (
+                      <div className="mt-4 pt-4 border-t border-neutral-200 dark:border-neutral-700 space-y-3">
+                        <div className="flex items-center gap-4">
+                          <label className="text-xs font-bold text-neutral-700 dark:text-neutral-300 whitespace-nowrap">Spend Column:</label>
+                          <select
+                            value={dedupValueColumn}
+                            onChange={(e) => { setDedupValueColumn(e.target.value); setDedupPreviewStats(null); }}
+                            className="flex-1 text-xs border border-neutral-200 dark:border-neutral-700 rounded-lg px-3 py-2 bg-white dark:bg-neutral-900 focus:outline-none focus:ring-2 focus:ring-red-500"
+                          >
+                            <option value="">Select a column...</option>
+                            {columns.map((col) => (
+                              <option key={col} value={col}>{col}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <label className="text-xs font-bold text-neutral-700 dark:text-neutral-300 whitespace-nowrap">Keep:</label>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => { setDedupKeep("max"); setDedupPreviewStats(null); }}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                                dedupKeep === "max"
+                                  ? "bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800"
+                                  : "bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border border-neutral-200 dark:border-neutral-700"
+                              }`}
+                            >
+                              Higher Spend
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => { setDedupKeep("min"); setDedupPreviewStats(null); }}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                                dedupKeep === "min"
+                                  ? "bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800"
+                                  : "bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border border-neutral-200 dark:border-neutral-700"
+                              }`}
+                            >
+                              Lower Spend
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {dedupStrategy === "date" && (
+                      <div className="mt-4 pt-4 border-t border-neutral-200 dark:border-neutral-700 space-y-3">
+                        <div className="flex items-center gap-4">
+                          <label className="text-xs font-bold text-neutral-700 dark:text-neutral-300 whitespace-nowrap">Date Column:</label>
+                          <select
+                            value={dedupValueColumn}
+                            onChange={(e) => { setDedupValueColumn(e.target.value); setDedupPreviewStats(null); }}
+                            className="flex-1 text-xs border border-neutral-200 dark:border-neutral-700 rounded-lg px-3 py-2 bg-white dark:bg-neutral-900 focus:outline-none focus:ring-2 focus:ring-red-500"
+                          >
+                            <option value="">Select a column...</option>
+                            {columns.map((col) => (
+                              <option key={col} value={col}>{col}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <label className="text-xs font-bold text-neutral-700 dark:text-neutral-300 whitespace-nowrap">Keep:</label>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => { setDedupKeep("max"); setDedupPreviewStats(null); }}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                                dedupKeep === "max"
+                                  ? "bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800"
+                                  : "bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border border-neutral-200 dark:border-neutral-700"
+                              }`}
+                            >
+                              Later Date
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => { setDedupKeep("min"); setDedupPreviewStats(null); }}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                                dedupKeep === "min"
+                                  ? "bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800"
+                                  : "bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 border border-neutral-200 dark:border-neutral-700"
+                              }`}
+                            >
+                              Earlier Date
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 {/* Instructions */}
                 <div className="px-4 py-3 bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-xl text-xs text-blue-700 dark:text-blue-300">
-                  Select columns that define uniqueness using the checkboxes above column headers. Click <strong>Preview Stats</strong> to see how many duplicates will be removed, then <strong>Apply</strong> to confirm.
+                  {dedupStrategy === "first" ? (
+                    <>Select columns that define uniqueness using the checkboxes above column headers. Click <strong>Preview Stats</strong> to see how many duplicates will be removed, then <strong>Apply</strong> to confirm.</>
+                  ) : dedupStrategy === "spend" ? (
+                    <><strong>Step 1:</strong> Select uniqueness key columns below. <strong>Step 2:</strong> Choose a spend column and whether to keep higher or lower spend. Click <strong>Preview Stats</strong> to see results.</>
+                  ) : (
+                    <><strong>Step 1:</strong> Select uniqueness key columns below. <strong>Step 2:</strong> Choose a date column and whether to keep earlier or later dates. Click <strong>Preview Stats</strong> to see results.</>
+                  )}
                 </div>
 
                 {/* Dedup key summary */}
@@ -650,7 +782,9 @@ export default function DataCleaning({
                   <div className="px-4 py-2.5 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl text-[11px] text-amber-700 dark:text-amber-400 flex items-center justify-between">
                     <span>
                       Uniqueness key: <span className="font-bold">{dedupColumns.join(" + ")}</span>
-                      {" "}&mdash; rows with the same combination will be deduplicated (first row kept).
+                      {dedupStrategy === "first" && " — rows with the same combination will be deduplicated (first row kept)."}
+                      {dedupStrategy === "spend" && dedupValueColumn && ` — rows with the same combination will be deduplicated (${dedupKeep === "max" ? "higher" : "lower"} spend in "${dedupValueColumn}" kept).`}
+                      {dedupStrategy === "date" && dedupValueColumn && ` — rows with the same combination will be deduplicated (${dedupKeep === "max" ? "later" : "earlier"} date in "${dedupValueColumn}" kept).`}
                     </span>
                     <button
                       type="button"
@@ -1131,166 +1265,6 @@ export default function DataCleaning({
             </>
           )}
 
-          {/* ── Column Removal tab ── */}
-          {innerTab === "colrem" && (
-            <>
-            {selectedGroup && columns.length > 0 ? (
-              <div className="p-6 space-y-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h3 className="font-semibold tracking-tight text-neutral-900 dark:text-white text-sm flex items-center gap-2">
-                      <Trash2 className="w-4 h-4 text-red-500" />
-                      {gn(selectedGroup)}
-                    </h3>
-                    <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-0.5">
-                      {currentSchema?.rows?.toLocaleString()} rows, {columns.length} columns
-                      {hasRemovedCols && (
-                        <span className="text-orange-600 dark:text-orange-400 font-medium ml-2">
-                          {removedColumns[selectedGroup].length} column(s) removed
-                        </span>
-                      )}
-                    </p>
-                  </div>
-                  <PrimaryButton
-                    onClick={handleColRemApply}
-                    disabled={colRemSelected.length === 0 || colRemApplyLoading}
-                    className="text-xs px-4 py-2"
-                  >
-                    {colRemApplyLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
-                    Remove Columns ({colRemSelected.length})
-                  </PrimaryButton>
-                </div>
-
-                {/* Instructions */}
-                <div className="px-4 py-3 bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-xl text-xs text-blue-700 dark:text-blue-300">
-                  Select columns to remove using the checkboxes above column headers. Removed columns can be restored later from the <strong>Removed Columns</strong> section below.
-                </div>
-
-                {/* Selection summary */}
-                {colRemSelected.length > 0 && (
-                  <div className="px-4 py-2.5 bg-orange-50 dark:bg-orange-950/30 border border-orange-200 dark:border-orange-800 rounded-xl text-[11px] text-orange-700 dark:text-orange-400 flex items-center justify-between">
-                    <span>
-                      Selected for removal: <span className="font-bold">{colRemSelected.join(", ")}</span>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setColRemSelected([])}
-                      className="text-[10px] font-medium text-red-500 hover:text-red-700 transition-colors ml-3 shrink-0"
-                    >
-                      Clear all
-                    </button>
-                  </div>
-                )}
-
-                {/* Removed columns (restore section) */}
-                {removedColumns[selectedGroup]?.length > 0 && (
-                  <div className="space-y-2">
-                    <p className="text-xs font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider">
-                      Removed Columns
-                    </p>
-                    {removedColumns[selectedGroup].map((colName) => (
-                      <div key={colName} className="flex items-center justify-between border border-orange-200 dark:border-orange-700 rounded-xl px-4 py-3 bg-orange-50/50 dark:bg-orange-950/10">
-                        <div>
-                          <p className="text-sm font-bold text-neutral-900 dark:text-white">{colName}</p>
-                          <p className="text-[11px] text-neutral-500 dark:text-neutral-400">Removed — click Restore to bring it back</p>
-                        </div>
-                        <SecondaryButton
-                          onClick={() => handleColRemRestore(colName)}
-                          disabled={colRemRestoreLoading === colName}
-                          className="text-xs"
-                        >
-                          {colRemRestoreLoading === colName
-                            ? <Loader2 className="w-3 h-3 animate-spin" />
-                            : <RotateCcw className="w-3 h-3" />}
-                          Restore
-                        </SecondaryButton>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Column selection table */}
-                {currentPreview && columns.length > 0 && (
-                  <div>
-                    <div className="flex items-center justify-between mb-3">
-                      <p className="text-xs font-bold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider">
-                        Select Columns to Remove
-                      </p>
-                      {colRemSelected.length > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => setColRemSelected([])}
-                          className="text-[11px] text-red-500 hover:text-red-700 dark:hover:text-red-400 font-medium"
-                        >
-                          Clear all
-                        </button>
-                      )}
-                    </div>
-                    <div className="overflow-x-auto border border-neutral-200 dark:border-neutral-700 rounded-xl max-h-[400px]">
-                      <table className="min-w-full text-xs">
-                        <thead className="sticky top-0 z-10">
-                          <tr className="bg-neutral-100/80 dark:bg-neutral-800/80 backdrop-blur">
-                            {columns.map((col) => {
-                              const isSelected = colRemSelected.includes(col);
-                              return (
-                                <td key={col} className="px-3 py-2 text-center border-b border-neutral-200 dark:border-neutral-700">
-                                  <button type="button" onClick={() => toggleColRemColumn(col)} className="mx-auto block">
-                                    <span className={`inline-flex items-center justify-center w-5 h-5 rounded border-2 transition-colors cursor-pointer ${
-                                      isSelected
-                                        ? "bg-red-500 border-red-500 text-white"
-                                        : "border-neutral-300 dark:border-neutral-600 hover:border-red-400"
-                                    }`}>
-                                      {isSelected && <Check className="w-3 h-3" />}
-                                    </span>
-                                  </button>
-                                </td>
-                              );
-                            })}
-                          </tr>
-                          <tr className="bg-neutral-50 dark:bg-neutral-800">
-                            {columns.map((col) => (
-                              <th key={col} className={`px-3 py-2 text-left font-bold whitespace-nowrap border-b border-neutral-200 dark:border-neutral-700 ${
-                                colRemSelected.includes(col) ? "text-red-700 dark:text-red-400 bg-red-50/50 dark:bg-red-950/20" : "text-neutral-500 dark:text-neutral-400"
-                              }`}>
-                                {col}
-                              </th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {currentPreview.rows.length > 0 ? (
-                            currentPreview.rows.map((row: any, ri: number) => (
-                              <tr key={ri} className="hover:bg-red-50/30 dark:hover:bg-red-950/10">
-                                {columns.map((col) => (
-                                  <td key={col} className={`px-3 py-1.5 whitespace-nowrap max-w-[200px] truncate border-b border-neutral-100 dark:border-neutral-800 ${
-                                    colRemSelected.includes(col) ? "text-red-400 dark:text-red-600 line-through" : "text-neutral-700 dark:text-neutral-300"
-                                  }`}>
-                                    {row[col] != null ? String(row[col]) : <span className="text-neutral-300 italic">null</span>}
-                                  </td>
-                                ))}
-                              </tr>
-                            ))
-                          ) : (
-                            <tr>
-                              <td colSpan={columns.length} className="px-3 py-6 text-center text-neutral-400">
-                                No preview data available
-                              </td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="flex items-center justify-center h-full text-neutral-400 text-sm">
-                {groupSchema.length === 0 ? "No groups available. Complete the append step first." : "Select a group from the list to remove columns."}
-              </div>
-            )}
-            </>
-          )}
-
             </div>
           </div>
         </div>
@@ -1314,12 +1288,7 @@ export default function DataCleaning({
               {Object.values(concatConfigs).flat().length} concat column{Object.values(concatConfigs).flat().length !== 1 ? "s" : ""} created
             </span>
           )}
-          {Object.values(removedColumns).flat().length > 0 && (
-            <span className="rounded-full border border-orange-200 dark:border-orange-800 bg-orange-50 dark:bg-orange-950/30 px-3 py-1 text-xs font-medium text-orange-700 dark:text-orange-400">
-              {Object.values(removedColumns).flat().length} column{Object.values(removedColumns).flat().length !== 1 ? "s" : ""} removed
-            </span>
-          )}
-          {Object.keys(cleaningConfigs).length === 0 && Object.keys(dedupResults).length === 0 && Object.values(concatConfigs).flat().length === 0 && Object.values(removedColumns).flat().length === 0 && (
+          {Object.keys(cleaningConfigs).length === 0 && Object.keys(dedupResults).length === 0 && Object.values(concatConfigs).flat().length === 0 && (
             <span>No cleaning or dedup applied yet. You can skip this step.</span>
           )}
         </div>

@@ -80,7 +80,7 @@ def file_display_name(internal_path: str, sheet: str | None) -> str:
 def build_inventory_from_db(conn: DuckDBConnection) -> list[dict]:
     registered = all_registered_tables(conn)
     candidates = [
-        e for e in registered if e["sql_name"].startswith(("tbl__", "hn__"))
+        e for e in registered if e["sql_name"].startswith(("tbl__", "hn__", "pg__", "appended__"))
     ]
     if not candidates:
         return []
@@ -114,7 +114,7 @@ def build_files_payload_from_db(
 ) -> list[dict]:
     registered = all_registered_tables(conn)
     candidates = [
-        e for e in registered if e["sql_name"].startswith(("tbl__", "hn__"))
+        e for e in registered if e["sql_name"].startswith(("tbl__", "hn__", "pg__", "appended__"))
     ]
     if not candidates:
         return []
@@ -185,7 +185,7 @@ def build_files_payload_from_db(
 def build_previews_from_db(conn: DuckDBConnection) -> dict[str, dict]:
     registered = all_registered_tables(conn)
     candidates = [
-        e for e in registered if e["sql_name"].startswith(("tbl__", "hn__"))
+        e for e in registered if e["sql_name"].startswith(("tbl__", "hn__", "pg__", "appended__"))
     ]
     if not candidates:
         return {}

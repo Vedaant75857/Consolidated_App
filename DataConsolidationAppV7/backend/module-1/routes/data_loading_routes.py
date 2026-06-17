@@ -175,13 +175,33 @@ def get_preview():
             table_key = request.args.get("tableKey")
 
         if not session_id or not table_key:
-            return jsonify({"error": "sessionId and tableKey are required."}), 400
+            return jsonify(json_safe({"error": "sessionId and tableKey are required."})), 400
 
-        conn = get_session_db(session_id)
-        preview = build_single_preview(conn, table_key)
+        with get_session_lock(session_id):
+            conn = get_session_db(session_id)
+            preview = build_single_preview(conn, table_key)
         if preview is None:
-            return jsonify({"error": "Table not found."}), 404
-        return jsonify({"preview": preview})
+            return jsonify(json_safe({"error": "Table not found."})), 404
+        return jsonify(json_safe({"preview": preview}))
+    except ValueError as exc:
+        return jsonify(json_safe({"error": str(exc)})), 400
+    except Exception as exc:
+        logger.exception("get-preview failed")
+        return jsonify(json_safe({"error": str(exc) or "Internal server error"})), 500
+
+
+@data_loading_bp.route("/get-previews-bulk", methods=["GET"])
+def get_previews_bulk():
+    """Return previews and inventory for all registered tbl__/hn__ tables."""
+    try:
+        session_id = request.args.get("sessionId")
+        if not session_id:
+            return jsonify({"error": "sessionId is required."}), 400
+        conn = get_session_db(session_id)
+        return jsonify({
+            "previews": build_previews_from_db(conn),
+            "inventory": build_inventory_from_db(conn),
+        })
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 

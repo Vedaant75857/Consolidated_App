@@ -124,7 +124,22 @@ def _apply_column_types(
         conn.commit()
 
 
-def _deduplicate_rows(conn: DuckDBConnection, table: str, dedup_cols: list[str]) -> int:
+def _deduplicate_rows(
+    conn: DuckDBConnection,
+    table: str,
+    dedup_cols: list[str],
+    strategy: str = "first",
+    value_column: str | None = None,
+    keep: str = "max",
+) -> int:
+    """
+    Deduplicate rows using configurable strategy.
+
+    Args:
+        strategy: "first" - keep first occurrence, "spend" - keep by spend value, "date" - keep by date value
+        value_column: Column to use for spend/date strategies
+        keep: "max" - keep highest value (higher spend, later date), "min" - keep lowest value
+    """
     cols = read_table_columns(conn, table)
     existing = [c for c in dedup_cols if c in cols]
     if not existing:
@@ -139,10 +154,27 @@ def _deduplicate_rows(conn: DuckDBConnection, table: str, dedup_cols: list[str])
     swap = safe_table_name("tmpdedup", table)
     q_swap = quote_id(swap)
     drop_table(conn, swap)
+
+    # Build ORDER BY clause based on strategy
+    if strategy == "first" or not value_column or value_column not in cols:
+        order_by = "ORDER BY (SELECT NULL)"
+    elif strategy == "spend":
+        # For spend, cast to double and order by value
+        q_value = quote_id(value_column)
+        direction = "DESC" if keep == "max" else "ASC"
+        order_by = f"ORDER BY TRY_CAST({q_value} AS DOUBLE) {direction} NULLS LAST"
+    elif strategy == "date":
+        # For date, parse as date and order
+        q_value = quote_id(value_column)
+        direction = "DESC" if keep == "max" else "ASC"
+        order_by = f"ORDER BY date({q_value}) {direction} NULLS LAST"
+    else:
+        order_by = "ORDER BY (SELECT NULL)"
+
     conn.execute(
         f"""CREATE TABLE {q_swap} AS
         SELECT {col_list} FROM (
-            SELECT {col_list}, ROW_NUMBER() OVER (PARTITION BY {group_exprs} ORDER BY (SELECT NULL)) AS _rn
+            SELECT {col_list}, ROW_NUMBER() OVER (PARTITION BY {group_exprs} {order_by}) AS _rn
             FROM {tbl}
         ) sub
         WHERE sub._rn = 1"""
@@ -158,8 +190,16 @@ def dedup_preview_stats(
     conn: DuckDBConnection,
     group_id: str,
     dedup_columns: list[str],
+    strategy: str = "first",
+    value_column: str | None = None,
+    keep: str = "max",
 ) -> dict[str, Any]:
-    """Return dedup statistics WITHOUT modifying data."""
+    """
+    Return dedup statistics WITHOUT modifying data.
+
+    For spend/date strategies, the duplicate count may differ because
+    different rows are kept based on the value column ordering.
+    """
     sql_name = lookup_sql_name(conn, group_id)
     if not sql_name or not table_exists(conn, sql_name):
         raise ValueError(f"Table not found for group: {group_id}")
@@ -175,9 +215,36 @@ def dedup_preview_stats(
         }
     tbl = quote_id(sql_name)
     group_exprs = ", ".join(quote_id(c) for c in existing)
-    row = conn.execute(
-        f"SELECT COUNT(*) FROM (SELECT 1 FROM {tbl} GROUP BY {group_exprs})"
-    ).fetchone()
+
+    # For first row strategy, use simple GROUP BY count
+    if strategy == "first" or not value_column or value_column not in cols:
+        row = conn.execute(
+            f"SELECT COUNT(*) FROM (SELECT 1 FROM {tbl} GROUP BY {group_exprs})"
+        ).fetchone()
+    else:
+        # For spend/date strategies, simulate the ROW_NUMBER logic
+        # Build the ORDER BY clause matching the apply logic
+        if strategy == "spend":
+            q_value = quote_id(value_column)
+            direction = "DESC" if keep == "max" else "ASC"
+            order_by = f"TRY_CAST({q_value} AS DOUBLE) {direction} NULLS LAST"
+        elif strategy == "date":
+            q_value = quote_id(value_column)
+            direction = "DESC" if keep == "max" else "ASC"
+            order_by = f"date({q_value}) {direction} NULLS LAST"
+        else:
+            order_by = "(SELECT NULL)"
+
+        # Count how many unique rows we would keep after dedup
+        row = conn.execute(
+            f"""SELECT COUNT(*) FROM (
+                SELECT 1 FROM (
+                    SELECT ROW_NUMBER() OVER (PARTITION BY {group_exprs} ORDER BY {order_by}) AS _rn
+                    FROM {tbl}
+                ) sub WHERE sub._rn = 1
+            )"""
+        ).fetchone()
+
     unique_rows = row[0] if row else total_rows
     duplicate_rows = total_rows - unique_rows
     decrease_pct = round(100 * duplicate_rows / total_rows, 2) if total_rows else 0.0
@@ -188,6 +255,9 @@ def dedup_preview_stats(
         "duplicate_rows": duplicate_rows,
         "decrease_pct": decrease_pct,
         "dedup_columns": existing,
+        "strategy": strategy,
+        "value_column": value_column if strategy in ("spend", "date") else None,
+        "keep": keep if strategy in ("spend", "date") else None,
     }
 
 
@@ -195,13 +265,23 @@ def dedup_apply_group(
     conn: DuckDBConnection,
     group_id: str,
     dedup_columns: list[str],
+    strategy: str = "first",
+    value_column: str | None = None,
+    keep: str = "max",
 ) -> dict[str, Any]:
-    """Apply deduplication to a group table, keeping first occurrence."""
+    """
+    Apply deduplication to a group table using configurable strategy.
+
+    Args:
+        strategy: "first" - keep first occurrence, "spend" - keep by spend value, "date" - keep by date value
+        value_column: Column to use for spend/date strategies
+        keep: "max" - keep highest value (higher spend, later date), "min" - keep lowest value
+    """
     sql_name = lookup_sql_name(conn, group_id)
     if not sql_name or not table_exists(conn, sql_name):
         raise ValueError(f"Table not found for group: {group_id}")
     before = table_row_count(conn, sql_name)
-    removed = _deduplicate_rows(conn, sql_name, dedup_columns)
+    removed = _deduplicate_rows(conn, sql_name, dedup_columns, strategy, value_column, keep)
     after = table_row_count(conn, sql_name)
 
     schema = get_meta(conn, "groupSchemaTableRows") or []
@@ -216,6 +296,9 @@ def dedup_apply_group(
         "rows_after": after,
         "duplicates_removed": removed,
         "decrease_pct": round(100 * removed / before, 2) if before else 0.0,
+        "strategy": strategy,
+        "value_column": value_column if strategy in ("spend", "date") else None,
+        "keep": keep if strategy in ("spend", "date") else None,
     }
 
 

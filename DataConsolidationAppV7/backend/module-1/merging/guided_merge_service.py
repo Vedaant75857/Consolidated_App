@@ -46,6 +46,14 @@ from merging.column_metadata import (
 
 _KNOWN_EXTS = {".xls", ".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm", ".csv", ".zip"}
 
+# System columns to exclude from merge analysis (tracking/metadata columns)
+SYSTEM_COLUMNS_TO_EXCLUDE = {
+    "file_name", "file_name", "FILE_NAME",
+    "record_id", "recordid", "RECORD_ID", "RECORDID",
+    "source_table", "source table", "__source_table", "_source_table",
+    "__source", "_source",
+}
+
 
 def _strip_file_ext(name: str) -> str:
     """Remove a known file extension from a group/file name to avoid double extensions in labels."""
@@ -57,6 +65,24 @@ def _strip_file_ext(name: str) -> str:
 
 def _normalize_col(name: str) -> str:
     return name.lower().strip().replace(" ", "_").replace("-", "_")
+
+
+def _is_system_column(col_name: str) -> bool:
+    """Check if a column is a system/metadata column that should be excluded from merge analysis."""
+    norm = _normalize_col(col_name)
+    # Check exact matches and common patterns
+    if norm in SYSTEM_COLUMNS_TO_EXCLUDE:
+        return True
+    # Check for record_id pattern (e.g., record_id_1, record_id_2)
+    if norm.startswith("record_id") or norm.startswith("recordid"):
+        return True
+    # Check for file name patterns
+    if "file_name" in norm or "filename" in norm:
+        return True
+    # Check for source table patterns
+    if "source_table" in norm or "source" == norm:
+        return True
+    return False
 
 
 def _norm_key_expr(col_ref: str) -> str:
@@ -219,6 +245,11 @@ def find_common_columns(
 ) -> list[dict[str, Any]]:
     base_cols = read_table_columns(conn, base_sql_name)
     source_cols = read_table_columns(conn, source_sql_name)
+
+    # Filter out system columns from both tables
+    base_cols = [c for c in base_cols if not _is_system_column(c)]
+    source_cols = [c for c in source_cols if not _is_system_column(c)]
+
     if not base_cols or not source_cols:
         return []
 
@@ -352,8 +383,9 @@ def classify_single_column(col_name: str) -> dict[str, str]:
 
 
 def classify_all_columns(columns: list[str]) -> dict[str, dict[str, str]]:
-    """Classify every column in a list using COLUMN_METADATA. Returns {col_name: {category, eligibility, color}}."""
-    return {col: classify_single_column(col) for col in columns}
+    """Classify every column in a list using COLUMN_METADATA. Returns {col_name: {category, eligibility, color}}.
+    System columns are excluded from classification."""
+    return {col: classify_single_column(col) for col in columns if not _is_system_column(col)}
 
 
 # ---------------------------------------------------------------------------
@@ -572,6 +604,7 @@ def execute_merge(
     key_pairs: list[dict[str, str]],
     pull_columns: list[str],
     source_group_id: str,
+    dedup_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not key_pairs:
         raise ValueError("At least one key pair is required.")
@@ -604,12 +637,29 @@ def execute_merge(
         for kp in key_pairs
     )
 
+    # Build ORDER BY clause based on dedup strategy
+    dedup_config = dedup_config or {"strategy": "first"}
+    strategy = dedup_config.get("strategy", "first")
+    value_column = dedup_config.get("valueColumn")
+    keep = dedup_config.get("keep", "max")
+
+    if strategy == "first" or not value_column or value_column not in source_cols:
+        order_by = "ORDER BY (SELECT NULL)"
+    elif strategy == "spend":
+        direction = "DESC" if keep == "max" else "ASC"
+        order_by = f"ORDER BY TRY_CAST({quote_id(value_column)} AS DOUBLE) {direction} NULLS LAST"
+    elif strategy == "date":
+        direction = "DESC" if keep == "max" else "ASC"
+        order_by = f"ORDER BY date({quote_id(value_column)}) {direction} NULLS LAST"
+    else:
+        order_by = "ORDER BY (SELECT NULL)"
+
     conn.execute("DROP TABLE IF EXISTS _dedup_source")
     conn.execute(f"""
         CREATE TEMP TABLE _dedup_source AS
         SELECT {pruned_source_cols} FROM (
             SELECT {pruned_source_cols},
-                   ROW_NUMBER() OVER (PARTITION BY {source_key_expr} ORDER BY (SELECT NULL)) AS _rn
+                   ROW_NUMBER() OVER (PARTITION BY {source_key_expr} {order_by}) AS _rn
             FROM {st}
             WHERE {null_filters}
         ) AS _sub
@@ -1173,6 +1223,10 @@ def suggest_join_keys(
 
     base_cols = read_table_columns(conn, base_sql)
     source_cols = read_table_columns(conn, source_sql)
+
+    # Filter out system columns from both tables
+    base_cols = [c for c in base_cols if not _is_system_column(c)]
+    source_cols = [c for c in source_cols if not _is_system_column(c)]
 
     if not base_cols or not source_cols:
         return {"suggestions": [], "error": "No columns found in one or both tables"}

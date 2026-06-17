@@ -45,6 +45,8 @@ from shared.db import (
 )
 
 from merging.guided_merge_service import (
+    SYSTEM_COLUMNS_TO_EXCLUDE,
+    _is_system_column,
     classify_all_columns,
     classify_columns,
     delete_merge_output,
@@ -102,6 +104,11 @@ def common_columns():
             # Column lists + instant classification (no DB, runs in <1ms)
             base_cols = read_table_columns(conn, base_sql)
             source_cols = read_table_columns(conn, source_sql)
+
+            # Filter out system columns from the column lists
+            base_cols = [c for c in base_cols if not _is_system_column(c)]
+            source_cols = [c for c in source_cols if not _is_system_column(c)]
+
             base_col_classes = classify_all_columns(base_cols)
             source_col_classes = classify_all_columns(source_cols)
 
@@ -120,8 +127,14 @@ def common_columns():
             if include_preview:
                 base_rows = pick_best_rows(read_table(conn, base_sql, PREVIEW_POOL), 50)
                 source_rows = pick_best_rows(read_table(conn, source_sql, PREVIEW_POOL), 50)
-                result["base_preview"] = {"columns": base_cols, "rows": base_rows, "total_rows": table_row_count(conn, base_sql)}
-                result["source_preview"] = {"columns": source_cols, "rows": source_rows, "total_rows": table_row_count(conn, source_sql)}
+                # Filter out system columns from preview rows
+                def filter_system_cols_from_rows(rows):
+                    return [
+                        {k: v for k, v in row.items() if not _is_system_column(k)}
+                        for row in rows
+                    ]
+                result["base_preview"] = {"columns": base_cols, "rows": filter_system_cols_from_rows(base_rows), "total_rows": table_row_count(conn, base_sql)}
+                result["source_preview"] = {"columns": source_cols, "rows": filter_system_cols_from_rows(source_rows), "total_rows": table_row_count(conn, source_sql)}
         return jsonify(result)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -196,6 +209,7 @@ def execute():
         source_group_id = body.get("sourceGroupId")
         key_pairs = body.get("keyPairs", [])
         pull_columns = body.get("pullColumns", [])
+        dedup_config = body.get("dedupConfig") or {"strategy": "first"}
         if not session_id or not base_group_id or not source_group_id:
             return jsonify({"error": "Missing required fields"}), 400
 
@@ -216,7 +230,7 @@ def execute():
                     yield _sse({"stage": "dedup", "progress": 15, "message": "Deduplicating source & executing join..."})
 
                     merge_log = execute_merge(
-                        conn, session_id, base_sql, source_sql, key_pairs, pull_columns, source_group_id
+                        conn, session_id, base_sql, source_sql, key_pairs, pull_columns, source_group_id, dedup_config
                     )
 
                     conn.commit()
@@ -692,6 +706,50 @@ def merge_history_route():
         conn = get_session_db(session_id)
         merge_history = get_meta(conn, "merge_history") or []
         return jsonify({"merge_history": merge_history})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@merging_bp.route("/merge/preview", methods=["GET"])
+def merge_preview():
+    """Paginated preview for a merge output version (latest or specific version)."""
+    try:
+        session_id = request.args.get("sessionId")
+        version_arg = request.args.get("version", "latest")
+        offset = int(request.args.get("offset", 0))
+        limit = min(int(request.args.get("limit", 200)), 500)
+        if not session_id:
+            return jsonify({"error": "sessionId is required"}), 400
+
+        conn = get_session_db(session_id)
+        if version_arg in ("latest", ""):
+            sql_name = "final_merged"
+        elif version_arg.startswith("final_merged"):
+            sql_name = version_arg
+        else:
+            sql_name = f"final_merged_v{int(version_arg)}"
+
+        if not table_exists(conn, sql_name):
+            return jsonify({"error": f"Merge table {sql_name} not found"}), 404
+
+        columns = read_table_columns(conn, sql_name)
+        total = table_row_count(conn, sql_name)
+        col_select = ", ".join(quote_id(c) for c in columns) if columns else "*"
+        rows_raw = conn.execute(
+            f"SELECT {col_select} FROM {quote_id(sql_name)} LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+        rows = [dict(zip(r.keys(), r)) for r in rows_raw]
+
+        return jsonify({
+            "version": version_arg,
+            "table_name": sql_name,
+            "columns": columns,
+            "rows": rows,
+            "total_rows": total,
+            "offset": offset,
+            "limit": limit,
+        })
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 

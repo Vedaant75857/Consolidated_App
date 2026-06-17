@@ -216,12 +216,49 @@ def read_table(conn: DuckDBConnection, table_name: str, limit: int | None = None
     return [dict(zip(r.keys(), r)) for r in rows]
 
 
+def _row_get(row: Any, key: str, index: int = 0) -> Any:
+    """Read a field from a DuckDB/DictRow result row."""
+    if isinstance(row, (list, tuple)):
+        return row[index]
+    if hasattr(row, "keys") and key in row.keys():
+        return row[key]
+    return row[index]
+
+
+def _columns_from_describe(conn: DuckDBConnection, table_name: str) -> list[str]:
+    """Fallback column list via DESCRIBE when information_schema returns nothing."""
+    tbl = quote_id(table_name)
+    try:
+        rows = conn.execute(f"DESCRIBE {tbl}").fetchall()
+    except Exception:
+        return []
+    out: list[str] = []
+    for r in rows:
+        name = _row_get(r, "column_name", 0)
+        if name:
+            out.append(str(name))
+    return out
+
+
+def _columns_from_sample(conn: DuckDBConnection, table_name: str) -> list[str]:
+    """Last-resort column discovery from a sample row's keys."""
+    tbl = quote_id(table_name)
+    try:
+        rows = conn.execute(f"SELECT * FROM {tbl} LIMIT 1").fetchall()
+        if rows:
+            return list(rows[0].keys())
+    except Exception:
+        pass
+    return []
+
+
 def read_table_columns(conn: DuckDBConnection, table_name: str) -> list[str]:
     """Return ordered column names for a table.
 
     Uses DuckDB's information_schema. Restricts to the ``main`` schema and
     deduplicates names so catalog quirks (duplicate rows for the same table
     name across schemas) cannot produce more names than the table has columns.
+    Falls back to DESCRIBE when information_schema returns no columns.
     """
     if not table_exists(conn, table_name):
         return []
@@ -240,7 +277,76 @@ def read_table_columns(conn: DuckDBConnection, table_name: str) -> list[str]:
             continue
         seen.add(name)
         out.append(name)
+    if not out:
+        rows = conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE LOWER(table_name) = LOWER(?) "
+            "ORDER BY ordinal_position",
+            (table_name,),
+        ).fetchall()
+        for r in rows:
+            name = r["column_name"]
+            if name in seen:
+                continue
+            seen.add(name)
+            out.append(name)
+    if not out:
+        out = _columns_from_describe(conn, table_name)
+    if not out:
+        out = _columns_from_sample(conn, table_name)
     return out
+
+
+def _map_duckdb_type_to_ui(data_type: str) -> str:
+    """Map DuckDB information_schema data_type to preview UI type label."""
+    upper = (data_type or "").upper()
+    if upper in ("VARCHAR", "TEXT", "STRING", "CHAR", "BPCHAR"):
+        return "TEXT"
+    if upper in ("BIGINT", "HUGEINT", "UBIGINT", "INTEGER", "INT", "SMALLINT", "TINYINT"):
+        return "INTEGER"
+    if upper in ("DOUBLE", "FLOAT", "REAL", "DECIMAL", "NUMERIC", "BIGNUM"):
+        return "DOUBLE"
+    if upper in ("DATE", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "TIMESTAMPTZ", "DATETIME"):
+        return "DATE"
+    if upper == "BOOLEAN":
+        return "BOOLEAN"
+    return "TEXT"
+
+
+def read_table_column_types(conn: DuckDBConnection, table_name: str) -> dict[str, str]:
+    """Return ordered column name -> UI type mapping from DuckDB schema."""
+    if not table_exists(conn, table_name):
+        return {}
+    rows = conn.execute(
+        "SELECT column_name, data_type FROM information_schema.columns "
+        "WHERE LOWER(table_name) = LOWER(?) "
+        "AND LOWER(table_schema) = LOWER(?) "
+        "ORDER BY ordinal_position",
+        (table_name, "main"),
+    ).fetchall()
+    result: dict[str, str] = {}
+    for r in rows:
+        name = r["column_name"]
+        if name not in result:
+            result[name] = _map_duckdb_type_to_ui(r["data_type"])
+    if not result:
+        rows_any_schema = conn.execute(
+            "SELECT column_name, data_type FROM information_schema.columns "
+            "WHERE LOWER(table_name) = LOWER(?) "
+            "ORDER BY ordinal_position",
+            (table_name,),
+        ).fetchall()
+        for r in rows_any_schema:
+            name = r["column_name"]
+            if name not in result:
+                result[name] = _map_duckdb_type_to_ui(r["data_type"])
+    if not result:
+        for name in _columns_from_describe(conn, table_name):
+            result[name] = "TEXT"
+    if not result:
+        for name in _columns_from_sample(conn, table_name):
+            result[name] = "TEXT"
+    return result
 
 
 def table_exists(conn: DuckDBConnection, table_name: str) -> bool:

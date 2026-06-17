@@ -100,6 +100,7 @@ interface DataLoadingProps {
   onSetHeaderRow: (tableKey: string, rowIndex: number, customNames?: Record<number, string>) => Promise<void>;
   onDeleteRows?: (tableKey: string, rowIds: (string | number)[]) => void;
   onFetchPreview?: (tableKey: string) => void;
+  previewErrors?: Record<string, string>;
 }
 
 function HeaderRowEditor({
@@ -345,6 +346,7 @@ export default function DataLoading({
   onSetHeaderRow,
   onDeleteRows,
   onFetchPreview,
+  previewErrors = {},
 }: DataLoadingProps) {
   const [isDragOver, setIsDragOver] = useState(false);
   const [fileLabel, setFileLabel] = useState<string | null>(null);
@@ -956,10 +958,25 @@ export default function DataLoading({
                     );
                   })()}
 
-                  {isExpanded && !isHeaderEdit && !preview && (
+                  {isExpanded && !isHeaderEdit && !preview && !previewErrors[inv.table_key] && (
                     <div className="px-6 pb-4 flex items-center gap-2">
                       <Loader2 className="w-4 h-4 animate-spin text-neutral-400" />
                       <p className="text-xs text-neutral-400 dark:text-neutral-500 italic">Loading preview…</p>
+                    </div>
+                  )}
+
+                  {isExpanded && !isHeaderEdit && !preview && previewErrors[inv.table_key] && (
+                    <div className="px-6 pb-4">
+                      <p className="text-xs text-red-600 dark:text-red-400">{previewErrors[inv.table_key]}</p>
+                      {onFetchPreview && (
+                        <button
+                          type="button"
+                          onClick={() => onFetchPreview(inv.table_key)}
+                          className="mt-2 text-xs font-semibold text-red-600 hover:text-red-700 dark:text-red-400"
+                        >
+                          Retry preview
+                        </button>
+                      )}
                     </div>
                   )}
 

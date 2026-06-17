@@ -11,12 +11,13 @@ import DataQualityAssessment from "./components/module-1/DataQualityAssessment";
 import ErrorBoundary from "./components/common/ErrorBoundary";
 import LoadingOverlay from "./components/module-1/LoadingOverlay";
 import StatusLog, { type LogEntry } from "./components/module-1/StatusLog";
-import DataPreviewOverlay from "./components/module-1/DataPreviewOverlay";
+import ExcelPreviewOverlay from "./components/module-1/ExcelPreviewOverlay";
 import MergeOutputsPanel from "./components/module-1/MergeOutputsPanel";
 import { getConfig } from "./runtimeConfig";
 import StepChangeWarningDialog from "./components/common/StepChangeWarningDialog";
 import { StepHero, pageVariants, horizontalVariants } from "./components/common/ui";
 import { useTheme } from "./components/common/ThemeProvider";
+import { parseFetchError } from "./components/module-1/services/stitchingApi";
 
 type OperationId =
   | "header_norm_run"
@@ -102,9 +103,11 @@ export default function App() {
   // Step 2: Data Preview
   const [inventory, setInventory] = useState<any[]>([]);
   const [previews, setPreviews] = useState<Record<string, { columns: string[]; rows: any[] }>>({});
+  const [previewErrors, setPreviewErrors] = useState<Record<string, string>>({});
   const previewMutationVersionRef = useRef<Record<string, number>>({});
   const [showDataPreview, setShowDataPreview] = useState(false);
   const [showResultsPreview, setShowResultsPreview] = useState(false);
+  const [resultsPreviewLoading, setResultsPreviewLoading] = useState(false);
   const [resultsPreviews, setResultsPreviews] = useState<Record<string, { columns: string[]; rows: any[] }>>({});
   const [resultsInventory, setResultsInventory] = useState<any[]>([]);
   const [uploadWarnings, setUploadWarnings] = useState<{ file: string; message: string }[]>([]);
@@ -134,7 +137,6 @@ export default function App() {
   const [dedupResults, setDedupResults] = useState<Record<string, any>>({});
   const [standardizeConfigs, setStandardizeConfigs] = useState<Record<string, any>>({});
   const [concatConfigs, setConcatConfigs] = useState<Record<string, Array<{ column_name: string; source_columns: string[] }>>>({});
-  const [removedColumns, setRemovedColumns] = useState<Record<string, string[]>>({});
 
   // Step 6-7: Guided Merge
   const [mergeBaseGroupId, setMergeBaseGroupId] = useState<string>("");
@@ -148,6 +150,11 @@ export default function App() {
   const [mergeResult, setMergeResult] = useState<any>(null);
   const [mergeExecuteResult, setMergeExecuteResult] = useState<any>(null);
   const [mergeHistory, setMergeHistory] = useState<any[]>([]);
+  const [mergeDedupConfig, setMergeDedupConfig] = useState<{
+    strategy: "first" | "spend" | "date";
+    valueColumn?: string;
+    keep?: "max" | "min";
+  }>({ strategy: "first" });
 
   // Group Insights
   const [groupInsights, setGroupInsights] = useState<Record<string, any>>({});
@@ -324,7 +331,6 @@ export default function App() {
       if (s.cleaningConfigs) setCleaningConfigs(s.cleaningConfigs);
       if (s.standardizeConfigs) setStandardizeConfigs(s.standardizeConfigs);
       if (s.concatConfigs) setConcatConfigs(s.concatConfigs);
-      if (s.removedColumns) setRemovedColumns(s.removedColumns);
       if (s.mergeOutputs) setMergeOutputs(s.mergeOutputs);
 
       const sid = s.sessionId;
@@ -371,7 +377,7 @@ export default function App() {
       const persistable = {
         sessionId, step, maxStepReached, singleTableMode,
         inventory, previews, uploadWarnings,
-        cleaningConfigs, standardizeConfigs, concatConfigs, removedColumns,
+        cleaningConfigs, standardizeConfigs, concatConfigs,
         headerNormDecisions, headerNormStandardFields,
         appendGroups, unassigned, excludedTables,
         appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
@@ -384,7 +390,7 @@ export default function App() {
   }, [
     sessionId, step, maxStepReached, singleTableMode,
     inventory, previews, uploadWarnings,
-    cleaningConfigs, standardizeConfigs, concatConfigs, removedColumns,
+    cleaningConfigs, standardizeConfigs, concatConfigs,
     headerNormDecisions, headerNormStandardFields,
     appendGroups, unassigned, excludedTables,
     appendGroupMappings, groupSchema, appendReport, groupInsights, groupReports, crossGroupOverview,
@@ -457,6 +463,8 @@ export default function App() {
       }
     }
     if (patch.mergeBaseGroupId) setMergeBaseGroupId(patch.mergeBaseGroupId);
+    if (patch.mergeHistory) setMergeHistory(patch.mergeHistory);
+    if (patch.playgroundSheets) { /* kept server-side; playground reloads on open */ }
     if (patch.mergeResult) {
       setMergeResult(patch.mergeResult);
       if (patch.mergeResult.merge_history) {
@@ -650,18 +658,56 @@ export default function App() {
     }
   };
 
-  const fetchPreview = async (tableKey: string) => {
+  const syncSessionFromBackend = useCallback(async (): Promise<boolean> => {
+    if (!sessionId) return false;
+    try {
+      const res = await fetch(`/api/execution/state?sessionId=${encodeURIComponent(sessionId)}`);
+      if (!res.ok) return false;
+      const data = await res.json();
+      const patch = data.statePatch || {};
+      const inv = patch.inventory;
+      if (!inv || (Array.isArray(inv) && inv.length === 0)) {
+        sessionStorage.removeItem(STORAGE_KEY);
+        setSessionId("");
+        setStep(1);
+        setMaxStepReached(1);
+        setError("Session expired or data was cleared. Please upload your files again.");
+        return false;
+      }
+      applyStatePatch(patch);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [sessionId, applyStatePatch]);
+
+  const fetchPreview = async (tableKey: string): Promise<boolean> => {
     const requestVersion = previewMutationVersionRef.current[tableKey] || 0;
     try {
       const res = await fetch(`/api/get-preview?sessionId=${encodeURIComponent(sessionId)}&tableKey=${encodeURIComponent(tableKey)}`);
-      if (!res.ok) return;
+      if (!res.ok) {
+        const message = await parseFetchError(res);
+        setPreviewErrors((prev) => ({ ...prev, [tableKey]: message }));
+        addLog("Data Preview", "error", `Preview failed for "${tableKey}": ${message}`);
+        return false;
+      }
       const data = await res.json();
-      if ((previewMutationVersionRef.current[tableKey] || 0) !== requestVersion) return;
+      if ((previewMutationVersionRef.current[tableKey] || 0) !== requestVersion) return false;
       if (data.preview) {
         setPreviews((prev) => ({ ...prev, [tableKey]: data.preview }));
+        setPreviewErrors((prev) => {
+          const next = { ...prev };
+          delete next[tableKey];
+          return next;
+        });
+        return true;
       }
-    } catch {
-      // Silently ignore — user can retry by collapsing/expanding
+      return false;
+    } catch (err: any) {
+      const message = err?.message || "Failed to load preview";
+      setPreviewErrors((prev) => ({ ...prev, [tableKey]: message }));
+      addLog("Data Preview", "error", `Preview failed for "${tableKey}": ${message}`);
+      return false;
     }
   };
 
@@ -878,12 +924,23 @@ export default function App() {
     }
   };
 
-  const handleDedupPreview = async (groupId: string, columns: string[]) => {
+  const handleDedupPreview = async (
+    groupId: string,
+    columns: string[],
+    strategy: "first" | "spend" | "date" = "first",
+    valueColumn?: string,
+    keep?: "max" | "min"
+  ) => {
     try {
+      const body: any = { sessionId, groupId, deduplicateColumns: columns, strategy };
+      if (strategy !== "first") {
+        if (valueColumn) body.valueColumn = valueColumn;
+        if (keep) body.keep = keep;
+      }
       const res = await fetch("/api/dedup-preview", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, groupId, deduplicateColumns: columns }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error((await res.json()).error || "Failed to preview dedup");
       return await res.json();
@@ -894,15 +951,26 @@ export default function App() {
     }
   };
 
-  const doDedupApply = async (groupId: string, columns: string[]) => {
+  const doDedupApply = async (
+    groupId: string,
+    columns: string[],
+    strategy: "first" | "spend" | "date" = "first",
+    valueColumn?: string,
+    keep?: "max" | "min"
+  ) => {
     if (maxStepReached > 5) await invalidateDownstream(5);
     setLoading(true);
     setError(null);
     try {
+      const body: any = { sessionId, groupId, deduplicateColumns: columns, strategy };
+      if (strategy !== "first") {
+        if (valueColumn) body.valueColumn = valueColumn;
+        if (keep) body.keep = keep;
+      }
       const res = await fetch("/api/dedup-apply", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, groupId, deduplicateColumns: columns }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error((await res.json()).error || "Failed to apply dedup");
       const data = await res.json();
@@ -910,7 +978,8 @@ export default function App() {
       if (data.rows_after != null) {
         setGroupSchema((prev) => prev.map((gs) => gs.group_id === groupId ? { ...gs, rows: data.rows_after } : gs));
       }
-      addLog("Deduplication", "success", `Deduplicated "${groupNameMap[groupId] || groupId}": removed ${data.duplicates_removed} duplicate(s)`);
+      const strategyLabel = strategy === "first" ? "first row" : strategy === "spend" ? (keep === "max" ? "higher spend" : "lower spend") : (keep === "max" ? "later date" : "earlier date");
+      addLog("Deduplication", "success", `Deduplicated "${groupNameMap[groupId] || groupId}" (${strategyLabel}): removed ${data.duplicates_removed} duplicate(s)`);
       return data;
     } catch (err: any) {
       setError(err.message);
@@ -921,12 +990,18 @@ export default function App() {
     }
   };
 
-  const handleDedupApply = (groupId: string, columns: string[]) => {
+  const handleDedupApply = (
+    groupId: string,
+    columns: string[],
+    strategy: "first" | "spend" | "date" = "first",
+    valueColumn?: string,
+    keep?: "max" | "min"
+  ) => {
     if (maxStepReached > 5) {
-      guardedAction(5, () => doDedupApply(groupId, columns));
+      guardedAction(5, () => doDedupApply(groupId, columns, strategy, valueColumn, keep));
       return null;
     }
-    return doDedupApply(groupId, columns);
+    return doDedupApply(groupId, columns, strategy, valueColumn, keep);
   };
 
   const handleAnalyzeColumns = async (groupId: string, columns: string[]) => {
@@ -1050,79 +1125,24 @@ export default function App() {
     return doDeleteConcatColumn(groupId, columnName);
   };
 
-  // ── Column Removal handlers ──────────────────────────────────────
-  const doRemoveColumns = async (groupId: string, columns: string[]) => {
-    if (maxStepReached > 5) await invalidateDownstream(5);
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/remove-columns", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, groupId, columns }),
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data) throw new Error(data?.error || "Failed to remove columns. Please ensure the backend server is running.");
-      if (data.groupRow) {
-        setGroupSchema((prev) => prev.map((gs) => gs.group_id === groupId ? { ...gs, ...data.groupRow } : gs));
+  const openRawDataPreview = useCallback(async () => {
+    if (!sessionId || inventory.length === 0) return;
+    const missing = inventory.filter((inv) => !previews[inv.table_key]);
+    if (missing.length > 0) {
+      const results = await Promise.all(missing.map((inv) => fetchPreview(inv.table_key)));
+      if (results.every((ok) => !ok)) {
+        const synced = await syncSessionFromBackend();
+        if (synced) {
+          await Promise.all(missing.map((inv) => fetchPreview(inv.table_key)));
+        }
       }
-      setRemovedColumns((prev) => ({ ...prev, [groupId]: data.removedColumns || [] }));
-      addLog("Column Removal", "success", `Removed ${columns.length} column(s) from "${groupNameMap[groupId] || groupId}"`);
-      return data;
-    } catch (err: any) {
-      setError(err.message);
-      addLog("Column Removal", "error", err.message);
-      return null;
-    } finally {
-      setLoading(false);
     }
-  };
-
-  const handleRemoveColumns = (groupId: string, columns: string[]) => {
-    if (maxStepReached > 5) {
-      guardedAction(5, () => doRemoveColumns(groupId, columns));
-      return null;
-    }
-    return doRemoveColumns(groupId, columns);
-  };
-
-  const doRestoreColumns = async (groupId: string, columns: string[]) => {
-    if (maxStepReached > 5) await invalidateDownstream(5);
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/restore-columns", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, groupId, columns }),
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data) throw new Error(data?.error || "Failed to restore columns. Please ensure the backend server is running.");
-      if (data.groupRow) {
-        setGroupSchema((prev) => prev.map((gs) => gs.group_id === groupId ? { ...gs, ...data.groupRow } : gs));
-      }
-      setRemovedColumns((prev) => ({ ...prev, [groupId]: data.removedColumns || [] }));
-      addLog("Column Removal", "success", `Restored column(s) in "${groupNameMap[groupId] || groupId}"`);
-      return data;
-    } catch (err: any) {
-      setError(err.message);
-      addLog("Column Removal", "error", err.message);
-      return null;
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleRestoreColumns = (groupId: string, columns: string[]) => {
-    if (maxStepReached > 5) {
-      guardedAction(5, () => doRestoreColumns(groupId, columns));
-      return null;
-    }
-    return doRestoreColumns(groupId, columns);
-  };
+    setShowDataPreview(true);
+  }, [sessionId, inventory, previews, fetchPreview, syncSessionFromBackend]);
 
   const fetchResultsPreviews = async () => {
     if (!sessionId) return;
+    setResultsPreviewLoading(true);
     try {
       if (groupSchema.length > 0) {
         const groupIds = groupSchema.map((g: any) => g.group_id);
@@ -1162,8 +1182,13 @@ export default function App() {
           for (const gid of groupIds) {
             if (data[gid]) {
               const displayName = groupNameMap[gid] || gid;
-              newPreviews[displayName] = { columns: data[gid].columns, rows: data[gid].rows };
-              newInv.push({ table_key: displayName, rows: data[gid].total_rows || data[gid].rows.length, cols: data[gid].columns.length });
+              newPreviews[gid] = { columns: data[gid].columns, rows: data[gid].rows };
+              newInv.push({
+                table_key: gid,
+                label: displayName,
+                rows: data[gid].total_rows || data[gid].rows.length,
+                cols: data[gid].columns.length,
+              });
             }
           }
           setResultsPreviews(newPreviews);
@@ -1171,6 +1196,9 @@ export default function App() {
         }
       }
     } catch { /* ignore */ }
+    finally {
+      setResultsPreviewLoading(false);
+    }
     setShowResultsPreview(true);
   };
 
@@ -1736,11 +1764,11 @@ export default function App() {
           <div className="max-w-6xl mx-auto space-y-6">
 
             <div className="flex justify-end gap-2">
-              {Object.keys(previews).length > 0 && (
+              {inventory.length > 0 && (
                 <motion.button
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
-                  onClick={() => setShowDataPreview(true)}
+                  onClick={openRawDataPreview}
                   className="p-2.5 rounded-xl bg-white/80 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700 shadow-sm backdrop-blur-sm text-neutral-600 dark:text-neutral-300 hover:text-red-600 dark:hover:text-red-400 transition-colors"
                   title="Raw Data Preview"
                 >
@@ -1752,10 +1780,11 @@ export default function App() {
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
                   onClick={fetchResultsPreviews}
-                  className="p-2.5 rounded-xl bg-white/80 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700 shadow-sm backdrop-blur-sm text-neutral-600 dark:text-neutral-300 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors"
+                  disabled={resultsPreviewLoading}
+                  className="p-2.5 rounded-xl bg-white/80 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700 shadow-sm backdrop-blur-sm text-neutral-600 dark:text-neutral-300 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors disabled:opacity-50"
                   title="Results Preview"
                 >
-                  <Database className="w-4 h-4" />
+                  {resultsPreviewLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Database className="w-4 h-4" />}
                 </motion.button>
               )}
               <motion.button
@@ -1831,6 +1860,7 @@ export default function App() {
                   onSetHeaderRow={handleSetHeaderRow}
                   onDeleteRows={handleDeleteRows}
                   onFetchPreview={fetchPreview}
+                  previewErrors={previewErrors}
                 />
 
                 {step === 3 && (
@@ -1890,9 +1920,6 @@ export default function App() {
                   concatConfigs={concatConfigs}
                   onConcatApply={handleConcatApply}
                   onDeleteConcatColumn={handleDeleteConcatColumn}
-                  removedColumns={removedColumns}
-                  onRemoveColumns={handleRemoveColumns}
-                  onRestoreColumns={handleRestoreColumns}
                   onProceed={() => setStep(singleTableMode ? 8 : 6)}
                   onSkip={() => setStep(singleTableMode ? 8 : 6)}
                 />
@@ -1947,6 +1974,8 @@ export default function App() {
                         mergeOutputs={mergeOutputs}
                         setMergeOutputs={setMergeOutputs}
                         setOutputsPanelOpen={setOutputsPanelOpen}
+                        mergeDedupConfig={mergeDedupConfig}
+                        setMergeDedupConfig={setMergeDedupConfig}
                       />
                     </motion.div>
                   </AnimatePresence>
@@ -2005,21 +2034,43 @@ export default function App() {
         />
       )}
 
-      {showDataPreview && (
-        <DataPreviewOverlay
+      {showDataPreview && sessionId && (
+        <ExcelPreviewOverlay
           previews={previews}
           inventory={inventory}
           onClose={() => setShowDataPreview(false)}
           title="Raw Data Preview"
+          sessionId={sessionId}
+          onApplyToPipeline={(result) => {
+            applyStatePatch(result.statePatch || {});
+            const resetStep = result.resetStep ?? 2;
+            setMaxStepReached(resetStep);
+            invalidateDownstream(resetStep);
+          }}
+          guardedApply={(resetStep, action) => guardedAction(resetStep, action)}
+          maxStepReached={maxStepReached}
+          groupSchema={groupSchema}
+          mergeHistory={mergeHistory}
         />
       )}
 
-      {showResultsPreview && (
-        <DataPreviewOverlay
+      {showResultsPreview && sessionId && (
+        <ExcelPreviewOverlay
           previews={resultsPreviews}
           inventory={resultsInventory}
           onClose={() => setShowResultsPreview(false)}
           title="Results Preview"
+          sessionId={sessionId}
+          onApplyToPipeline={(result) => {
+            applyStatePatch(result.statePatch || {});
+            const resetStep = result.resetStep ?? 2;
+            setMaxStepReached(resetStep);
+            invalidateDownstream(resetStep);
+          }}
+          guardedApply={(resetStep, action) => guardedAction(resetStep, action)}
+          maxStepReached={maxStepReached}
+          groupSchema={groupSchema}
+          mergeHistory={mergeHistory}
         />
       )}
 

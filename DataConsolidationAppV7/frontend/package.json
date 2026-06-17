@@ -10,17 +10,22 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@glideapps/glide-data-grid": "^6.0.3",
     "@tailwindcss/vite": "^4.1.14",
     "@tanstack/react-virtual": "^3.13.23",
     "@vitejs/plugin-react": "^5.0.4",
     "jszip": "^3.10.1",
+    "lodash": "^4.18.1",
     "lucide-react": "^0.546.0",
+    "marked": "^4.3.0",
     "motion": "^12.23.24",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-responsive-carousel": "^3.2.23",
     "vite": "^6.2.0"
   },
   "devDependencies": {
+    "@types/lodash": "^4.17.24",
     "autoprefixer": "^10.4.21",
     "tailwindcss": "^4.1.14",
     "typescript": "~5.8.2"

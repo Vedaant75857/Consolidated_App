@@ -92,11 +92,27 @@ def dedup_preview():
         session_id = body.get("sessionId")
         group_id = body.get("groupId")
         dedup_columns = body.get("deduplicateColumns") or []
+        strategy = body.get("strategy", "first")
+        value_column = body.get("valueColumn")
+        keep = body.get("keep", "max")
+
         if not session_id or not group_id or not dedup_columns:
             return jsonify({"error": "Missing sessionId, groupId, or deduplicateColumns."}), 400
 
+        # Validate strategy
+        if strategy not in ("first", "spend", "date"):
+            return jsonify({"error": f"Invalid strategy: {strategy}. Must be 'first', 'spend', or 'date'."}), 400
+
+        # Validate keep parameter for spend/date strategies
+        if strategy in ("spend", "date") and keep not in ("max", "min"):
+            return jsonify({"error": f"Invalid keep: {keep}. Must be 'max' or 'min'."}), 400
+
+        # Validate valueColumn is provided for spend/date strategies
+        if strategy in ("spend", "date") and not value_column:
+            return jsonify({"error": f"valueColumn is required for '{strategy}' strategy."}), 400
+
         conn = get_session_db(session_id)
-        result = dedup_preview_stats(conn, group_id, dedup_columns)
+        result = dedup_preview_stats(conn, group_id, dedup_columns, strategy, value_column, keep)
         return jsonify(result)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -111,11 +127,27 @@ def dedup_apply():
         session_id = body.get("sessionId")
         group_id = body.get("groupId")
         dedup_columns = body.get("deduplicateColumns") or []
+        strategy = body.get("strategy", "first")
+        value_column = body.get("valueColumn")
+        keep = body.get("keep", "max")
+
         if not session_id or not group_id or not dedup_columns:
             return jsonify({"error": "Missing sessionId, groupId, or deduplicateColumns."}), 400
 
+        # Validate strategy
+        if strategy not in ("first", "spend", "date"):
+            return jsonify({"error": f"Invalid strategy: {strategy}. Must be 'first', 'spend', or 'date'."}), 400
+
+        # Validate keep parameter for spend/date strategies
+        if strategy in ("spend", "date") and keep not in ("max", "min"):
+            return jsonify({"error": f"Invalid keep: {keep}. Must be 'max' or 'min'."}), 400
+
+        # Validate valueColumn is provided for spend/date strategies
+        if strategy in ("spend", "date") and not value_column:
+            return jsonify({"error": f"valueColumn is required for '{strategy}' strategy."}), 400
+
         conn = get_session_db(session_id)
-        result = dedup_apply_group(conn, group_id, dedup_columns)
+        result = dedup_apply_group(conn, group_id, dedup_columns, strategy, value_column, keep)
         return jsonify(result)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
