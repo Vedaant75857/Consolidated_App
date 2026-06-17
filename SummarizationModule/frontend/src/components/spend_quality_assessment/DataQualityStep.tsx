@@ -1,11 +1,12 @@
 import { useState, useCallback } from "react";
 import { motion } from "framer-motion";
-import { ArrowRight, BarChart3, Ban, Building2, KeyRound } from "lucide-react";
+import { ArrowRight, BarChart3, Ban, Building2, Coins, KeyRound } from "lucide-react";
 import ExecutiveSummary from "./ExecutiveSummary";
 import NotProcurableSpend from "./NotProcurableSpend";
 import IntercompanySpend from "./IntercompanySpend";
+import CapexOpexSpend from "./CapexOpexSpend";
 
-type Tab = "executive" | "not-procurable" | "intercompany";
+type Tab = "executive" | "not-procurable" | "capex-opex" | "intercompany";
 
 interface DataQualityStepProps {
   sessionId: string;
@@ -50,7 +51,7 @@ export default function DataQualityStep({
       )}
 
       {/* Tab bar */}
-      <div className="flex gap-1 rounded-xl bg-neutral-100 dark:bg-neutral-800 p-1 w-fit">
+      <div className="flex flex-wrap gap-1 rounded-xl bg-neutral-100 dark:bg-neutral-800 p-1 max-w-full">
         <button
           onClick={() => setActiveTab("executive")}
           className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
@@ -72,6 +73,17 @@ export default function DataQualityStep({
         >
           <Ban className="w-4 h-4" />
           Not Procurable Spend
+        </button>
+        <button
+          onClick={() => setActiveTab("capex-opex")}
+          className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
+            activeTab === "capex-opex"
+              ? "bg-white dark:bg-neutral-700 text-red-700 dark:text-red-400 shadow-sm"
+              : "text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-300"
+          }`}
+        >
+          <Coins className="w-4 h-4" />
+          CAPEX / OPEX Spend
         </button>
         <button
           onClick={() => setActiveTab("intercompany")}
@@ -97,6 +109,10 @@ export default function DataQualityStep({
 
       {activeTab === "not-procurable" && (
         <NotProcurableSpend sessionId={sessionId} />
+      )}
+
+      {activeTab === "capex-opex" && (
+        <CapexOpexSpend sessionId={sessionId} />
       )}
 
       {activeTab === "intercompany" && (

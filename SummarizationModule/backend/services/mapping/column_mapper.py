@@ -297,6 +297,28 @@ STANDARD_FIELDS: list[dict[str, Any]] = [
         "hint": "Vendor/supplier country. NOT plant/company country.",
     },
     {
+        "fieldKey": "gl_account",
+        "displayName": "GL Account",
+        "expectedType": "string",
+        "description": "General ledger account number or code",
+        "aliases": [
+            "GL Account Number", "G/L Account", "Account Number",
+            "General Ledger Account", "SAKNR", "HKONT",
+        ],
+        "hint": "Numeric or alphanumeric GL account code. Not cost center or description.",
+    },
+    {
+        "fieldKey": "capex_opex_indicator",
+        "displayName": "CAPEX/OPEX Indicator",
+        "expectedType": "string",
+        "description": "Explicit flag or label classifying spend as CAPEX or OPEX",
+        "aliases": [
+            "CAPEX OPEX", "CapEx OpEx", "Expense Type", "Expenditure Type",
+            "CAPEX/OPEX Flag", "Cap Ex Op Ex", "Capex Opex Indicator",
+        ],
+        "hint": "Values like CAPEX, OPEX, Y/N, 1/0 — not free-text descriptions.",
+    },
+    {
         "fieldKey": "supplier",
         "displayName": "Vendor Name",
         "expectedType": "string",
