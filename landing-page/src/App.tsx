@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import { ArrowRight, Sun, Moon } from "lucide-react";
+import { ArrowRight, Sun, Moon, Eye, EyeOff, KeyRound, Trash2 } from "lucide-react";
 import {
   motion,
   AnimatePresence,
@@ -18,6 +18,13 @@ import SectionDivider from "./components/SectionDivider";
 import layersAnimation from "./animations/layersAnimation.json";
 import funnelAnimation from "./animations/funnelAnimation.json";
 import chartAnimation from "./animations/chartAnimation.json";
+import {
+  buildApiKeyFragmentUrl,
+  clearSessionApiKey,
+  getSessionApiKey,
+  hydrateApiKeyFromUrl,
+  setSessionApiKey,
+} from "./apiKeySession";
 
 /* ─── Data ────────────────────────────────────────────────────────── */
 
@@ -452,7 +459,7 @@ function DataFlowAnimation() {
 
 type AppEntry = ReturnType<typeof getApps>[number];
 
-function AppCard({ app, idx }: { app: AppEntry; idx: number }) {
+function AppCard({ app, idx, apiKey }: { app: AppEntry; idx: number; apiKey: string }) {
   const cardRef = useRef<HTMLAnchorElement>(null);
   const mouseX = useMotionValue(0);
   const mouseY = useMotionValue(0);
@@ -478,7 +485,7 @@ function AppCard({ app, idx }: { app: AppEntry; idx: number }) {
       }}
     >
       <motion.a
-        href={app.url}
+        href={buildApiKeyFragmentUrl(app.url, apiKey)}
         ref={cardRef}
         onMouseMove={handleMouseMove}
         whileHover={{ y: -4, scale: 1.01 }}
@@ -583,6 +590,9 @@ export default function App() {
   });
 
   const [toggleHover, setToggleHover] = useState(false);
+  const [apiKeyInput, setApiKeyInput] = useState(() => hydrateApiKeyFromUrl());
+  const [savedApiKey, setSavedApiKey] = useState(() => getSessionApiKey());
+  const [showApiKey, setShowApiKey] = useState(false);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
@@ -611,6 +621,19 @@ export default function App() {
     setTheme((prev) => (prev === "dark" ? "light" : "dark"));
 
   const apps = useMemo(() => getApps(), []);
+  const hasSavedApiKey = savedApiKey.trim().length > 0;
+
+  const handleSaveApiKey = () => {
+    const saved = setSessionApiKey(apiKeyInput);
+    setApiKeyInput(saved);
+    setSavedApiKey(saved);
+  };
+
+  const handleClearApiKey = () => {
+    clearSessionApiKey();
+    setApiKeyInput("");
+    setSavedApiKey("");
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-neutral-50 via-white to-neutral-100 dark:from-neutral-950 dark:via-neutral-900 dark:to-neutral-950 text-neutral-900 dark:text-neutral-100 font-sans relative overflow-x-hidden">
@@ -759,8 +782,68 @@ export default function App() {
           className="w-full max-w-2xl space-y-6"
           style={{ perspective: 800 }}
         >
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.45, duration: 0.3 }}
+            className="rounded-2xl border border-white/20 bg-white/60 dark:bg-neutral-900/60 backdrop-blur-2xl p-5 shadow-sm"
+          >
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <div className="flex-1 min-w-0 space-y-2">
+                <label
+                  htmlFor="session-api-key"
+                  className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400"
+                >
+                  <KeyRound className="h-4 w-4" />
+                  Session API Key
+                </label>
+                <div className="relative">
+                  <input
+                    id="session-api-key"
+                    type={showApiKey ? "text" : "password"}
+                    value={apiKeyInput}
+                    onChange={(event) => setApiKeyInput(event.target.value)}
+                    placeholder="Paste your Portkey API key"
+                    className="w-full rounded-xl border border-neutral-200 bg-white/80 px-4 py-2.5 pr-11 text-sm text-neutral-900 outline-none transition-shadow placeholder:text-neutral-400 focus:ring-2 focus:ring-red-500 dark:border-neutral-700 dark:bg-neutral-950/70 dark:text-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowApiKey((prev) => !prev)}
+                    className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+                    aria-label={showApiKey ? "Hide API key" : "Show API key"}
+                    title={showApiKey ? "Hide API key" : "Show API key"}
+                  >
+                    {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+                <p className={`text-xs font-medium ${hasSavedApiKey ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}`}>
+                  {hasSavedApiKey ? "API key configured for this browser session." : "API key missing; modules can still be opened and configured manually."}
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleSaveApiKey}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-red-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-red-700"
+                >
+                  <KeyRound className="h-4 w-4" />
+                  {hasSavedApiKey ? "Update" : "Save"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClearApiKey}
+                  disabled={!apiKeyInput && !hasSavedApiKey}
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-neutral-200 text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-red-400"
+                  aria-label="Clear API key"
+                  title="Clear API key"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          </motion.div>
           {apps.map((app, idx) => (
-            <AppCard key={app.title} app={app} idx={idx} />
+            <AppCard key={app.title} app={app} idx={idx} apiKey={savedApiKey} />
           ))}
         </div>
 

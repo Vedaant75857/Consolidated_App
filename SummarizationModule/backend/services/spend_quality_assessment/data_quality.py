@@ -30,6 +30,7 @@ from services.spend_quality_assessment.description_quality import (
     _sample_random_unique_descriptions_all,
 )
 from services.spend_quality_assessment.ai_prompts import EXECUTIVE_SUMMARY_PROMPT
+from shared.db import get_meta
 from services.upload.file_loader import _get_registry
 
 logger = logging.getLogger(__name__)
@@ -54,13 +55,29 @@ EXECUTIVE_SUMMARY_KEYS = [
     "categorizationMethod",
 ]
 
+SPEND_QUALITY_DATE_HIERARCHY = (
+    "invoice_date",
+    "invoice_due_date",
+    "payment_date",
+    "goods_receipt_date",
+    "po_document_date",
+)
+
+DATE_FIELD_DISPLAY_NAMES = {
+    "invoice_date": "Invoice Date",
+    "invoice_due_date": "Invoice Due Date",
+    "payment_date": "Payment Date",
+    "goods_receipt_date": "Goods Receipt Date",
+    "po_document_date": "PO Document Date",
+}
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # A.  SQL Helpers
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _quote_id(name: str) -> str:
-    return f'"{name}"'
+    return f'"{name.replace(chr(34), chr(34) + chr(34))}"'
 
 
 def _nn(qc: str) -> str:
@@ -110,14 +127,101 @@ def _month_index_to_label(month_index: int) -> str:
     return f"{MONTH_NAMES[month - 1]} {year}"
 
 
+def _analysis_columns(conn: DuckDBConnection) -> set[str]:
+    rows = conn.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'analysis_data' ORDER BY ordinal_position"
+    ).fetchall()
+    return {str(r[0]) for r in rows}
+
+
+def _get_cast_report_fields(conn: DuckDBConnection) -> dict[str, Any]:
+    try:
+        cast_report = get_meta(conn, "cast_report") or {}
+    except Exception:
+        return {}
+    fields = cast_report.get("fields") if isinstance(cast_report, dict) else None
+    return fields if isinstance(fields, dict) else {}
+
+
+def _valid_date_row_count(conn: DuckDBConnection, field_key: str) -> int:
+    qd = _quote_id(field_key)
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*)
+        FROM "analysis_data"
+        WHERE {qd} IS NOT NULL
+          AND TRIM(CAST({qd} AS TEXT)) != ''
+          AND TRY_CAST({qd} AS TIMESTAMP) IS NOT NULL
+        """
+    ).fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def _resolve_spend_quality_date_source(
+    conn: DuckDBConnection,
+    available: set[str] | None = None,
+) -> dict[str, Any] | None:
+    """Pick the authoritative transaction date for spend-quality calculations."""
+    available = available if available is not None else _analysis_columns(conn)
+    cast_fields = _get_cast_report_fields(conn)
+    has_cast_report = bool(cast_fields)
+
+    for field_key in SPEND_QUALITY_DATE_HIERARCHY:
+        if field_key not in available:
+            continue
+
+        cast_info = cast_fields.get(field_key, {})
+        if has_cast_report and not cast_info.get("mapped"):
+            continue
+
+        valid_rows = _valid_date_row_count(conn, field_key)
+        if valid_rows <= 0:
+            continue
+
+        fallback = field_key != "invoice_date"
+        display_name = DATE_FIELD_DISPLAY_NAMES.get(field_key, field_key)
+        result = {
+            "fieldKey": field_key,
+            "displayName": display_name,
+            "sourceColumn": cast_info.get("sourceColumn"),
+            "fallback": fallback,
+            "validRows": valid_rows,
+        }
+        if fallback:
+            result["message"] = (
+                f"Invoice Date was unavailable, so {display_name} was used "
+                "for spend quality date calculations."
+            )
+        return result
+
+    return None
+
+
+def _date_source_warnings(date_source: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not date_source or not date_source.get("fallback"):
+        return []
+    return [{
+        "code": "DATE_FALLBACK_USED",
+        "severity": "warning",
+        "message": date_source.get("message") or (
+            f"Invoice Date was unavailable, so {date_source.get('displayName')} "
+            "was used for spend quality date calculations."
+        ),
+        "fieldKey": date_source.get("fieldKey"),
+        "sourceColumn": date_source.get("sourceColumn"),
+    }]
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # B.  Panel 1 – Date Spend Pivot
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _compute_date_spend_pivot(
     conn: DuckDBConnection,
+    date_source: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build a year x month pivot of total_spend from invoice_date.
+    """Build a year x month pivot of total_spend from the selected date source.
 
     Returns:
         {
@@ -127,31 +231,29 @@ def _compute_date_spend_pivot(
           "feasible": True/False
         }
     """
-    pragma = conn.execute(
-        "SELECT column_name FROM information_schema.columns "
-        "WHERE table_name = 'analysis_data' ORDER BY ordinal_position"
-    ).fetchall()
-    cols = {str(r[0]) for r in pragma}
+    cols = _analysis_columns(conn)
+    date_field = (date_source or {}).get("fieldKey") or "invoice_date"
+    qd = _quote_id(str(date_field))
 
-    if "invoice_date" not in cols or "total_spend" not in cols:
+    if date_field not in cols or "total_spend" not in cols:
         return {
             "years": [],
             "months": MONTH_NAMES,
             "cells": {},
             "feasible": False,
-            "message": "invoice_date or total_spend not mapped.",
+            "message": f"{date_field} or total_spend not mapped.",
         }
 
     rows = conn.execute(
-        """
+        f"""
         SELECT
-            CAST(strftime('%Y', TRY_CAST(invoice_date AS TIMESTAMP)) AS INTEGER) AS yr,
-            CAST(strftime('%m', TRY_CAST(invoice_date AS TIMESTAMP)) AS INTEGER) AS mo,
+            CAST(strftime('%Y', TRY_CAST({qd} AS TIMESTAMP)) AS INTEGER) AS yr,
+            CAST(strftime('%m', TRY_CAST({qd} AS TIMESTAMP)) AS INTEGER) AS mo,
             SUM(TRY_CAST(total_spend AS DOUBLE)) AS spend
         FROM "analysis_data"
-        WHERE invoice_date IS NOT NULL
-          AND TRIM(CAST(invoice_date AS TEXT)) != ''
-          AND TRY_CAST(invoice_date AS TIMESTAMP) IS NOT NULL
+        WHERE {qd} IS NOT NULL
+          AND TRIM(CAST({qd} AS TEXT)) != ''
+          AND TRY_CAST({qd} AS TIMESTAMP) IS NOT NULL
           AND TRY_CAST(total_spend AS DOUBLE) IS NOT NULL
         GROUP BY yr, mo
         ORDER BY yr, mo
@@ -315,39 +417,38 @@ def _compute_spend_bifurcation(
 
 def _compute_date_period(
     conn: DuckDBConnection,
+    date_source: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Extract MIN/MAX of invoice_date and compute period metadata.
+    """Extract MIN/MAX of the selected date source and compute period metadata.
 
     Args:
         conn: DuckDB session connection.
 
     Returns:
         Dict with startDate, endDate, periodLabel, monthsCovered, and feasible flag.
-        If invoice_date is not mapped, returns feasible=False with a message.
+        If no usable date is mapped, returns feasible=False with a message.
     """
-    pragma = conn.execute(
-        "SELECT column_name FROM information_schema.columns "
-        "WHERE table_name = 'analysis_data' ORDER BY ordinal_position"
-    ).fetchall()
-    cols = {str(r[0]) for r in pragma}
+    cols = _analysis_columns(conn)
+    date_field = (date_source or {}).get("fieldKey") or "invoice_date"
+    qd = _quote_id(str(date_field))
 
-    if "invoice_date" not in cols:
-        return {"feasible": False, "message": "invoice_date not mapped."}
+    if date_field not in cols:
+        return {"feasible": False, "message": f"{date_field} not mapped."}
 
     row = conn.execute(
-        """
+        f"""
         SELECT
-            MIN(TRY_CAST(invoice_date AS TIMESTAMP)),
-            MAX(TRY_CAST(invoice_date AS TIMESTAMP))
+            MIN(TRY_CAST({qd} AS TIMESTAMP)),
+            MAX(TRY_CAST({qd} AS TIMESTAMP))
         FROM "analysis_data"
-        WHERE invoice_date IS NOT NULL
-          AND TRIM(CAST(invoice_date AS TEXT)) != ''
-          AND TRY_CAST(invoice_date AS TIMESTAMP) IS NOT NULL
+        WHERE {qd} IS NOT NULL
+          AND TRIM(CAST({qd} AS TEXT)) != ''
+          AND TRY_CAST({qd} AS TIMESTAMP) IS NOT NULL
         """
     ).fetchone()
 
     if not row or row[0] is None or row[1] is None:
-        return {"feasible": False, "message": "No valid invoice dates found."}
+        return {"feasible": False, "message": f"No valid {date_field} values found."}
 
     min_date = row[0]
     max_date = row[1]
@@ -357,15 +458,15 @@ def _compute_date_period(
 
     # Count distinct year-month combinations
     months_row = conn.execute(
-        """
+        f"""
         SELECT COUNT(DISTINCT (
-            CAST(strftime('%Y', TRY_CAST(invoice_date AS TIMESTAMP)) AS TEXT) || '-' ||
-            CAST(strftime('%m', TRY_CAST(invoice_date AS TIMESTAMP)) AS TEXT)
+            CAST(strftime('%Y', TRY_CAST({qd} AS TIMESTAMP)) AS TEXT) || '-' ||
+            CAST(strftime('%m', TRY_CAST({qd} AS TIMESTAMP)) AS TEXT)
         ))
         FROM "analysis_data"
-        WHERE invoice_date IS NOT NULL
-          AND TRIM(CAST(invoice_date AS TEXT)) != ''
-          AND TRY_CAST(invoice_date AS TIMESTAMP) IS NOT NULL
+        WHERE {qd} IS NOT NULL
+          AND TRIM(CAST({qd} AS TEXT)) != ''
+          AND TRY_CAST({qd} AS TIMESTAMP) IS NOT NULL
         """
     ).fetchone()
     months_covered = int(months_row[0] or 0)
@@ -386,6 +487,7 @@ def _compute_date_period(
 def _compute_spend_breakdown(
     conn: DuckDBConnection,
     available: set[str],
+    date_source: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compute LTM spend and fiscal-year spend with year-over-year change.
 
@@ -396,22 +498,25 @@ def _compute_spend_breakdown(
     Returns:
         Dict with ltmSpend, currentFySpend, priorFySpend, YoY metrics, and feasible flag.
     """
-    if "total_spend" not in available or "invoice_date" not in available:
-        return {"feasible": False, "message": "total_spend or invoice_date not mapped."}
+    date_field = (date_source or {}).get("fieldKey") or "invoice_date"
+    qd = _quote_id(str(date_field))
+
+    if "total_spend" not in available or date_field not in available:
+        return {"feasible": False, "message": f"total_spend or {date_field} not mapped."}
 
     # Reference date = max date in the dataset
     max_row = conn.execute(
-        """
-        SELECT MAX(TRY_CAST(invoice_date AS TIMESTAMP))
+        f"""
+        SELECT MAX(TRY_CAST({qd} AS TIMESTAMP))
         FROM "analysis_data"
-        WHERE invoice_date IS NOT NULL
-          AND TRIM(CAST(invoice_date AS TEXT)) != ''
-          AND TRY_CAST(invoice_date AS TIMESTAMP) IS NOT NULL
+        WHERE {qd} IS NOT NULL
+          AND TRIM(CAST({qd} AS TEXT)) != ''
+          AND TRY_CAST({qd} AS TIMESTAMP) IS NOT NULL
         """
     ).fetchone()
 
     if not max_row or max_row[0] is None:
-        return {"feasible": False, "message": "No valid invoice dates found."}
+        return {"feasible": False, "message": f"No valid {date_field} values found."}
 
     max_date = max_row[0]
     max_year = max_date.year
@@ -425,15 +530,15 @@ def _compute_spend_breakdown(
         f"""
         SELECT SUM(TRY_CAST(total_spend AS DOUBLE))
         FROM "analysis_data"
-        WHERE TRY_CAST(invoice_date AS TIMESTAMP) IS NOT NULL
+        WHERE TRY_CAST({qd} AS TIMESTAMP) IS NOT NULL
           AND TRY_CAST(total_spend AS DOUBLE) IS NOT NULL
           AND (
-            CAST(strftime('%Y', TRY_CAST(invoice_date AS TIMESTAMP)) AS INTEGER) * 12 +
-            CAST(strftime('%m', TRY_CAST(invoice_date AS TIMESTAMP)) AS INTEGER)
+            CAST(strftime('%Y', TRY_CAST({qd} AS TIMESTAMP)) AS INTEGER) * 12 +
+            CAST(strftime('%m', TRY_CAST({qd} AS TIMESTAMP)) AS INTEGER)
           ) >= {ltm_start_index}
           AND (
-            CAST(strftime('%Y', TRY_CAST(invoice_date AS TIMESTAMP)) AS INTEGER) * 12 +
-            CAST(strftime('%m', TRY_CAST(invoice_date AS TIMESTAMP)) AS INTEGER)
+            CAST(strftime('%Y', TRY_CAST({qd} AS TIMESTAMP)) AS INTEGER) * 12 +
+            CAST(strftime('%m', TRY_CAST({qd} AS TIMESTAMP)) AS INTEGER)
           ) <= {ltm_end_index}
         """
     ).fetchone()
@@ -441,12 +546,12 @@ def _compute_spend_breakdown(
 
     # Per-year spend
     year_rows = conn.execute(
-        """
+        f"""
         SELECT
-            CAST(strftime('%Y', TRY_CAST(invoice_date AS TIMESTAMP)) AS INTEGER) AS yr,
+            CAST(strftime('%Y', TRY_CAST({qd} AS TIMESTAMP)) AS INTEGER) AS yr,
             SUM(TRY_CAST(total_spend AS DOUBLE)) AS spend
         FROM "analysis_data"
-        WHERE TRY_CAST(invoice_date AS TIMESTAMP) IS NOT NULL
+        WHERE TRY_CAST({qd} AS TIMESTAMP) IS NOT NULL
           AND TRY_CAST(total_spend AS DOUBLE) IS NOT NULL
         GROUP BY yr
         ORDER BY yr
@@ -466,12 +571,12 @@ def _compute_spend_breakdown(
 
     # Latest full annual year = most recent year with all 12 months present
     full_year_rows = conn.execute(
-        """
+        f"""
         SELECT
-            CAST(strftime('%Y', TRY_CAST(invoice_date AS TIMESTAMP)) AS INTEGER) AS yr,
-            COUNT(DISTINCT CAST(strftime('%m', TRY_CAST(invoice_date AS TIMESTAMP)) AS INTEGER)) AS month_ct
+            CAST(strftime('%Y', TRY_CAST({qd} AS TIMESTAMP)) AS INTEGER) AS yr,
+            COUNT(DISTINCT CAST(strftime('%m', TRY_CAST({qd} AS TIMESTAMP)) AS INTEGER)) AS month_ct
         FROM "analysis_data"
-        WHERE TRY_CAST(invoice_date AS TIMESTAMP) IS NOT NULL
+        WHERE TRY_CAST({qd} AS TIMESTAMP) IS NOT NULL
           AND TRY_CAST(total_spend AS DOUBLE) IS NOT NULL
         GROUP BY yr
         HAVING month_ct = 12
@@ -912,7 +1017,25 @@ def run_executive_summary_sql(
         total_rows, len(available),
     )
 
-    date_pivot = _compute_date_spend_pivot(conn)
+    date_source = _resolve_spend_quality_date_source(conn, available)
+    if date_source is None:
+        no_date_message = (
+            "No mapped date field in the spend quality hierarchy has valid parsed rows."
+        )
+        date_period = {"feasible": False, "message": no_date_message}
+        spend_breakdown = {"feasible": False, "message": no_date_message}
+        date_pivot = {
+            "years": [],
+            "months": MONTH_NAMES,
+            "cells": {},
+            "feasible": False,
+            "message": no_date_message,
+        }
+    else:
+        date_period = _compute_date_period(conn, date_source)
+        spend_breakdown = _compute_spend_breakdown(conn, available, date_source)
+        date_pivot = _compute_date_spend_pivot(conn, date_source)
+
     spend_bifurcation = _compute_spend_bifurcation(conn, available)
     pareto = _compute_pareto_analysis(conn, available)
 
@@ -921,8 +1044,10 @@ def run_executive_summary_sql(
 
     return {
         "totalRows": total_rows,
-        "datePeriod": _compute_date_period(conn),
-        "spendBreakdown": _compute_spend_breakdown(conn, available),
+        "dateSource": date_source,
+        "warnings": _date_source_warnings(date_source),
+        "datePeriod": date_period,
+        "spendBreakdown": spend_breakdown,
         "supplierBreakdown": _compute_supplier_breakdown(conn, available),
         "categorizationEffort": _compute_categorization_effort(conn, available),
         "columnFillRate": _compute_column_fill_rate(conn, available),

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
+  AlertTriangle,
   BarChart3,
   CalendarDays,
   ChevronDown,
@@ -185,6 +186,7 @@ export default function ExecutiveSummary({
 
           <DatePivotPanel
             data={result.datePivot}
+            dateFallbackWarning={getDateFallbackMessage(result)}
             expanded={datePivotOpen}
             onToggle={() => setDatePivotOpen((p) => !p)}
           />
@@ -210,6 +212,7 @@ function ExecutiveSummaryPanel({
   loading: boolean;
 }) {
   const rows = result.executiveSummary?.rows ?? [];
+  const dateFallbackWarning = getDateFallbackMessage(result);
 
   return (
     <SurfaceCard noPadding>
@@ -248,6 +251,10 @@ function ExecutiveSummaryPanel({
         </div>
       </div>
 
+      {dateFallbackWarning && (
+        <DateFallbackNotice message={dateFallbackWarning} />
+      )}
+
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -274,6 +281,38 @@ function ExecutiveSummaryPanel({
         </table>
       </div>
     </SurfaceCard>
+  );
+}
+
+function getDateFallbackMessage(result: ExecutiveSummaryResult): string | null {
+  const warning = result.warnings?.find((item) => item.code === "DATE_FALLBACK_USED");
+  if (warning?.message) return warning.message;
+
+  if (result.dateSource?.fallback) {
+    return (
+      result.dateSource.message ||
+      `Invoice Date was unavailable, so ${result.dateSource.displayName} was used for spend quality date calculations.`
+    );
+  }
+
+  return null;
+}
+
+function DateFallbackNotice({ message }: { message: string }) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="mx-6 mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200"
+    >
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+        <p>
+          <span className="font-semibold">Date fallback used: </span>
+          {message}
+        </p>
+      </div>
+    </div>
   );
 }
 
@@ -440,10 +479,12 @@ function SpendMetric({
 
 function DatePivotPanel({
   data,
+  dateFallbackWarning,
   expanded,
   onToggle,
 }: {
   data: DatePivotResult;
+  dateFallbackWarning: string | null;
   expanded: boolean;
   onToggle: () => void;
 }) {
@@ -461,6 +502,9 @@ function DatePivotPanel({
       <AnimatePresence initial={false}>
         {expanded && (
           <PanelBody>
+            {dateFallbackWarning && (
+              <DateFallbackNotice message={dateFallbackWarning} />
+            )}
             {!data.feasible ? (
               <EmptyPanel>{data.message || "Date pivot not available."}</EmptyPanel>
             ) : (

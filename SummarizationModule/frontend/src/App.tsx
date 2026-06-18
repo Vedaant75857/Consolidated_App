@@ -52,6 +52,13 @@ import ContextModal from "./components/email/ContextModal";
 import EmailStep from "./components/email/EmailStep";
 import LoadingOverlay from "./components/common/LoadingOverlay";
 import StepChangeWarningDialog from "./components/common/StepChangeWarningDialog";
+import {
+  clearSessionApiKey,
+  hydrateApiKeyFromUrl,
+  setSessionApiKey,
+} from "./apiKeySession";
+
+const LEGACY_API_KEY = "summarizer_apiKey";
 
 const SIDEBAR_ITEMS = [
   { name: "Upload", steps: [1] as AppStep[] },
@@ -105,7 +112,7 @@ export default function App() {
   const [error, setError] = useState("");
 
   const [file, setFile] = useState<File | null>(null);
-  const [apiKey, setApiKey] = useState(() => sessionStorage.getItem("summarizer_apiKey") || "");
+  const [apiKey, setApiKey] = useState(() => hydrateApiKeyFromUrl(LEGACY_API_KEY));
 
   const [columns, setColumns] = useState<ColumnInfo[]>([]);
   const [inventory, setInventory] = useState<FileInventoryItem[]>([]);
@@ -197,7 +204,11 @@ export default function App() {
 
   // Persist apiKey to sessionStorage so it survives page refreshes
   useEffect(() => {
-    if (apiKey) sessionStorage.setItem("summarizer_apiKey", apiKey);
+    if (apiKey.trim()) {
+      setSessionApiKey(apiKey, LEGACY_API_KEY);
+    } else {
+      clearSessionApiKey(LEGACY_API_KEY);
+    }
   }, [apiKey]);
 
   useEffect(() => {

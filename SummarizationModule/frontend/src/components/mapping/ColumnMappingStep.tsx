@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Loader2, ArrowRight, Check, Sparkles } from "lucide-react";
 import type { ColumnInfo, AIMapping, StandardField, CastReport } from "../../types";
 
@@ -23,6 +23,70 @@ const TYPE_COLORS: Record<string, string> = {
   string: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800",
 };
 
+const FIELD_GROUPS = [
+  {
+    key: "spend_classification",
+    label: "Spend Classification",
+    fieldKeys: ["l1", "l2", "l3", "l4", "gl_account", "capex_opex_indicator"],
+  },
+  {
+    key: "spend_currency",
+    label: "Spend & Currency",
+    fieldKeys: ["total_spend", "local_spend", "currency"],
+  },
+  {
+    key: "date_columns",
+    label: "Date Columns",
+    fieldKeys: ["invoice_date", "invoice_due_date", "payment_date", "goods_receipt_date", "po_document_date"],
+  },
+  {
+    key: "contract_related",
+    label: "Contract Related Columns",
+    fieldKeys: ["contract_id", "contract_indicator", "contract_status", "contract_start_date", "contract_end_date"],
+  },
+  {
+    key: "vendor_org_location",
+    label: "Vendor, Org & Location",
+    fieldKeys: ["supplier", "vendor_country", "business_unit", "plant_code", "plant_name", "country", "region"],
+  },
+  {
+    key: "invoice_po_details",
+    label: "Invoice & PO Details",
+    fieldKeys: [
+      "invoice_number",
+      "invoice_po_number",
+      "payment_terms",
+      "po_material_number",
+      "po_material_description",
+      "description",
+      "quantity",
+      "price_per_uom",
+      "uom",
+    ],
+  },
+] as const;
+
+const OTHER_FIELD_GROUP = {
+  key: "other_columns",
+  label: "Other Columns",
+  fieldKeys: [],
+} as const;
+
+const FIELD_GROUP_BY_KEY = new Map<string, string>(
+  FIELD_GROUPS.flatMap((group) => group.fieldKeys.map((fieldKey) => [fieldKey, group.key]))
+);
+const FIELD_ORDER_BY_KEY = new Map<string, number>(
+  FIELD_GROUPS.flatMap((group) => group.fieldKeys.map((fieldKey, index) => [fieldKey, index]))
+);
+
+const SPEND_DATE_FALLBACK_HIERARCHY = [
+  "invoice_date",
+  "invoice_due_date",
+  "payment_date",
+  "goods_receipt_date",
+  "po_document_date",
+] as const;
+
 export default function ColumnMappingStep({
   columns, onRequestMapping, onConfirm, loading,
   initialMappings, initialStandardFields,
@@ -44,6 +108,51 @@ export default function ColumnMappingStep({
   );
   const [error, setError] = useState("");
   const [showPreview, setShowPreview] = useState(false);
+
+  const mappedCount = aiMappings?.filter(m => userMapping[m.fieldKey]).length ?? 0;
+  const totalCount = aiMappings?.length ?? 0;
+  const fieldByKey = useMemo(
+    () => new Map(standardFields.map((field) => [field.fieldKey, field])),
+    [standardFields]
+  );
+  const provisionalDateFallbackKey = useMemo(() => {
+    if (userMapping.invoice_date) return null;
+    return SPEND_DATE_FALLBACK_HIERARCHY.slice(1).find((fieldKey) => userMapping[fieldKey]) ?? null;
+  }, [userMapping]);
+  const groupedMappings = useMemo(() => {
+    const groups = [...FIELD_GROUPS, OTHER_FIELD_GROUP].map((group) => ({
+      key: group.key,
+      label: group.label,
+      mappings: [] as Array<{ mapping: AIMapping; rowIndex: number; originalIndex: number }>,
+      mappedCount: 0,
+    }));
+    const groupByKey: Map<string, (typeof groups)[number]> = new Map(groups.map((group) => [group.key, group]));
+    const otherGroup = groupByKey.get(OTHER_FIELD_GROUP.key)!;
+
+    for (const [originalIndex, mapping] of (aiMappings ?? []).entries()) {
+      const groupKey = FIELD_GROUP_BY_KEY.get(mapping.fieldKey);
+      const group = groupKey ? groupByKey.get(groupKey) ?? otherGroup : otherGroup;
+      group.mappings.push({ mapping, rowIndex: 0, originalIndex });
+      if (userMapping[mapping.fieldKey]) group.mappedCount += 1;
+    }
+
+    let rowIndex = 0;
+    for (const group of groups) {
+      if (group.key !== OTHER_FIELD_GROUP.key) {
+        group.mappings.sort((a, b) => {
+          const aOrder = FIELD_ORDER_BY_KEY.get(a.mapping.fieldKey) ?? Number.MAX_SAFE_INTEGER;
+          const bOrder = FIELD_ORDER_BY_KEY.get(b.mapping.fieldKey) ?? Number.MAX_SAFE_INTEGER;
+          return aOrder - bOrder || a.originalIndex - b.originalIndex;
+        });
+      }
+      for (const item of group.mappings) {
+        item.rowIndex = rowIndex;
+        rowIndex += 1;
+      }
+    }
+
+    return groups.filter((group) => group.mappings.length > 0);
+  }, [aiMappings, userMapping]);
 
   const handleDetect = async () => {
     setPhase("detecting");
@@ -120,9 +229,6 @@ export default function ColumnMappingStep({
     return null;
   }
 
-  const mappedCount = aiMappings?.filter(m => userMapping[m.fieldKey]).length ?? 0;
-  const totalCount = aiMappings?.length ?? 0;
-
   return (
     <div className="space-y-4">
       {/* Mapping table */}
@@ -165,81 +271,112 @@ export default function ColumnMappingStep({
                 </th>
               </tr>
             </thead>
-            <tbody>
-              {aiMappings?.map((m, idx) => {
-                const selectedCol = userMapping[m.fieldKey];
-                const field = standardFields.find((f) => f.fieldKey === m.fieldKey);
-                const expectedType = field?.expectedType || m.expectedType;
-                const isEven = idx % 2 === 0;
-
-                return (
-                  <tr
-                    key={m.fieldKey}
-                    className={`border-b border-neutral-100 dark:border-neutral-800 transition-colors ${
-                      isEven ? "bg-white dark:bg-neutral-900" : "bg-neutral-50/50 dark:bg-neutral-800/30"
-                    } hover:bg-neutral-50 dark:hover:bg-neutral-800/50`}
-                  >
-                    <td className="sticky left-0 z-10 py-3 px-4 bg-inherit">
-                      <div className="font-semibold text-neutral-900 dark:text-neutral-100 text-[12px]">
-                        {field?.displayName || m.fieldKey}
+            {groupedMappings.map((group) => (
+              <tbody key={group.key}>
+                  <tr className="bg-neutral-100 dark:bg-neutral-800/80">
+                    <th
+                      colSpan={4}
+                      scope="rowgroup"
+                      className="py-2 px-4 text-left text-[10px] font-bold uppercase tracking-wider text-neutral-700 dark:text-neutral-300 border-y border-neutral-200 dark:border-neutral-700"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="sticky left-4 z-10 bg-neutral-100 dark:bg-neutral-800/80 pr-3">
+                          {group.label}
+                        </span>
+                        <span className="text-neutral-500 dark:text-neutral-400 tabular-nums">
+                          {group.mappedCount} / {group.mappings.length} mapped
+                        </span>
                       </div>
-                      {field?.description && (
-                        <div className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5 font-normal truncate max-w-[180px]" title={field.description}>
-                          {field.description}
-                        </div>
-                      )}
-                    </td>
-                    <td className="py-3 px-3">
-                      <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${TYPE_COLORS[expectedType] || TYPE_COLORS.string}`}>
-                        {expectedType}
-                      </span>
-                    </td>
-                    <td className="py-3 px-3">
-                      <select
-                        value={selectedCol || ""}
-                        onChange={(e) =>
-                          setUserMapping((prev) => ({
-                            ...prev,
-                            [m.fieldKey]: e.target.value || null,
-                          }))
-                        }
-                        disabled={phase === "confirming" || phase === "done"}
-                        className="w-full px-3 py-1.5 rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-[12px] font-mono text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all disabled:opacity-50"
-                      >
-                        <option value="">-- Not mapped --</option>
-                        {(() => { const bm = strVal(m.bestMatch); return bm ? <option value={bm}>&#9733; {bm} (AI pick)</option> : null; })()}
-                        {(m.alternatives ?? [])
-                          .map((a) => strVal(a) ?? "")
-                          .filter((a): a is string => a.length > 0 && a !== strVal(m.bestMatch))
-                          .map((alt) => (
-                            <option key={alt} value={alt}>
-                              {alt} (alternative)
-                            </option>
-                          ))}
-                        <optgroup label="All columns">
-                          {columns.map((c) => (
-                            <option key={c.name} value={c.name}>
-                              {c.name}
-                            </option>
-                          ))}
-                        </optgroup>
-                      </select>
-                    </td>
-                    <td className="py-3 px-3 text-center">
-                      {selectedCol ? (
-                        <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-emerald-100 dark:bg-emerald-950/40">
-                          <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                        </span>
-                      ) : (
-                        <span className="inline-block text-[10px] font-bold text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-950/30 px-2 py-0.5 rounded">
-                          Unmapped
-                        </span>
-                      )}
-                    </td>
+                    </th>
                   </tr>
-                );
-              })}
-            </tbody>
+                  {group.mappings.map(({ mapping: m, rowIndex }) => {
+                    const selectedCol = userMapping[m.fieldKey];
+                    const field = fieldByKey.get(m.fieldKey);
+                    const expectedType = field?.expectedType || m.expectedType;
+                    const isEven = rowIndex % 2 === 0;
+                    const fallbackNoteId = `spend-date-fallback-${m.fieldKey}`;
+                    const isProvisionalDateFallback = m.fieldKey === provisionalDateFallbackKey;
+
+                    return (
+                      <tr
+                        key={m.fieldKey}
+                        className={`border-b border-neutral-100 dark:border-neutral-800 transition-colors ${
+                          isEven ? "bg-white dark:bg-neutral-900" : "bg-neutral-50/50 dark:bg-neutral-800/30"
+                        } hover:bg-neutral-50 dark:hover:bg-neutral-800/50`}
+                      >
+                        <td className="sticky left-0 z-10 py-3 px-4 bg-inherit">
+                          <div className="font-semibold text-neutral-900 dark:text-neutral-100 text-[12px]">
+                            {field?.displayName || m.fieldKey}
+                          </div>
+                          {field?.description && (
+                            <div className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5 font-normal truncate max-w-[180px]" title={field.description}>
+                              {field.description}
+                            </div>
+                          )}
+                          {isProvisionalDateFallback && (
+                            <div
+                              id={fallbackNoteId}
+                              role="status"
+                              aria-live="polite"
+                              className="mt-1 text-[10px] font-semibold leading-snug text-amber-700 dark:text-amber-300"
+                            >
+                              Spend date fallback while Invoice Date is unmapped
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 px-3">
+                          <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${TYPE_COLORS[expectedType] || TYPE_COLORS.string}`}>
+                            {expectedType}
+                          </span>
+                        </td>
+                        <td className="py-3 px-3">
+                          <select
+                            value={selectedCol || ""}
+                            aria-describedby={isProvisionalDateFallback ? fallbackNoteId : undefined}
+                            onChange={(e) =>
+                              setUserMapping((prev) => ({
+                                ...prev,
+                                [m.fieldKey]: e.target.value || null,
+                              }))
+                            }
+                            disabled={phase === "confirming" || phase === "done"}
+                            className="w-full px-3 py-1.5 rounded-lg border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-[12px] font-mono text-neutral-900 dark:text-neutral-100 focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all disabled:opacity-50"
+                          >
+                            <option value="">-- Not mapped --</option>
+                            {(() => { const bm = strVal(m.bestMatch); return bm ? <option value={bm}>&#9733; {bm} (AI pick)</option> : null; })()}
+                            {(m.alternatives ?? [])
+                              .map((a) => strVal(a) ?? "")
+                              .filter((a): a is string => a.length > 0 && a !== strVal(m.bestMatch))
+                              .map((alt) => (
+                                <option key={alt} value={alt}>
+                                  {alt} (alternative)
+                                </option>
+                              ))}
+                            <optgroup label="All columns">
+                              {columns.map((c) => (
+                                <option key={c.name} value={c.name}>
+                                  {c.name}
+                                </option>
+                              ))}
+                            </optgroup>
+                          </select>
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          {selectedCol ? (
+                            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-emerald-100 dark:bg-emerald-950/40">
+                              <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                            </span>
+                          ) : (
+                            <span className="inline-block text-[10px] font-bold text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-950/30 px-2 py-0.5 rounded">
+                              Unmapped
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            ))}
           </table>
         </div>
 

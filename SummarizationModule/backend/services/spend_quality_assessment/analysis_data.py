@@ -39,7 +39,10 @@ def list_analysis_columns(conn: DuckDBConnection) -> list[str]:
 
 def get_cast_report_fields(conn: DuckDBConnection) -> dict[str, dict]:
     """Return per-field cast stats saved at confirm-mapping time."""
-    cast = get_meta(conn, "cast_report") or {}
+    try:
+        cast = get_meta(conn, "cast_report") or {}
+    except Exception:
+        return {}
     fields = cast.get("fields")
     return fields if isinstance(fields, dict) else {}
 
@@ -91,4 +94,4 @@ def get_mapped_field_keys(
 
 
 def quote_id(name: str) -> str:
-    return f'"{name}"'
+    return f'"{name.replace(chr(34), chr(34) + chr(34))}"'

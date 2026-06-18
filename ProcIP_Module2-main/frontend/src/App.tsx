@@ -14,6 +14,13 @@ import StatusLog, { type LogEntry } from "./components/module-1/StatusLog";
 import { useTheme } from "./components/common/ThemeProvider";
 import { StepHero } from "./components/common/ui";
 import { getConfig } from "./runtimeConfig";
+import {
+  clearSessionApiKey,
+  hydrateApiKeyFromUrl,
+  setSessionApiKey,
+} from "./apiKeySession";
+
+const LEGACY_API_KEY = "normalizer_apiKey";
 
 /* ── Normalization sub-step definitions (mirrored in sidebar + NormDashboard) ── */
 const NORM_OPS = [
@@ -45,7 +52,7 @@ export default function App() {
   const [step, setStep]                       = useState<number>(1);
   const [maxStepReached, setMaxStepReached]   = useState<number>(1);
   const [normActiveTab, setNormActiveTab]     = useState<string>("supplier_country");
-  const [apiKey, setApiKey]                   = useState(() => sessionStorage.getItem("normalizer_apiKey") || "");
+  const [apiKey, setApiKey]                   = useState(() => hydrateApiKeyFromUrl(LEGACY_API_KEY));
   const [file, setFile]                       = useState<File | null>(null);
   const [filename, setFilename]               = useState<string | null>(null);
   const [loading, setLoading]                 = useState(false);
@@ -73,7 +80,11 @@ export default function App() {
 
   // Persist apiKey to sessionStorage so it survives page refreshes
   useEffect(() => {
-    if (apiKey) sessionStorage.setItem("normalizer_apiKey", apiKey);
+    if (apiKey.trim()) {
+      setSessionApiKey(apiKey, LEGACY_API_KEY);
+    } else {
+      clearSessionApiKey(LEGACY_API_KEY);
+    }
   }, [apiKey]);
 
   /* ── Handle cross-module import via URL params ── */

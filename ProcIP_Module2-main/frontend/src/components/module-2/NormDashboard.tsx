@@ -16,6 +16,7 @@ import UnsupportedCurrencyPanel, {
 } from "./UnsupportedCurrencyPanel";
 import type { LogEntry } from "../module-1/StatusLog";
 import { getConfig } from "../../runtimeConfig";
+import { buildApiKeyFragmentUrl } from "../../apiKeySession";
 
 /** Resolve at call time so the async config.json has loaded by the time the user clicks. */
 function getAnalyzerFE(): string {
@@ -551,7 +552,10 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       if (!analyzerSessionId || typeof analyzerSessionId !== "string") {
         throw new Error("Transfer succeeded but no session ID was returned by the Summarizer.");
       }
-      const url = `${getAnalyzerFE()}?sessionId=${encodeURIComponent(analyzerSessionId)}&source=normalizer&apiKey=${encodeURIComponent(apiKey)}`;
+      const url = buildApiKeyFragmentUrl(
+        `${getAnalyzerFE()}?sessionId=${encodeURIComponent(analyzerSessionId)}&source=normalizer`,
+        apiKey
+      );
       // Navigate via a dynamically created <a> link to open in new tab
       // without triggering the popup blocker (anchor clicks are trusted).
       const a = document.createElement("a");

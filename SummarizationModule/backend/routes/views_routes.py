@@ -190,8 +190,10 @@ def _es_lock(session_id: str) -> threading.RLock:
 
 
 def _is_current_executive_summary_cache(cached) -> bool:
-    """Reject legacy 4-row caches so clients always get the current schema."""
+    """Reject legacy caches so clients always get the current schema."""
     if not isinstance(cached, dict) or "flags" in cached:
+        return False
+    if "dateSource" not in cached or not isinstance(cached.get("warnings"), list):
         return False
     es = cached.get("executiveSummary")
     if not isinstance(es, dict):

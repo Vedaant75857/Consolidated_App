@@ -18,6 +18,13 @@ import StepChangeWarningDialog from "./components/common/StepChangeWarningDialog
 import { StepHero, pageVariants, horizontalVariants } from "./components/common/ui";
 import { useTheme } from "./components/common/ThemeProvider";
 import { parseFetchError } from "./components/module-1/services/stitchingApi";
+import {
+  clearSessionApiKey,
+  hydrateApiKeyFromUrl,
+  setSessionApiKey,
+} from "./apiKeySession";
+
+const LEGACY_API_KEY = "datastitcher_apiKey";
 
 type OperationId =
   | "header_norm_run"
@@ -40,7 +47,7 @@ export type { MergeOutput } from "./types";
 export default function App() {
   const { theme, toggleTheme } = useTheme();
   const [file, setFile] = useState<File | null>(null);
-  const [apiKey, setApiKey] = useState(() => sessionStorage.getItem("datastitcher_apiKey") || "");
+  const [apiKey, setApiKey] = useState(() => hydrateApiKeyFromUrl(LEGACY_API_KEY));
   const [loading, setLoading] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("");
@@ -74,7 +81,11 @@ export default function App() {
 
   // Persist apiKey to sessionStorage so it survives page refreshes
   useEffect(() => {
-    if (apiKey) sessionStorage.setItem("datastitcher_apiKey", apiKey);
+    if (apiKey.trim()) {
+      setSessionApiKey(apiKey, LEGACY_API_KEY);
+    } else {
+      clearSessionApiKey(LEGACY_API_KEY);
+    }
   }, [apiKey]);
 
   const slideDirection = step >= prevStepRef.current ? 1 : -1;

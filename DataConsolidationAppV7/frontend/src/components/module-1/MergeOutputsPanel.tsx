@@ -5,6 +5,7 @@ import { Download, Package, Trash2, X, Loader2, FileSpreadsheet, BarChart3, Data
 import type { MergeOutput } from "../../types";
 import TransferOverlay from "../common/TransferOverlay";
 import { getConfig } from "../../runtimeConfig";
+import { buildApiKeyFragmentUrl } from "../../apiKeySession";
 
 /** Resolve at call time so the async config.json has loaded by the time the user clicks. */
 function getNormalizerFE(): string {
@@ -128,7 +129,10 @@ export default function MergeOutputsPanel({
       if (!analyzerSessionId || typeof analyzerSessionId !== "string") {
         throw new Error("Transfer succeeded but no session ID was returned by the Analyzer.");
       }
-      const url = `${getAnalyzerFE()}?sessionId=${encodeURIComponent(analyzerSessionId)}&source=stitcher&apiKey=${encodeURIComponent(apiKey)}`;
+      const url = buildApiKeyFragmentUrl(
+        `${getAnalyzerFE()}?sessionId=${encodeURIComponent(analyzerSessionId)}&source=stitcher`,
+        apiKey
+      );
       // Navigate via a dynamically created <a> link to open in new tab
       // without triggering the popup blocker (anchor clicks are trusted).
       const a = document.createElement("a");
@@ -165,7 +169,9 @@ export default function MergeOutputsPanel({
       if (!res.ok || !data.ok) throw new Error(data.error || "Transfer failed");
 
       const normalizerSessionId: string = data.normalizerSessionId || "";
-      const url = `${getNormalizerFE()}?imported=true&source=stitcher&apiKey=${encodeURIComponent(apiKey)}${normalizerSessionId ? `&sessionId=${encodeURIComponent(normalizerSessionId)}` : ""}`;
+      const params = new URLSearchParams({ imported: "true", source: "stitcher" });
+      if (normalizerSessionId) params.set("sessionId", normalizerSessionId);
+      const url = buildApiKeyFragmentUrl(`${getNormalizerFE()}?${params.toString()}`, apiKey);
       const a = document.createElement("a");
       a.href = url;
       a.target = "_blank";

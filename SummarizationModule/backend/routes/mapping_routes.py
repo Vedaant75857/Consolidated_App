@@ -2,7 +2,14 @@ import logging
 
 from flask import Blueprint, jsonify, request
 
-from shared.db import get_session_db, get_session_lock, get_meta, set_meta, session_exists
+from shared.db import (
+    delete_meta,
+    get_session_db,
+    get_session_lock,
+    get_meta,
+    set_meta,
+    session_exists,
+)
 from services.mapping.column_mapper import (
     STANDARD_FIELDS,
     deterministic_match,
@@ -124,6 +131,7 @@ def confirm_mapping():
             set_meta(conn, "mapping", mapping)
 
             cast_report = build_typed_table(conn, mapping)
+            delete_meta(conn, "executive_summary")
             set_meta(conn, "step", 4)
 
             # Precompute procurement view feasibility so step 7 is instant

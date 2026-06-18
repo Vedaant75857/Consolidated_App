@@ -1,4 +1,12 @@
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import {
+  type ComponentType,
+  type MutableRefObject,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   AlertTriangle,
@@ -142,7 +150,7 @@ interface DataQualityAssessmentProps {
   setAiLoading: (v: boolean) => void;
   setLoadingMessage: (v: string) => void;
   setStep: (s: number) => void;
-  cancelRef?: React.MutableRefObject<(() => void) | null>;
+  cancelRef?: MutableRefObject<(() => void) | null>;
 }
 
 const ERROR_CODE_TABLE_MISSING = "TABLE_MISSING";
@@ -229,8 +237,14 @@ function StructuredInsight({
 }
 
 /** Collapsible "View Details" / "Hide Details" toggle with smooth animation. */
-function DeepDiveSection({ children }: { children: ReactNode }) {
-  const [open, setOpen] = useState(false);
+function DeepDiveSection({
+  children,
+  defaultOpen = false,
+}: {
+  children: ReactNode;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
 
   return (
     <div>
@@ -344,13 +358,43 @@ function EmptyState({
   icon: Icon,
   message,
 }: {
-  icon: React.ComponentType<{ className?: string }>;
+  icon: ComponentType<{ className?: string }>;
   message: string;
 }) {
   return (
     <div className="flex flex-col items-center justify-center py-10 gap-3">
       <Icon className="w-8 h-8 text-neutral-300 dark:text-neutral-600" />
       <p className="text-sm text-neutral-500 dark:text-neutral-400">{message}</p>
+    </div>
+  );
+}
+
+function AnalyzedColumnsSummary({
+  label = "Analyzed columns",
+  columns,
+}: {
+  label?: string;
+  columns: string[];
+}) {
+  const names = columns.filter(Boolean);
+  if (names.length === 0) return null;
+
+  return (
+    <div className="px-6 py-3 border-b border-neutral-100 dark:border-neutral-800">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[10px] uppercase tracking-wider font-semibold text-neutral-500 dark:text-neutral-400">
+          {label}
+        </span>
+        {names.map((name) => (
+          <span
+            key={`${label}-${name}`}
+            className="max-w-full truncate rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1 text-xs font-medium text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300"
+            title={name}
+          >
+            {name}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1448,6 +1492,12 @@ function CurrencyPanel({
               {table && !table.exists && (
                 <EmptyState icon={Coins} message="No currency columns found" />
               )}
+              {table && table.exists && (
+                <AnalyzedColumnsSummary
+                  label="Selected columns"
+                  columns={table.columns.map((col) => col.name)}
+                />
+              )}
               {table && table.exists && table.rows.length > 0 && (
                 <DeepDiveSection>
                   <ValueDistributionTable table={table} valueLabel="Currency" />
@@ -1516,8 +1566,14 @@ function PaymentTermsPanel({
               {table && !table.exists && (
                 <EmptyState icon={FileText} message="Payment Terms columns not found" />
               )}
+              {table && table.exists && (
+                <AnalyzedColumnsSummary
+                  label="Selected columns"
+                  columns={table.columns.map((col) => col.name)}
+                />
+              )}
               {table && table.exists && table.rows.length > 0 && (
-                <DeepDiveSection>
+                <DeepDiveSection defaultOpen>
                   <ValueDistributionTable table={table} valueLabel="Term" />
                 </DeepDiveSection>
               )}
@@ -1593,6 +1649,10 @@ function CountryRegionPanel({
                   <p className="px-6 pt-4 pb-2 text-[10px] uppercase tracking-wider font-semibold text-neutral-500 dark:text-neutral-400">
                     Country
                   </p>
+                  <AnalyzedColumnsSummary
+                    label="Analyzed country columns"
+                    columns={countryTable!.columns.map((col) => col.name)}
+                  />
                   {countryTable!.rows.length > 0 ? (
                     <ValueDistributionTable table={countryTable!} valueLabel="Country" />
                   ) : (
@@ -1605,6 +1665,10 @@ function CountryRegionPanel({
                   <p className="px-6 pt-4 pb-2 text-[10px] uppercase tracking-wider font-semibold text-neutral-500 dark:text-neutral-400">
                     Region
                   </p>
+                  <AnalyzedColumnsSummary
+                    label="Analyzed region columns"
+                    columns={regionTable!.columns.map((col) => col.name)}
+                  />
                   {regionTable!.rows.length > 0 ? (
                     <ValueDistributionTable table={regionTable!} valueLabel="Region" />
                   ) : (
@@ -1823,27 +1887,63 @@ function FillRateSummaryPanel({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                      {d.columns.map((col, idx) => (
-                        <tr
-                          key={col.columnName}
-                          className={`hover:bg-neutral-100/60 dark:hover:bg-neutral-700/20 transition-colors ${idx % 2 === 0 ? "bg-neutral-50/30 dark:bg-neutral-800/10" : ""}`}
-                        >
-                          <td className="px-6 py-2.5 font-medium text-neutral-800 dark:text-neutral-200 max-w-[260px] truncate sticky left-0 bg-white dark:bg-neutral-900 z-10">
-                            {col.columnName}
-                          </td>
-                          <td className="px-4 py-2.5 text-center tabular-nums text-neutral-700 dark:text-neutral-300">
-                            {col.pctRowsCovered.toFixed(1)}%
-                          </td>
-                          {spendHeader && (
-                            <td className="px-4 py-2.5 text-center tabular-nums text-neutral-700 dark:text-neutral-300">
-                              <FillRateSpendCell
-                                coverage={col.spendCoverage}
-                                spendType={d.spendType}
-                              />
+                      {d.columns.map((col, idx) => {
+                        const isLowFill = col.pctRowsCovered < 80;
+                        const rowBg = isLowFill
+                          ? "bg-red-50/70 dark:bg-red-950/20"
+                          : idx % 2 === 0
+                            ? "bg-neutral-50/30 dark:bg-neutral-800/10"
+                            : "";
+                        const stickyBg = isLowFill
+                          ? "bg-red-50 dark:bg-red-950"
+                          : "bg-white dark:bg-neutral-900";
+                        const lowFillText = `Low fill: ${col.pctRowsCovered.toFixed(1)}% rows covered`;
+
+                        return (
+                          <tr
+                            key={col.columnName}
+                            className={`hover:bg-neutral-100/60 dark:hover:bg-neutral-700/20 transition-colors ${rowBg}`}
+                          >
+                            <td
+                              className={`px-6 py-2.5 font-medium max-w-[260px] sticky left-0 z-10 ${
+                                isLowFill
+                                  ? "text-red-700 dark:text-red-300"
+                                  : "text-neutral-800 dark:text-neutral-200"
+                              } ${stickyBg}`}
+                              aria-label={isLowFill ? `${col.columnName}. ${lowFillText}` : col.columnName}
+                            >
+                              <div className="flex min-w-0 items-center gap-2">
+                                <span className="min-w-0 truncate" title={col.columnName}>
+                                  {col.columnName}
+                                </span>
+                                {isLowFill && (
+                                  <span className="shrink-0 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-red-700 dark:bg-red-900/50 dark:text-red-200">
+                                    Low fill
+                                  </span>
+                                )}
+                              </div>
                             </td>
-                          )}
-                        </tr>
-                      ))}
+                            <td
+                              className={`px-4 py-2.5 text-center tabular-nums ${
+                                isLowFill
+                                  ? "font-semibold text-red-700 dark:text-red-300"
+                                  : "text-neutral-700 dark:text-neutral-300"
+                              }`}
+                              aria-label={isLowFill ? lowFillText : `${col.pctRowsCovered.toFixed(1)}% rows covered`}
+                            >
+                              {col.pctRowsCovered.toFixed(1)}%
+                            </td>
+                            {spendHeader && (
+                              <td className="px-4 py-2.5 text-center tabular-nums text-neutral-700 dark:text-neutral-300">
+                                <FillRateSpendCell
+                                  coverage={col.spendCoverage}
+                                  spendType={d.spendType}
+                                />
+                              </td>
+                            )}
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

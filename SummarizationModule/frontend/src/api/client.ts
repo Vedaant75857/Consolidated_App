@@ -295,6 +295,22 @@ export interface SpendBreakdownResult {
   message?: string;
 }
 
+export interface ExecutiveSummaryDateSource {
+  fieldKey: string;
+  displayName: string;
+  sourceColumn: string | null;
+  fallback: boolean;
+  message?: string;
+}
+
+export interface ExecutiveSummaryWarning {
+  code: "DATE_FALLBACK_USED" | string;
+  severity: "warning" | string;
+  message: string;
+  fieldKey?: string;
+  sourceColumn?: string | null;
+}
+
 export interface SupplierBreakdownResult {
   totalSuppliers: number;
   suppliersTo80Pct: number | null;
@@ -379,6 +395,8 @@ export interface ExecutiveSummaryResult {
   spendBifurcation: SpendBifurcationResult;
   paretoAnalysis: ParetoAnalysisResult;
   descriptionQuality: DescriptionQualityItem[];
+  dateSource?: ExecutiveSummaryDateSource | null;
+  warnings?: ExecutiveSummaryWarning[];
 }
 
 export async function getExecutiveSummary(
