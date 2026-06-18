@@ -75,6 +75,8 @@ _NUMERIC_AGG_KEYS = frozenset({"sum", "avg", "min", "max"})
 
 # UI column types
 _UI_TYPES = frozenset({"TEXT", "INTEGER", "DOUBLE", "DATE", "BOOLEAN"})
+_NUMERIC_CALC_TYPES = frozenset({"INTEGER", "DOUBLE"})
+_NUMERIC_CALC_FUNCTIONS = frozenset({"ROUND", "ABS", "FLOOR", "CEIL", "POWER", "SQRT"})
 
 _NUMERIC_NAME_PATTERNS = re.compile(
     r"(AMOUNT|QTY|QUANTITY|PRICE|COST|SPEND|NO$|_NO$|_ID$|RECORD_ID|COUNT|NUM|NUMBER|RATE|VALUE|TOTAL)",
@@ -247,12 +249,24 @@ def _sort_expr_for_type(col: str, ui_type: str) -> str:
     """Build ORDER BY expression for a column based on effective UI type."""
     quoted = quote_id(col)
     if ui_type in ("INTEGER", "DOUBLE"):
-        return f"TRY_CAST({quoted} AS DOUBLE)"
+        return _numeric_cast_sql(quoted)
     if ui_type == "DATE":
         return f"TRY_CAST({quoted} AS TIMESTAMP)"
     if ui_type == "BOOLEAN":
         return f"TRY_CAST({quoted} AS BOOLEAN)"
     return quoted
+
+
+def _strip_thousands_sql(quoted_col: str) -> str:
+    """SQL expression that removes comma/space thousands separators from a column."""
+    return (
+        f"REPLACE(REPLACE(TRIM(CAST({quoted_col} AS VARCHAR)), ',', ''), ' ', '')"
+    )
+
+
+def _numeric_cast_sql(quoted_col: str) -> str:
+    """Cast a column to DOUBLE, tolerating comma-separated numeric strings."""
+    return f"TRY_CAST({_strip_thousands_sql(quoted_col)} AS DOUBLE)"
 
 
 def _pivot_agg_expr(field: str, agg_key: str) -> str:
@@ -261,7 +275,7 @@ def _pivot_agg_expr(field: str, agg_key: str) -> str:
     if agg_key == "count_distinct":
         return f"COUNT(DISTINCT {quoted})"
     if agg_key in _NUMERIC_AGG_KEYS:
-        cast_field = f"TRY_CAST({quoted} AS DOUBLE)"
+        cast_field = _numeric_cast_sql(quoted)
         agg = _AGG_FUNCS.get(agg_key, "SUM")
         return f"{agg}({cast_field})"
     agg = _AGG_FUNCS.get(agg_key, "COUNT")
@@ -341,6 +355,7 @@ def _build_where_clause(
     """Build WHERE clause from filters and search."""
     conditions: list[str] = []
     params: list[Any] = []
+    display_col_set = set(display_cols)
 
     # Search across all columns
     if search:
@@ -360,6 +375,8 @@ def _build_where_clause(
 
             if not col:
                 continue
+            if col not in display_col_set:
+                raise ValueError(f"Column not found: {col}")
 
             quoted_col = quote_id(col)
             sql_op = _FILTER_OPS.get(op, "=")
@@ -380,6 +397,8 @@ def _build_where_clause(
                     )
                 if in_parts:
                     conditions.append(f"({' OR '.join(in_parts)})")
+                else:
+                    conditions.append("1 = 0")
             elif op == "not_in":
                 selected = f.get("values") or []
                 include_blanks = bool(f.get("includeBlanks"))
@@ -433,18 +452,50 @@ def _build_order_clause(
     return f" ORDER BY {quote_id(ROW_ID_COL)}"
 
 
-def _parse_calc_expression(expression: str, columns: list[str]) -> str:
+def _expression_uses_numeric_context(expression: str) -> bool:
+    """Return True when column refs should be treated as numeric operands."""
+    bracket_depth = 0
+    in_string = False
+    prev = ""
+    for ch in expression:
+        if ch == "'" and prev != "\\":
+            in_string = not in_string
+        elif not in_string:
+            if ch == "[":
+                bracket_depth += 1
+            elif ch == "]" and bracket_depth:
+                bracket_depth -= 1
+            elif bracket_depth == 0 and ch in "+-*/":
+                return True
+        prev = ch
+
+    function_pattern = "|".join(sorted(_NUMERIC_CALC_FUNCTIONS))
+    return bool(re.search(rf"\b(?:{function_pattern})\s*\(", expression, re.IGNORECASE))
+
+
+def _parse_calc_expression(
+    expression: str,
+    columns: list[str],
+    *,
+    cast_columns_as_numeric: bool = False,
+) -> str:
     """Parse and validate calculated column expression.
 
     Converts [Column Name] references to SQL identifiers.
     Validates only allowed functions and operators.
     """
+    if not expression or not expression.strip():
+        raise ValueError("Expression is required")
+
     # Replace [Column Name] with quoted identifiers
     def replace_column_ref(match: re.Match) -> str:
         col_name = match.group(1).strip()
         if col_name not in columns:
             raise ValueError(f"Unknown column: {col_name}")
-        return quote_id(col_name)
+        quoted = quote_id(col_name)
+        if cast_columns_as_numeric:
+            return _numeric_cast_sql(quoted)
+        return quoted
 
     # Replace column references
     parsed = re.sub(r'\[([^\]]+)\]', replace_column_ref, expression)
@@ -459,19 +510,72 @@ def _parse_calc_expression(expression: str, columns: list[str]) -> str:
         r'\s+)+$',  # whitespace
         re.IGNORECASE
     )
+    if not allowed_pattern.fullmatch(parsed):
+        raise ValueError("Expression contains unsupported characters")
 
     # Check for disallowed SQL keywords
     disallowed = {'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'DROP', 'CREATE',
                   'ALTER', 'FROM', 'WHERE', 'JOIN', 'UNION', 'EXEC', 'EXECUTE'}
 
-    # Extract words and check
-    words = set(re.findall(r'\b[A-Z_]+\b', parsed.upper()))
+    # Extract words outside quoted identifiers and string literals.
+    keyword_source = re.sub(r'"[^"]*"', ' ', parsed)
+    keyword_source = re.sub(r"'[^']*'", ' ', keyword_source)
+    words = set(re.findall(r'\b[A-Z_]+\b', keyword_source.upper()))
     if words - _ALLOWED_CALC_FUNCTIONS - {'AS', 'NULL', 'AND', 'OR', 'NOT', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END'}:
         # Check if any remaining are disallowed SQL
         if words & disallowed:
             raise ValueError("Expression contains disallowed SQL keywords")
 
     return parsed
+
+
+def _format_calc_error(exc: Exception) -> str:
+    """Return a compact validation error suitable for the UI."""
+    message = str(exc).strip().splitlines()[0] if str(exc).strip() else "Invalid expression"
+    return f"Invalid calculated column expression: {message}"
+
+
+def _normalize_calc_data_type(data_type: str | None) -> str:
+    """Normalize and validate calculated-column data types."""
+    normalized = (data_type or "TEXT").upper()
+    if normalized not in _UI_TYPES:
+        allowed = ", ".join(sorted(_UI_TYPES))
+        raise ValueError(f"Unsupported data type: {normalized}. Use: {allowed}")
+    return normalized
+
+
+def _cast_calc_result(expr: str, data_type: str) -> str:
+    """Cast a calculated expression to the target column type."""
+    if data_type == "INTEGER":
+        return f"CAST({expr} AS BIGINT)"
+    if data_type == "DOUBLE":
+        return f"CAST({expr} AS DOUBLE)"
+    return expr
+
+
+def _validate_pivot_has_values(
+    conn: DuckDBConnection,
+    pivot_table_name: str,
+    row_fields: list[str],
+) -> None:
+    """Raise when a pivot table has no non-empty value cells."""
+    pivot_cols = read_table_columns(conn, pivot_table_name)
+    value_cols = [c for c in pivot_cols if c not in row_fields and c != ROW_ID_COL]
+    if not value_cols:
+        drop_table(conn, pivot_table_name, commit=True)
+        raise ValueError("Pivot produced no value columns.")
+
+    quoted_pivot = quote_id(pivot_table_name)
+    checks = " OR ".join(
+        f"({quote_id(c)} IS NOT NULL AND TRIM(CAST({quote_id(c)} AS VARCHAR)) != '')"
+        for c in value_cols
+    )
+    row = conn.execute(f"SELECT COUNT(*) FROM {quoted_pivot} WHERE {checks}").fetchone()
+    if not row or int(row[0] or 0) == 0:
+        drop_table(conn, pivot_table_name, commit=True)
+        raise ValueError(
+            "Pivot produced no numeric results. Check that value fields contain numbers."
+        )
 
 
 # --- Public API ---
@@ -858,6 +962,35 @@ def rows_delete(
     return get_preview_data(conn, table_key)
 
 
+def _remove_column_after_failed_add(
+    conn: DuckDBConnection,
+    sql_table: str,
+    column: str,
+) -> None:
+    """Remove a newly added column after a failed calculated-column update."""
+    cols = read_table_columns(conn, sql_table)
+    if column not in cols:
+        return
+
+    keep_cols = [c for c in cols if c != column]
+    if not keep_cols:
+        return
+
+    quoted_table = quote_id(sql_table)
+    temp_table = f"temp_{sql_table}_{uuid.uuid4().hex[:8]}"
+    quoted_temp = quote_id(temp_table)
+    col_list = ", ".join(quote_id(c) for c in keep_cols)
+
+    conn.execute(f"""
+        CREATE TABLE {quoted_temp} AS
+        SELECT {col_list}
+        FROM {quoted_table}
+    """)
+    drop_table(conn, sql_table, commit=False)
+    conn.execute(f"ALTER TABLE {quoted_temp} RENAME TO {quoted_table}")
+    conn.commit()
+
+
 def add_calculated_column(
     conn: DuckDBConnection,
     table_key: str,
@@ -866,6 +999,11 @@ def add_calculated_column(
     data_type: str = "TEXT",
 ) -> dict[str, Any]:
     """Add a calculated column."""
+    data_type = _normalize_calc_data_type(data_type)
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("Column name is required")
+
     sql_table = lookup_sql_name(conn, table_key)
     if not sql_table or not table_exists(conn, sql_table):
         raise ValueError(f"Table not found: {table_key}")
@@ -874,26 +1012,44 @@ def add_calculated_column(
     if name in cols:
         raise ValueError(f"Column already exists: {name}")
 
+    cast_columns_as_numeric = (
+        data_type in _NUMERIC_CALC_TYPES
+        and _expression_uses_numeric_context(expression)
+    )
+
     # Parse and validate expression
-    parsed_expr = _parse_calc_expression(expression, cols)
+    parsed_expr = _parse_calc_expression(
+        expression,
+        cols,
+        cast_columns_as_numeric=cast_columns_as_numeric,
+    )
+    typed_expr = _cast_calc_result(parsed_expr, data_type)
 
     quoted_table = quote_id(sql_table)
     quoted_name = quote_id(name)
 
-    # Add column with default expression
+    # Validate row-scoped references against the active table before mutating it.
+    try:
+        conn.execute(f"SELECT {typed_expr} FROM {quoted_table} LIMIT 1").fetchone()
+    except Exception as exc:
+        raise ValueError(_format_calc_error(exc)) from exc
+
+    # Add the column without a DEFAULT. DuckDB defaults cannot reference row columns.
     conn.execute(f"""
         ALTER TABLE {quoted_table}
         ADD COLUMN {quoted_name} {data_type}
-        DEFAULT ({parsed_expr})
     """)
 
-    # Update existing rows
-    conn.execute(f"""
-        UPDATE {quoted_table}
-        SET {quoted_name} = {parsed_expr}
-    """)
-
-    conn.commit()
+    try:
+        # Update existing rows with the row-scoped expression.
+        conn.execute(f"""
+            UPDATE {quoted_table}
+            SET {quoted_name} = {typed_expr}
+        """)
+        conn.commit()
+    except Exception as exc:
+        _remove_column_after_failed_add(conn, sql_table, name)
+        raise ValueError(_format_calc_error(exc)) from exc
 
     return get_preview_data(conn, table_key)
 
@@ -979,7 +1135,7 @@ def create_pivot(
                     inner_expr = _pivot_agg_expr(field, agg_key)
                     # Wrap conditional aggregation around the inner expression
                     if agg_key in _NUMERIC_AGG_KEYS:
-                        cast_field = f"TRY_CAST({quote_id(field)} AS DOUBLE)"
+                        cast_field = _numeric_cast_sql(quote_id(field))
                         agg = _AGG_FUNCS.get(agg_key, "SUM")
                         inner_expr = f"{agg}(CASE WHEN {quote_id(column_fields[i])} = ? THEN {cast_field} END)"
                     elif agg_key == "count_distinct":
@@ -1015,6 +1171,8 @@ def create_pivot(
 
     conn.execute(pivot_sql, params)
     conn.commit()
+
+    _validate_pivot_has_values(conn, pivot_table_name, row_fields)
 
     # Get the new table's columns and row count
     pivot_cols = read_table_columns(conn, pivot_table_name)

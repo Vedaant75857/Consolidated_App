@@ -1,6 +1,25 @@
 const BASE = "/api";
 const DEFAULT_TIMEOUT_MS = 120_000;
 
+const BACKEND_UNREACHABLE_MSG =
+  "Backend API not reachable. Make sure the stitcher backend is running on port 3001.";
+
+/** True when the response body is an HTML error page instead of JSON. */
+function isHtmlErrorBody(text: string): boolean {
+  const trimmed = text.trim().toLowerCase();
+  return trimmed.startsWith("<!doctype html") || trimmed.startsWith("<html");
+}
+
+/** Map raw error text to a user-friendly message when the API proxy hit the wrong server. */
+function friendlyApiErrorMessage(text: string, status: number, statusText: string): string {
+  if (isHtmlErrorBody(text)) {
+    return BACKEND_UNREACHABLE_MSG;
+  }
+  const snippet = text.trim().slice(0, 200);
+  if (snippet) return snippet;
+  return `Request failed: ${status} ${statusText}`.trim();
+}
+
 /** Parse an error message from a failed fetch Response (JSON or plain text). */
 export async function parseFetchError(res: Response, fallback?: string): Promise<string> {
   const text = await res.text();
@@ -10,8 +29,7 @@ export async function parseFetchError(res: Response, fallback?: string): Promise
       return data.error;
     }
   } catch {
-    const snippet = text.trim().slice(0, 200);
-    if (snippet) return snippet;
+    return friendlyApiErrorMessage(text, res.status, res.statusText);
   }
   return fallback || `Request failed: ${res.status} ${res.statusText}`.trim();
 }
@@ -44,8 +62,7 @@ async function jsonPost<T = any>(
         }
         code = data.code || null;
       } catch {
-        const snippet = text.trim().slice(0, 200);
-        if (snippet) message = snippet;
+        message = friendlyApiErrorMessage(text, res.status, res.statusText);
       }
       const err = new Error(message);
       (err as any).code = code;
@@ -286,13 +303,13 @@ export async function postDqaCurrency(
   apiKey: string,
   tableName: string,
   tableKey?: string,
-  currencyColumn?: string,
+  identifiedColumns?: string[],
 ): Promise<any> {
   return jsonPost("/dqa/currency", {
     sessionId, apiKey,
     tableName: tableName || undefined,
     tableKey,
-    currencyColumn: currencyColumn || undefined,
+    identifiedColumns: identifiedColumns?.length ? identifiedColumns : undefined,
   });
 }
 
@@ -301,13 +318,13 @@ export async function postDqaPaymentTerms(
   apiKey: string,
   tableName: string,
   tableKey?: string,
-  paymentTermsColumn?: string,
+  identifiedColumns?: string[],
 ): Promise<any> {
   return jsonPost("/dqa/payment-terms", {
     sessionId, apiKey,
     tableName: tableName || undefined,
     tableKey,
-    paymentTermsColumn: paymentTermsColumn || undefined,
+    identifiedColumns: identifiedColumns?.length ? identifiedColumns : undefined,
   });
 }
 
@@ -316,13 +333,19 @@ export async function postDqaCountryRegion(
   apiKey: string,
   tableName: string,
   tableKey?: string,
-  countryColumn?: string,
+  identifiedCountryColumns?: string[],
+  identifiedRegionColumns?: string[],
 ): Promise<any> {
   return jsonPost("/dqa/country-region", {
     sessionId, apiKey,
     tableName: tableName || undefined,
     tableKey,
-    countryColumn: countryColumn || undefined,
+    identifiedCountryColumns: identifiedCountryColumns?.length
+      ? identifiedCountryColumns
+      : undefined,
+    identifiedRegionColumns: identifiedRegionColumns?.length
+      ? identifiedRegionColumns
+      : undefined,
   });
 }
 
@@ -360,18 +383,6 @@ export async function postDqaFillRate(
   tableKey?: string,
 ): Promise<any> {
   return jsonPost("/dqa/fill-rate", {
-    sessionId,
-    tableName: tableName || undefined,
-    tableKey,
-  });
-}
-
-export async function postDqaSpendBifurcation(
-  sessionId: string,
-  tableName: string,
-  tableKey?: string,
-): Promise<any> {
-  return jsonPost("/dqa/spend-bifurcation", {
     sessionId,
     tableName: tableName || undefined,
     tableKey,

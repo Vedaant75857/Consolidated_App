@@ -22,17 +22,13 @@ from data_quality_assessment.service import (
     run_dqa_suggest_columns,
     run_dqa_all_sql,
     run_dqa_country_region_sql,
-    run_dqa_country_region_ai,
     run_dqa_currency_sql,
-    run_dqa_currency_ai,
     run_dqa_date_sql,
     run_dqa_date_ai,
     run_dqa_entity_ai,
     run_dqa_fill_rate,
     run_dqa_financial_ai,
     run_dqa_payment_terms_sql,
-    run_dqa_payment_terms_ai,
-    run_dqa_spend_bifurcation,
     run_dqa_supplier_sql,
     run_dqa_supplier_ai,
 )
@@ -161,20 +157,19 @@ def dqa_date():
 
 @data_quality_bp.route("/dqa/currency", methods=["POST"])
 def dqa_currency():
-    """Currency quality table + AI insight."""
+    """Multi-column currency value distribution table."""
     try:
         fields = _parse_request_fields()
         body = request.get_json(force=True, silent=True) or {}
-        currency_column = body.get("currencyColumn")
+        identified_columns = body.get("identifiedColumns")
 
         conn, lock, table_name = _resolve_table_under_lock(
             fields["session_id"], fields["table_name"], fields["table_key"],
         )
 
         with lock:
-            sql_data = run_dqa_currency_sql(conn, table_name, currency_column)
+            result = run_dqa_currency_sql(conn, table_name, identified_columns)
 
-        result = run_dqa_currency_ai(sql_data, fields["api_key"])
         return jsonify(result)
     except TableMissingError as exc:
         return jsonify({"error": str(exc), "code": "TABLE_MISSING"}), 404
@@ -189,20 +184,19 @@ def dqa_currency():
 
 @data_quality_bp.route("/dqa/payment-terms", methods=["POST"])
 def dqa_payment_terms():
-    """Payment terms spend breakdown + AI insight."""
+    """Multi-column payment terms value distribution table."""
     try:
         fields = _parse_request_fields()
         body = request.get_json(force=True, silent=True) or {}
-        payment_terms_column = body.get("paymentTermsColumn")
+        identified_columns = body.get("identifiedColumns")
 
         conn, lock, table_name = _resolve_table_under_lock(
             fields["session_id"], fields["table_name"], fields["table_key"],
         )
 
         with lock:
-            sql_data = run_dqa_payment_terms_sql(conn, table_name, payment_terms_column)
+            result = run_dqa_payment_terms_sql(conn, table_name, identified_columns)
 
-        result = run_dqa_payment_terms_ai(sql_data, fields["api_key"])
         return jsonify(result)
     except TableMissingError as exc:
         return jsonify({"error": str(exc), "code": "TABLE_MISSING"}), 404
@@ -217,20 +211,25 @@ def dqa_payment_terms():
 
 @data_quality_bp.route("/dqa/country-region", methods=["POST"])
 def dqa_country_region():
-    """Country / Region unique values + AI standardisation insight."""
+    """Multi-column country and region value distribution tables."""
     try:
         fields = _parse_request_fields()
         body = request.get_json(force=True, silent=True) or {}
-        country_column = body.get("countryColumn")
+        identified_country_columns = body.get("identifiedCountryColumns")
+        identified_region_columns = body.get("identifiedRegionColumns")
 
         conn, lock, table_name = _resolve_table_under_lock(
             fields["session_id"], fields["table_name"], fields["table_key"],
         )
 
         with lock:
-            sql_data = run_dqa_country_region_sql(conn, table_name, country_column)
+            result = run_dqa_country_region_sql(
+                conn,
+                table_name,
+                identified_country_columns,
+                identified_region_columns,
+            )
 
-        result = run_dqa_country_region_ai(sql_data, fields["api_key"])
         return jsonify(result)
     except TableMissingError as exc:
         return jsonify({"error": str(exc), "code": "TABLE_MISSING"}), 404
@@ -290,30 +289,6 @@ def dqa_fill_rate():
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         logger.exception("DQA fill rate failed")
-        return jsonify({"error": str(exc)}), 500
-
-
-# ── Spend Bifurcation ─────────────────────────────────────────────────────
-
-@data_quality_bp.route("/dqa/spend-bifurcation", methods=["POST"])
-def dqa_spend_bifurcation():
-    """Positive vs negative spend split (no AI key required)."""
-    try:
-        fields = _parse_request_fields(require_api_key=False)
-        conn, lock, table_name = _resolve_table_under_lock(
-            fields["session_id"], fields["table_name"], fields["table_key"],
-        )
-
-        with lock:
-            result = run_dqa_spend_bifurcation(conn, table_name)
-
-        return jsonify(result)
-    except TableMissingError as exc:
-        return jsonify({"error": str(exc), "code": "TABLE_MISSING"}), 404
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except Exception as exc:
-        logger.exception("DQA spend bifurcation failed")
         return jsonify({"error": str(exc)}), 500
 
 

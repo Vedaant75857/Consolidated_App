@@ -31,7 +31,7 @@ function getApps() {
       url:
         cfg.stitcher ??
         import.meta.env.VITE_STITCHER_FE ??
-        "http://localhost:3001",
+        "http://localhost:3002",
       gradient: "from-red-600 to-rose-600",
       shadowColor: "shadow-red-200/40 dark:shadow-red-900/30",
       accentText: "text-red-600 dark:text-red-400",

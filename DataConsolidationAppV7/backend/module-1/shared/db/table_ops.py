@@ -13,6 +13,14 @@ import pandas as pd
 
 from .duckdb_compat import DuckDBConnection
 
+# Preview-internal columns that must not be profiled or sent to AI payloads.
+INTERNAL_COLUMNS = frozenset({"__row_id"})
+
+
+def filter_data_columns(columns: list[str]) -> list[str]:
+    """Return user-facing columns, excluding internal system columns."""
+    return [c for c in columns if c not in INTERNAL_COLUMNS]
+
 
 def quote_id(name: str) -> str:
     """Double-quote a SQL identifier, escaping embedded quotes."""
@@ -27,11 +35,13 @@ def normalize_for_match(expr: str) -> str:
 
     Uses DuckDB's TRY_CAST and regexp_matches instead of SQLite GLOB/CAST.
     """
+    cast_expr = f"CAST({expr} AS VARCHAR)"
+    trimmed = f"TRIM({cast_expr})"
     return (
         f"LOWER(TRIM(CASE "
-        f"WHEN regexp_matches(TRIM({expr}), '^[0-9eE.+-]+$') "
-        f"THEN CAST(TRY_CAST(TRIM({expr}) AS DOUBLE) AS VARCHAR) "
-        f"ELSE {expr} END))"
+        f"WHEN regexp_matches({trimmed}, '^[0-9eE.+-]+$') "
+        f"THEN CAST(TRY_CAST({trimmed} AS DOUBLE) AS VARCHAR) "
+        f"ELSE {cast_expr} END))"
     )
 
 

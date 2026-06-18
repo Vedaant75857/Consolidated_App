@@ -16,6 +16,7 @@ from shared.db import (
     PREVIEW_POOL,
     pick_best_rows,
     quote_id,
+    filter_data_columns,
 )
 from shared.db.stats_ops import distinct_values_by_column_sql
 
@@ -134,7 +135,7 @@ def build_files_payload_from_db(
         sheet = parts[1] if len(parts) > 1 and parts[1] else None
         ftype = infer_file_type(table_key)
         file_name = file_display_name(internal_path, sheet)
-        cols = info["columns"]
+        cols = filter_data_columns(info["columns"])
         n_rows = info["row_count"]
 
         if n_rows == 0 or not cols:

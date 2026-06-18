@@ -5,7 +5,23 @@ from __future__ import annotations
 from typing import Any
 
 from .duckdb_compat import DuckDBConnection
-from .table_ops import quote_id, read_table_columns, table_exists, normalize_for_match
+from .table_ops import (
+    filter_data_columns,
+    quote_id,
+    read_table_columns,
+    table_exists,
+    normalize_for_match,
+)
+
+
+def _non_blank_cond(qc: str) -> str:
+    """SQL predicate for non-null, non-empty values (works on any column type)."""
+    return f"{qc} IS NOT NULL AND TRIM(CAST({qc} AS VARCHAR)) != ''"
+
+
+def _blank_cond(qc: str) -> str:
+    """SQL predicate for null or empty-string values (works on any column type)."""
+    return f"({qc} IS NULL OR TRIM(CAST({qc} AS VARCHAR)) = '')"
 
 
 def column_stats(
@@ -18,14 +34,17 @@ def column_stats(
     Args:
         conn: DuckDB session connection.
         table_name: The table to profile.
-        columns: Optional subset of columns; defaults to all.
+        columns: Optional subset of columns; defaults to all user-facing columns.
 
     Returns:
         List of per-column stat dicts.
     """
     if not table_exists(conn, table_name):
         return []
-    cols = columns if columns is not None else read_table_columns(conn, table_name)
+    if columns is None:
+        cols = filter_data_columns(read_table_columns(conn, table_name))
+    else:
+        cols = filter_data_columns(columns)
     if not cols:
         return []
 
@@ -35,8 +54,8 @@ def column_stats(
     parts: list[str] = []
     for col in cols:
         qc = quote_id(col)
-        parts.append(f"COUNT(CASE WHEN {qc} IS NOT NULL AND TRIM({qc}) != '' THEN 1 END)")
-        parts.append(f"COUNT(DISTINCT CASE WHEN {qc} IS NOT NULL AND TRIM({qc}) != '' THEN {qc} END)")
+        parts.append(f"COUNT(CASE WHEN {_non_blank_cond(qc)} THEN 1 END)")
+        parts.append(f"COUNT(DISTINCT CASE WHEN {_non_blank_cond(qc)} THEN {qc} END)")
 
     sql = f"SELECT COUNT(*) AS total, {', '.join(parts)} FROM {tbl}"
     row = conn.execute(sql).fetchone()
@@ -67,7 +86,7 @@ def column_distinct_values(
     tbl = quote_id(table_name)
     qc = quote_id(column)
     rows = conn.execute(
-        f"SELECT DISTINCT {qc} AS v FROM {tbl} WHERE {qc} IS NOT NULL AND TRIM({qc}) != '' LIMIT ?",
+        f"SELECT DISTINCT {qc} AS v FROM {tbl} WHERE {_non_blank_cond(qc)} LIMIT ?",
         (limit,),
     ).fetchall()
     return [str(r["v"]) for r in rows]
@@ -83,7 +102,7 @@ def column_distinct_count(
     qc = quote_id(column)
     norm = normalize_for_match(qc)
     row = conn.execute(
-        f"SELECT COUNT(DISTINCT {norm}) AS cnt FROM {tbl} WHERE {qc} IS NOT NULL AND TRIM({qc}) != ''"
+        f"SELECT COUNT(DISTINCT {norm}) AS cnt FROM {tbl} WHERE {_non_blank_cond(qc)}"
     ).fetchone()
     return row["cnt"] if row else 0
 
@@ -97,7 +116,7 @@ def column_null_count(
     tbl = quote_id(table_name)
     qc = quote_id(column)
     row = conn.execute(
-        f"SELECT COUNT(*) AS cnt FROM {tbl} WHERE {qc} IS NULL OR TRIM({qc}) = ''"
+        f"SELECT COUNT(*) AS cnt FROM {tbl} WHERE {_blank_cond(qc)}"
     ).fetchone()
     return row["cnt"] if row else 0
 
@@ -130,10 +149,10 @@ def compute_overlap(
     row = conn.execute(
         f"""SELECT COUNT(*) AS cnt FROM (
             SELECT DISTINCT {norm_a} AS v FROM {t_a}
-                WHERE {q_a} IS NOT NULL AND TRIM({q_a}) != ''
+                WHERE {_non_blank_cond(q_a)}
             INTERSECT
             SELECT DISTINCT {norm_b} AS v FROM {t_b}
-                WHERE {q_b} IS NOT NULL AND TRIM({q_b}) != ''
+                WHERE {_non_blank_cond(q_b)}
         )"""
     ).fetchone()
     return row["cnt"] if row else 0
@@ -152,12 +171,12 @@ def distinct_values_by_column_sql(
     """
     if not table_exists(conn, table_name):
         return {}
-    all_cols = read_table_columns(conn, table_name)
+    all_cols = filter_data_columns(read_table_columns(conn, table_name))
     if columns is None:
         cols = all_cols
     else:
         allowed = set(all_cols)
-        cols = [c for c in columns if c in allowed]
+        cols = filter_data_columns([c for c in columns if c in allowed])
     if not cols:
         return {}
 
@@ -169,7 +188,7 @@ def distinct_values_by_column_sql(
         parts.append(
             f"SELECT {lit} AS col_name, {qc} AS val "
             f"FROM (SELECT DISTINCT {qc} FROM {tbl} "
-            f"WHERE {qc} IS NOT NULL AND TRIM({qc}) != '' "
+            f"WHERE {_non_blank_cond(qc)} "
             f"LIMIT {int(max_per_col)}) _d"
         )
 
@@ -200,7 +219,9 @@ def get_overlap_sql(
 
     cols_cache: dict[str, list[str]] = {}
     for t in non_empty:
-        cols_cache[t["table_key"]] = read_table_columns(conn, t["sql_name"])
+        cols_cache[t["table_key"]] = filter_data_columns(
+            read_table_columns(conn, t["sql_name"])
+        )
 
     result: dict[str, dict[str, Any]] = {t["table_key"]: {} for t in non_empty}
 

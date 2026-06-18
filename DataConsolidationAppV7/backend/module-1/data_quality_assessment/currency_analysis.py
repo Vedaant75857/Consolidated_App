@@ -1,7 +1,7 @@
 """Currency analysis panel for the Data Quality Assessment.
 
-Reuses existing currency metrics from ``metrics.py`` and adds an AI insight
-call for currency standardisation recommendations.
+Uses AI-identified currency columns to build a multi-column value distribution
+table with fill rates.
 """
 
 from __future__ import annotations
@@ -9,122 +9,43 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from shared.db import DuckDBConnection, quote_id, read_table_columns, table_row_count
+from shared.db import DuckDBConnection, read_table_columns
 
-from .ai_prompts import generate_currency_insight
-from .column_resolver import find_currency_columns, resolve_column
-from .metrics import (
-    _non_null_condition,
-    _safe_pct,
-    compute_currency_metrics,
-    compute_currency_quality_analysis,
-)
+from .column_resolver import find_currency_columns
+from .value_distribution import compute_value_distribution_table, merge_identified_columns
 
 logger = logging.getLogger(__name__)
-
-_CURRENCY_SPEND_PAIRS: dict[str, tuple[str, str]] = {
-    "Local Currency Code": (
-        "Total Amount paid in Local Currency",
-        "Total Amount paid in Reporting Currency",
-    ),
-    "PO Local Currency Code": (
-        "PO Total Amount in Local Currency",
-        "PO Total Amount in reporting currency",
-    ),
-}
 
 
 def run_currency_analysis_sql(
     conn: DuckDBConnection,
     table_name: str,
-    currency_column: str | None = None,
+    identified_columns: list[str] | None = None,
 ) -> dict[str, Any]:
-    """SQL-only phase: currency metrics and per-currency breakdown.
+    """SQL-only phase: multi-column currency value distribution.
 
     Args:
         conn: DuckDB session connection.
         table_name: Target table.
-        currency_column: User-selected currency column override. If None,
-            defaults to the first resolved currency column.
+        identified_columns: AI-identified currency column names.
 
     Must be called under the session lock.
 
     Returns:
-        JSON-serialisable dict with ``aiInsight`` set to ``None``.
+        JSON-serialisable dict with ``distributionTable``.
     """
     available = set(read_table_columns(conn, table_name))
-    total_rows = table_row_count(conn, table_name)
-    available_currency_cols = find_currency_columns(available)
-
-    if currency_column and currency_column in available:
-        currency_col = currency_column
-    else:
-        currency_col = resolve_column(available, "currency_code", fuzzy=False)
-
-    if currency_col is None:
-        return {
-            "exists": False,
-            "availableCurrencyColumns": available_currency_cols,
-            "currencyColumn": None,
-            "distinctCount": 0,
-            "codes": [],
-            "currencyTable": [],
-            "hasLocalSpend": False,
-            "hasReportingSpend": False,
-            "aiInsight": None,
-        }
-
-    basic = compute_currency_metrics(conn, table_name, currency_col)
-
-    ccy_key = currency_col.strip().lower()
-    pair = (None, None)
-    for canonical, spend_pair in _CURRENCY_SPEND_PAIRS.items():
-        if canonical.lower() == ccy_key:
-            pair = spend_pair
-            break
-    local_spend = resolve_column(available, "spend_local",
-                                 extra_candidates=[pair[0]], fuzzy=False) if pair[0] else None
-    reporting_spend = resolve_column(available, "spend_reporting",
-                                     extra_candidates=[pair[1]], fuzzy=False) if pair[1] else None
-
-    currency_table = compute_currency_quality_analysis(
-        conn, table_name, currency_col,
-        local_spend, reporting_spend, total_rows,
+    columns = merge_identified_columns(
+        identified_columns, available, find_currency_columns,
     )
+    distribution = compute_value_distribution_table(conn, table_name, columns)
 
-    return {
-        "exists": True,
-        "availableCurrencyColumns": available_currency_cols,
-        "currencyColumn": currency_col,
-        "distinctCount": basic["distinctCount"],
-        "codes": basic["codes"],
-        "currencyTable": currency_table,
-        "hasLocalSpend": local_spend is not None,
-        "hasReportingSpend": reporting_spend is not None,
-        "aiInsight": None,
-    }
+    return {"distributionTable": distribution}
 
 
 def run_currency_analysis_ai(
     sql_result: dict[str, Any],
     api_key: str,
 ) -> dict[str, Any]:
-    """AI phase: generate insight from pre-computed SQL data.
-
-    Safe to call without any database lock held.
-    """
-    if sql_result.get("aiInsight") is not None:
-        return sql_result
-
-    ai_payload = {
-        "currencyTable": sql_result["currencyTable"],
-        "distinctCount": sql_result["distinctCount"],
-        "codes": sql_result["codes"],
-    }
-    try:
-        sql_result["aiInsight"] = generate_currency_insight(ai_payload, api_key)
-    except Exception as exc:
-        logger.warning("Currency AI insight generation failed: %s", exc)
-        sql_result["aiInsight"] = ["AI insight generation failed."]
-
+    """No-op AI phase kept for API compatibility."""
     return sql_result

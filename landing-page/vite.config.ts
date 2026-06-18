@@ -5,6 +5,8 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
-    port: 3000,
+    // Use 3010 so Vite never falls through to 3001 (stitcher backend) when 3000 is busy.
+    port: 3010,
+    strictPort: true,
   },
 });

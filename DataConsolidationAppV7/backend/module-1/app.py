@@ -95,7 +95,9 @@ def create_app() -> Flask:
             mod = __import__(mod_path, fromlist=[bp_attr])
             app.register_blueprint(getattr(mod, bp_attr), url_prefix="/api")
         except Exception as exc:
-            logger.warning("[Module-1] failed to load %s.%s: %s", mod_path, bp_attr, exc)
+            logger.error("[Module-1] failed to load %s.%s: %s", mod_path, bp_attr, exc)
+            if os.environ.get("FLASK_DEBUG", "").lower() in ("1", "true", "yes"):
+                raise
 
     return app
 

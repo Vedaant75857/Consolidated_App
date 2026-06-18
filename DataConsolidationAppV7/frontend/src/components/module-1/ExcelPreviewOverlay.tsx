@@ -60,6 +60,42 @@ interface ToolbarButtonProps {
 const PAGE_SIZE = 200;
 const ROW_ID_COL = "__row_id";
 
+/** Apply preview API payload to local grid state. */
+function applyPreviewGridState(
+  result: {
+    rows?: Record<string, unknown>[];
+    columns?: string[];
+    columnTypes?: Record<string, ColumnDataType>;
+    totalRows?: number;
+    offset?: number;
+  },
+  apply: {
+    setRows: React.Dispatch<React.SetStateAction<Record<string, unknown>[]>>;
+    setColumns: React.Dispatch<React.SetStateAction<string[]>>;
+    setColumnOrder: React.Dispatch<React.SetStateAction<string[]>>;
+    setColumnTypes: React.Dispatch<React.SetStateAction<Record<string, ColumnDataType>>>;
+    setTotalRows: React.Dispatch<React.SetStateAction<number>>;
+    setRowOffset: React.Dispatch<React.SetStateAction<number>>;
+  },
+  offsetFallback = 0,
+) {
+  if (Array.isArray(result.rows)) {
+    apply.setRows(result.rows);
+  }
+  if (Array.isArray(result.columns)) {
+    const cols = result.columns.filter((c) => c !== ROW_ID_COL);
+    apply.setColumns(cols);
+    apply.setColumnOrder(cols);
+  }
+  if (result.columnTypes) {
+    apply.setColumnTypes(result.columnTypes);
+  }
+  if (result.totalRows !== undefined) {
+    apply.setTotalRows(result.totalRows);
+  }
+  apply.setRowOffset(result.offset ?? offsetFallback);
+}
+
 /** Custom header icons for sort direction indicators in glide-data-grid. */
 const SORT_HEADER_ICONS = {
   sortAsc: ({ fgColor }: { fgColor: string; bgColor: string }) =>
@@ -398,6 +434,14 @@ export default function ExcelPreviewOverlay({
         setRedoStack([]);
       }
 
+      if (result?.rows || result?.columns) {
+        applyPreviewGridState(
+          result,
+          { setRows, setColumns, setColumnOrder, setColumnTypes, setTotalRows, setRowOffset },
+          rowOffset,
+        );
+      }
+
       await fetchPreviewData(rowOffset);
       return result;
     } catch (e: any) {
@@ -620,7 +664,18 @@ export default function ExcelPreviewOverlay({
         const refresh = await previewRefreshInventory(sessionId);
         if (refresh.previews) setLocalPreviews(refresh.previews);
         if (refresh.inventory) setLocalInventory(refresh.inventory);
-        setActiveKey(result.newTableKey);
+        const newKey = result.newTableKey as string;
+        setFilters([]);
+        setSort([]);
+        setSearch("");
+        setDebouncedSearch("");
+        setActiveKey(newKey);
+        const state = await previewState(sessionId, newKey, { offset: 0, limit: PAGE_SIZE });
+        applyPreviewGridState(
+          state,
+          { setRows, setColumns, setColumnOrder, setColumnTypes, setTotalRows, setRowOffset },
+          0,
+        );
         setHasUnsavedChanges(true);
         return;
       }
@@ -1212,6 +1267,7 @@ function ColumnFilterPopover({
   const [selectedValues, setSelectedValues] = useState<Set<string>>(new Set());
   const [blanksChecked, setBlanksChecked] = useState(true);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [initialized, setInitialized] = useState(false);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -1227,9 +1283,10 @@ function ColumnFilterPopover({
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setLoadError(null);
     previewColumnValues(sessionId, tableKey, column, {
       search: debouncedSearch || undefined,
-      filters: filters.length > 0 ? (filters as Record<string, unknown>[]) : undefined,
+      filters: filters.length > 0 ? (filters as unknown as Record<string, unknown>[]) : undefined,
       limit: 500,
     })
       .then((result) => {
@@ -1237,12 +1294,14 @@ function ColumnFilterPopover({
         setValues(result.values);
         setHasBlanks(result.hasBlanks);
         setTotalDistinct(result.totalDistinct);
+        setLoadError(null);
       })
-      .catch(() => {
+      .catch((err) => {
         if (!cancelled) {
           setValues([]);
           setHasBlanks(false);
           setTotalDistinct(0);
+          setLoadError(err?.message || "Failed to load filter values");
         }
       })
       .finally(() => {
@@ -1253,7 +1312,7 @@ function ColumnFilterPopover({
 
   // Initialize checkbox state once when values first load (no search)
   useEffect(() => {
-    if (initialized || loading || debouncedSearch) return;
+    if (initialized || loading || debouncedSearch || loadError) return;
     if (existingFilter?.op === "in") {
       setSelectedValues(new Set(existingFilter.values || []));
       setBlanksChecked(existingFilter.includeBlanks ?? false);
@@ -1262,7 +1321,7 @@ function ColumnFilterPopover({
       setBlanksChecked(hasBlanks);
     }
     setInitialized(true);
-  }, [initialized, loading, debouncedSearch, values, hasBlanks, existingFilter]);
+  }, [initialized, loading, debouncedSearch, loadError, values, hasBlanks, existingFilter]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -1284,6 +1343,7 @@ function ColumnFilterPopover({
   };
 
   const selectAll = () => {
+    if (loading || loadError) return;
     setSelectedValues(new Set(values));
     if (hasBlanks) setBlanksChecked(true);
   };
@@ -1294,6 +1354,7 @@ function ColumnFilterPopover({
   };
 
   const handleOk = () => {
+    if (loading || loadError) return;
     const noneSelected = selectedValues.size === 0 && !blanksChecked;
     if (noneSelected) {
       onApply({
@@ -1350,12 +1411,23 @@ function ColumnFilterPopover({
         </div>
       </div>
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-neutral-100 dark:border-neutral-800">
-        <button type="button" onClick={selectAll} className="text-[10px] text-blue-600 hover:underline">Select All</button>
+        <button
+          type="button"
+          onClick={selectAll}
+          disabled={loading || !!loadError}
+          className="text-[10px] text-blue-600 hover:underline disabled:text-neutral-300 disabled:no-underline disabled:cursor-not-allowed"
+        >
+          Select All
+        </button>
         <button type="button" onClick={clearAll} className="text-[10px] text-neutral-500 hover:underline">Clear</button>
       </div>
       <div className="flex-1 overflow-y-auto px-2 py-1 min-h-[120px] max-h-52">
         {loading ? (
           <p className="text-xs text-neutral-400 text-center py-4">Loading...</p>
+        ) : loadError ? (
+          <p className="text-xs text-red-600 dark:text-red-400 text-center py-4 px-2 break-words">
+            Could not load values: {loadError}
+          </p>
         ) : (
           <>
             {hasBlanks && !debouncedSearch && (
@@ -1383,7 +1455,7 @@ function ColumnFilterPopover({
                 <span className="truncate" title={val}>{val}</span>
               </label>
             ))}
-            {!loading && values.length === 0 && !hasBlanks && (
+            {values.length === 0 && !hasBlanks && (
               <p className="text-xs text-neutral-400 text-center py-4">No values found</p>
             )}
           </>
@@ -1391,7 +1463,14 @@ function ColumnFilterPopover({
       </div>
       <div className="flex justify-end gap-2 px-3 py-2 border-t border-neutral-200 dark:border-neutral-700">
         <button type="button" onClick={onClose} className="px-3 py-1 text-xs text-neutral-600 hover:bg-neutral-100 rounded">Cancel</button>
-        <button type="button" onClick={handleOk} className="px-3 py-1 text-xs text-white bg-red-600 hover:bg-red-700 rounded">OK</button>
+        <button
+          type="button"
+          onClick={handleOk}
+          disabled={loading || !!loadError}
+          className="px-3 py-1 text-xs text-white bg-red-600 hover:bg-red-700 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          OK
+        </button>
       </div>
     </div>
   );
@@ -1554,6 +1633,13 @@ function CalcColumnDialog({ columns, onClose, onApply }: { columns: string[]; on
   const [name, setName] = useState("");
   const [expression, setExpression] = useState("");
   const [dataType, setDataType] = useState<CalcColumnConfig["dataType"]>("TEXT");
+  const [dataTypeTouched, setDataTypeTouched] = useState(false);
+
+  useEffect(() => {
+    if (!dataTypeTouched && /\/|\*|\+|-/.test(expression)) {
+      setDataType("DOUBLE");
+    }
+  }, [expression, dataTypeTouched]);
 
   const sampleExpressions = [
     { label: "UPPER(column)", expr: "UPPER([Column Name])" },
@@ -1591,7 +1677,10 @@ function CalcColumnDialog({ columns, onClose, onApply }: { columns: string[]; on
           <label className="text-xs font-semibold text-neutral-600 dark:text-neutral-400 mb-1 block">Data Type</label>
           <select
             value={dataType}
-            onChange={(e) => setDataType(e.target.value as CalcColumnConfig["dataType"])}
+            onChange={(e) => {
+              setDataTypeTouched(true);
+              setDataType(e.target.value as CalcColumnConfig["dataType"]);
+            }}
             className="w-full px-3 py-2 text-sm rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800"
           >
             <option value="TEXT">Text</option>
@@ -1600,6 +1689,11 @@ function CalcColumnDialog({ columns, onClose, onApply }: { columns: string[]; on
             <option value="DATE">Date</option>
             <option value="BOOLEAN">Boolean</option>
           </select>
+          {/\/\s*\[|\]\s*\//.test(expression) && dataType === "INTEGER" && (
+            <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1">
+              Division usually needs Decimal type.
+            </p>
+          )}
         </div>
         <div className="bg-neutral-50 dark:bg-neutral-900 p-3 rounded-lg">
           <p className="text-[10px] font-semibold text-neutral-600 dark:text-neutral-400 mb-2">Quick Templates:</p>

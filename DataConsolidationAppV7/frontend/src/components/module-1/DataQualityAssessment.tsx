@@ -11,7 +11,6 @@ import {
   Globe,
   Loader2,
   RefreshCw,
-  SplitSquareHorizontal,
   TableProperties,
   Users,
 } from "lucide-react";
@@ -23,7 +22,6 @@ import {
   postDqaCountryRegion,
   postDqaSupplier,
   postDqaFillRate,
-  postDqaSpendBifurcation,
   postDqaSuggestColumns,
 } from "./services/stitchingApi";
 import type { MergeOutput } from "../../types";
@@ -76,55 +74,33 @@ interface DateResult {
   aiInsight: string[] | null;
 }
 
-interface CurrencyTableRow {
-  currencyCode: string;
-  rowCount: number;
-  rowPct: number;
-  localSpend: number | null;
-  reportingSpend: number | null;
+interface ValueDistributionColumn {
+  name: string;
+  fillRate: number;
+}
+
+interface ValueDistributionRow {
+  value: string;
+  fillRates: Record<string, number | null>;
+}
+
+interface ValueDistributionTable {
+  exists: boolean;
+  columns: ValueDistributionColumn[];
+  rows: ValueDistributionRow[];
 }
 
 interface CurrencyResult {
-  exists: boolean;
-  availableCurrencyColumns: string[];
-  currencyColumn: string | null;
-  distinctCount: number;
-  codes: string[];
-  currencyTable: CurrencyTableRow[];
-  hasLocalSpend: boolean;
-  hasReportingSpend: boolean;
-  aiInsight: string[] | null;
-}
-
-interface PaymentTermRow {
-  term: string;
-  spend: number | null;
-  rowCount: number;
-  pctOfTotal: number | null;
-  pctOfRows: number | null;
-  currencySpend: Record<string, number>;
+  distributionTable: ValueDistributionTable;
 }
 
 interface PaymentTermsResult {
-  exists: boolean;
-  availablePaymentTermsColumns: string[];
-  paymentTerms: PaymentTermRow[];
-  totalSpend: number;
-  uniqueCount: number;
-  spendColumn: string | null;
-  aiInsight: string[] | null;
-  isReporting: boolean;
-  currencyColumns: string[];
+  distributionTable: ValueDistributionTable;
 }
 
 interface CountryRegionResult {
-  countryColumn: string | null;
-  regionColumn: string | null;
-  countryValues: string[] | null;
-  regionValues: string[] | null;
-  countryAiInsight: string[] | null;
-  regionAiInsight: string[] | null;
-  availableCountryColumns: string[];
+  countryTable: ValueDistributionTable;
+  regionTable: ValueDistributionTable;
 }
 
 interface SupplierResult {
@@ -151,20 +127,6 @@ interface FillRateResult {
   columns: FillRateColumn[];
   spendType: "reporting" | "local" | "none";
   spendColumn: string | null;
-}
-
-interface SpendBifurcationCurrency {
-  code: string;
-  positiveSpend: number;
-  negativeSpend: number;
-}
-
-interface SpendBifurcationResult {
-  type: "reporting" | "local" | "local_single" | "none";
-  positiveSpend?: number;
-  negativeSpend?: number;
-  currencies?: SpendBifurcationCurrency[];
-  column: string | null;
 }
 
 interface DataQualityAssessmentProps {
@@ -447,7 +409,7 @@ export default function DataQualityAssessment({
     completedPanelsRef.current += 1;
     if (runningRef.current) {
       setLoadingMessage(
-        `Data Quality Assessment… ${completedPanelsRef.current}/7 panels complete`,
+        `Data Quality Assessment… ${completedPanelsRef.current}/6 panels complete`,
       );
     }
   }, [setLoadingMessage]);
@@ -472,27 +434,12 @@ export default function DataQualityAssessment({
   const [fillRateState, setFillRateState] = useState<
     PanelState<FillRateResult>
   >({ loading: false, error: null, data: null });
-  const [bifurcationState, setBifurcationState] = useState<
-    PanelState<SpendBifurcationResult>
-  >({ loading: false, error: null, data: null });
 
   const [expandedPanels, setExpandedPanels] = useState<Set<string>>(
-    new Set(["fillrate", "date", "bifurcation", "currency", "payment", "country", "supplier"]),
+    new Set(["fillrate", "date", "supplier", "payment", "currency", "country"]),
   );
 
   const [selectedDateColumn, setSelectedDateColumn] = useState<
-    string | undefined
-  >(undefined);
-
-  const [selectedCountryColumn, setSelectedCountryColumn] = useState<
-    string | undefined
-  >(undefined);
-
-  const [selectedCurrencyColumn, setSelectedCurrencyColumn] = useState<
-    string | undefined
-  >(undefined);
-
-  const [selectedPaymentTermsColumn, setSelectedPaymentTermsColumn] = useState<
     string | undefined
   >(undefined);
 
@@ -520,8 +467,7 @@ export default function DataQualityAssessment({
     !paymentState.loading &&
     !countryState.loading &&
     !supplierState.loading &&
-    !fillRateState.loading &&
-    !bifurcationState.loading;
+    !fillRateState.loading;
 
   const [runningAssessment, setRunningAssessment] = useState(false);
   const runningRef = useRef(false);
@@ -592,17 +538,14 @@ export default function DataQualityAssessment({
   );
 
   const runCurrencyPanel = useCallback(
-    async (version: number, currencyCol?: string) => {
+    async (version: number, identifiedColumns?: string[]) => {
       setCurrencyState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
         const data = await withRetry(() =>
-          postDqaCurrency(sessionId, apiKey, tn, getTableKey(), currencyCol),
+          postDqaCurrency(sessionId, apiKey, tn, getTableKey(), identifiedColumns),
         );
         setCurrencyState({ loading: false, error: null, data });
-        if (!currencyCol && data.currencyColumn && data.availableCurrencyColumns?.length > 0) {
-          setSelectedCurrencyColumn(data.currencyColumn);
-        }
       } catch (err: any) {
         const code = err?.code || "";
         if (code === ERROR_CODE_TABLE_MISSING) {
@@ -623,17 +566,14 @@ export default function DataQualityAssessment({
   );
 
   const runPaymentPanel = useCallback(
-    async (version: number, paymentCol?: string) => {
+    async (version: number, identifiedColumns?: string[]) => {
       setPaymentState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
         const data = await withRetry(() =>
-          postDqaPaymentTerms(sessionId, apiKey, tn, getTableKey(), paymentCol),
+          postDqaPaymentTerms(sessionId, apiKey, tn, getTableKey(), identifiedColumns),
         );
         setPaymentState({ loading: false, error: null, data });
-        if (!paymentCol && data.paymentTerms?.length > 0 && data.availablePaymentTermsColumns?.length > 0) {
-          setSelectedPaymentTermsColumn(data.availablePaymentTermsColumns[0]);
-        }
       } catch (err: any) {
         const code = err?.code || "";
         if (code === ERROR_CODE_TABLE_MISSING) {
@@ -654,17 +594,25 @@ export default function DataQualityAssessment({
   );
 
   const runCountryPanel = useCallback(
-    async (version: number, countryCol?: string) => {
+    async (
+      version: number,
+      identifiedCountryColumns?: string[],
+      identifiedRegionColumns?: string[],
+    ) => {
       setCountryState({ loading: true, error: null, data: null });
       try {
         const tn = isSingleTable ? "" : tableNameForVersion(version);
         const data = await withRetry(() =>
-          postDqaCountryRegion(sessionId, apiKey, tn, getTableKey(), countryCol),
+          postDqaCountryRegion(
+            sessionId,
+            apiKey,
+            tn,
+            getTableKey(),
+            identifiedCountryColumns,
+            identifiedRegionColumns,
+          ),
         );
         setCountryState({ loading: false, error: null, data });
-        if (!countryCol && data.countryColumn) {
-          setSelectedCountryColumn(data.countryColumn);
-        }
       } catch (err: any) {
         const code = err?.code || "";
         if (code === ERROR_CODE_TABLE_MISSING) {
@@ -743,34 +691,6 @@ export default function DataQualityAssessment({
     [sessionId, isSingleTable, getTableKey, markPanelComplete],
   );
 
-  const runBifurcationPanel = useCallback(
-    async (version: number) => {
-      setBifurcationState({ loading: true, error: null, data: null });
-      try {
-        const tn = isSingleTable ? "" : tableNameForVersion(version);
-        const data = await withRetry(() =>
-          postDqaSpendBifurcation(sessionId, tn, getTableKey()),
-        );
-        setBifurcationState({ loading: false, error: null, data });
-      } catch (err: any) {
-        const code = err?.code || "";
-        if (code === ERROR_CODE_TABLE_MISSING) {
-          setBifurcationState({ loading: false, error: null, data: null });
-          setTableMissingRetry((c) => c + 1);
-        } else {
-          setBifurcationState({
-            loading: false,
-            error: err?.message || "Spend bifurcation failed",
-            data: null,
-          });
-        }
-      } finally {
-        markPanelComplete();
-      }
-    },
-    [sessionId, isSingleTable, getTableKey, markPanelComplete],
-  );
-
   const runAllPanels = useCallback(
     async (version: number) => {
       completedPanelsRef.current = 0;
@@ -791,26 +711,24 @@ export default function DataQualityAssessment({
         /* AI suggestions are best-effort — proceed without them */
       }
 
-      setLoadingMessage("Data Quality Assessment… 0/7 panels complete");
+      setLoadingMessage("Data Quality Assessment… 0/6 panels complete");
 
       const pickFirst = (role: string) => suggestions[role]?.[0] || undefined;
 
       runFillRatePanel(version);
       runDatePanel(version, pickFirst("date"));
-      runBifurcationPanel(version);
-      runCurrencyPanel(version, pickFirst("currency_code"));
-      runPaymentPanel(version, pickFirst("payment_terms"));
-      runCountryPanel(version, pickFirst("country"));
       runSupplierPanel(version, pickFirst("vendor_name"));
+      runPaymentPanel(version, suggestions.payment_terms);
+      runCurrencyPanel(version, suggestions.currency_code);
+      runCountryPanel(version, suggestions.country, suggestions.region);
     },
     [
       runFillRatePanel,
       runDatePanel,
-      runBifurcationPanel,
-      runCurrencyPanel,
-      runPaymentPanel,
-      runCountryPanel,
       runSupplierPanel,
+      runPaymentPanel,
+      runCurrencyPanel,
+      runCountryPanel,
       addLog,
       setAiLoading,
       setLoadingMessage,
@@ -844,90 +762,6 @@ export default function DataQualityAssessment({
         setDateState({
           loading: false,
           error: err?.message || "Date analysis failed",
-          data: null,
-        });
-      }
-    },
-    [sessionId, apiKey, isSingleTable, getTableKey],
-  );
-
-  const rerunCountryAbortRef = useRef<AbortController | null>(null);
-
-  const rerunCountryPanelOnly = useCallback(
-    async (version: number, countryCol: string) => {
-      if (rerunCountryAbortRef.current) rerunCountryAbortRef.current.abort();
-      const ac = new AbortController();
-      rerunCountryAbortRef.current = ac;
-
-      setCountryState({ loading: true, error: null, data: null });
-      try {
-        const tn = isSingleTable ? "" : tableNameForVersion(version);
-        const data = await withRetry(() =>
-          postDqaCountryRegion(sessionId, apiKey, tn, getTableKey(), countryCol),
-        );
-        if (ac.signal.aborted) return;
-        setCountryState({ loading: false, error: null, data });
-      } catch (err: any) {
-        if (ac.signal.aborted) return;
-        setCountryState({
-          loading: false,
-          error: err?.message || "Country/Region analysis failed",
-          data: null,
-        });
-      }
-    },
-    [sessionId, apiKey, isSingleTable, getTableKey],
-  );
-
-  const rerunCurrencyAbortRef = useRef<AbortController | null>(null);
-
-  const rerunCurrencyPanelOnly = useCallback(
-    async (version: number, currencyCol: string) => {
-      if (rerunCurrencyAbortRef.current) rerunCurrencyAbortRef.current.abort();
-      const ac = new AbortController();
-      rerunCurrencyAbortRef.current = ac;
-
-      setCurrencyState({ loading: true, error: null, data: null });
-      try {
-        const tn = isSingleTable ? "" : tableNameForVersion(version);
-        const data = await withRetry(() =>
-          postDqaCurrency(sessionId, apiKey, tn, getTableKey(), currencyCol),
-        );
-        if (ac.signal.aborted) return;
-        setCurrencyState({ loading: false, error: null, data });
-      } catch (err: any) {
-        if (ac.signal.aborted) return;
-        setCurrencyState({
-          loading: false,
-          error: err?.message || "Currency analysis failed",
-          data: null,
-        });
-      }
-    },
-    [sessionId, apiKey, isSingleTable, getTableKey],
-  );
-
-  const rerunPaymentAbortRef = useRef<AbortController | null>(null);
-
-  const rerunPaymentPanelOnly = useCallback(
-    async (version: number, paymentCol: string) => {
-      if (rerunPaymentAbortRef.current) rerunPaymentAbortRef.current.abort();
-      const ac = new AbortController();
-      rerunPaymentAbortRef.current = ac;
-
-      setPaymentState({ loading: true, error: null, data: null });
-      try {
-        const tn = isSingleTable ? "" : tableNameForVersion(version);
-        const data = await withRetry(() =>
-          postDqaPaymentTerms(sessionId, apiKey, tn, getTableKey(), paymentCol),
-        );
-        if (ac.signal.aborted) return;
-        setPaymentState({ loading: false, error: null, data });
-      } catch (err: any) {
-        if (ac.signal.aborted) return;
-        setPaymentState({
-          loading: false,
-          error: err?.message || "Payment terms analysis failed",
           data: null,
         });
       }
@@ -969,9 +803,6 @@ export default function DataQualityAssessment({
     setAiLoading(false);
     setLoadingMessage("");
     if (rerunDateAbortRef.current) rerunDateAbortRef.current.abort();
-    if (rerunCountryAbortRef.current) rerunCountryAbortRef.current.abort();
-    if (rerunCurrencyAbortRef.current) rerunCurrencyAbortRef.current.abort();
-    if (rerunPaymentAbortRef.current) rerunPaymentAbortRef.current.abort();
     if (rerunSupplierAbortRef.current) rerunSupplierAbortRef.current.abort();
     setDateState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
     setCurrencyState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
@@ -979,7 +810,6 @@ export default function DataQualityAssessment({
     setCountryState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
     setSupplierState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
     setFillRateState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
-    setBifurcationState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
     addLog("Data Quality", "info", "Assessment cancelled by user.");
   }, [setAiLoading, setLoadingMessage, addLog]);
 
@@ -1122,9 +952,6 @@ export default function DataQualityAssessment({
           <button
             onClick={() => {
               setSelectedDateColumn(undefined);
-              setSelectedCountryColumn(undefined);
-              setSelectedCurrencyColumn(undefined);
-              setSelectedPaymentTermsColumn(undefined);
               setSelectedSupplierColumn(undefined);
               setAiColumnSuggestions({});
               runAllPanels(selectedVersion);
@@ -1155,52 +982,7 @@ export default function DataQualityAssessment({
         }}
       />
 
-      {/* ── Panel 1b: Spend Bifurcation ────────────────────────────────── */}
-      <SpendBifurcationPanel
-        state={bifurcationState}
-        expanded={expandedPanels.has("bifurcation")}
-        onToggle={() => togglePanel("bifurcation")}
-      />
-
-      {/* ── Panel 2: Currency Analysis ────────────────────────────────── */}
-      <CurrencyPanel
-        state={currencyState}
-        expanded={expandedPanels.has("currency")}
-        onToggle={() => togglePanel("currency")}
-        selectedCurrencyColumn={selectedCurrencyColumn}
-        onCurrencyColumnChange={(col) => {
-          setSelectedCurrencyColumn(col);
-          rerunCurrencyPanelOnly(selectedVersion, col);
-        }}
-        aiSuggestions={aiColumnSuggestions["currency_code"]}
-      />
-
-      {/* ── Panel 3: Payment Terms ────────────────────────────────────── */}
-      <PaymentTermsPanel
-        state={paymentState}
-        expanded={expandedPanels.has("payment")}
-        onToggle={() => togglePanel("payment")}
-        selectedPaymentTermsColumn={selectedPaymentTermsColumn}
-        onPaymentTermsColumnChange={(col) => {
-          setSelectedPaymentTermsColumn(col);
-          rerunPaymentPanelOnly(selectedVersion, col);
-        }}
-        aiSuggestions={aiColumnSuggestions["payment_terms"]}
-      />
-
-      {/* ── Panel 4: Country / Region ─────────────────────────────────── */}
-      <CountryRegionPanel
-        state={countryState}
-        expanded={expandedPanels.has("country")}
-        onToggle={() => togglePanel("country")}
-        selectedCountryColumn={selectedCountryColumn}
-        onCountryColumnChange={(col) => {
-          setSelectedCountryColumn(col);
-          rerunCountryPanelOnly(selectedVersion, col);
-        }}
-      />
-
-      {/* ── Panel 5: Supplier ─────────────────────────────────────────── */}
+      {/* ── Panel 2: Supplier ─────────────────────────────────────────── */}
       <SupplierPanel
         state={supplierState}
         expanded={expandedPanels.has("supplier")}
@@ -1211,6 +993,27 @@ export default function DataQualityAssessment({
           rerunSupplierPanelOnly(selectedVersion, col);
         }}
         aiSuggestions={aiColumnSuggestions["vendor_name"]}
+      />
+
+      {/* ── Panel 3: Payment Terms ────────────────────────────────────── */}
+      <PaymentTermsPanel
+        state={paymentState}
+        expanded={expandedPanels.has("payment")}
+        onToggle={() => togglePanel("payment")}
+      />
+
+      {/* ── Panel 4: Currency Analysis ────────────────────────────────── */}
+      <CurrencyPanel
+        state={currencyState}
+        expanded={expandedPanels.has("currency")}
+        onToggle={() => togglePanel("currency")}
+      />
+
+      {/* ── Panel 5: Country / Region ─────────────────────────────────── */}
+      <CountryRegionPanel
+        state={countryState}
+        expanded={expandedPanels.has("country")}
+        onToggle={() => togglePanel("country")}
       />
     </motion.div>
   );
@@ -1535,33 +1338,85 @@ function CurrencyCrosstabTable({ pivot }: { pivot: CurrencyCrosstabPivot }) {
   );
 }
 
+/** Renders a cross-column value distribution matrix with fill rates. */
+function ValueDistributionTable({
+  table,
+  valueLabel,
+}: {
+  table: ValueDistributionTable;
+  valueLabel: string;
+}) {
+  if (!table.exists || table.columns.length === 0) return null;
+
+  return (
+    <div className="overflow-x-auto rounded-b-2xl">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+            <th className="px-6 py-3 sticky left-0 bg-neutral-50 dark:bg-neutral-800/50 z-10">
+              {valueLabel}
+            </th>
+            {table.columns.map((col) => (
+              <th key={col.name} className="px-4 py-3 text-center min-w-[140px]">
+                <div className="font-semibold normal-case tracking-normal text-neutral-700 dark:text-neutral-300">
+                  {col.name}
+                </div>
+                <div className="mt-0.5 text-[10px] font-medium text-neutral-400 dark:text-neutral-500">
+                  {col.fillRate.toFixed(1)}% filled
+                </div>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+          {table.rows.map((row, idx) => (
+            <tr
+              key={row.value}
+              className={`hover:bg-neutral-100/60 dark:hover:bg-neutral-700/20 transition-colors ${idx % 2 === 0 ? "bg-neutral-50/30 dark:bg-neutral-800/10" : ""}`}
+            >
+              <td className="px-6 py-2.5 font-medium text-neutral-800 dark:text-neutral-200 sticky left-0 bg-white dark:bg-neutral-900 z-10">
+                {row.value}
+              </td>
+              {table.columns.map((col) => {
+                const pct = row.fillRates[col.name];
+                return (
+                  <td
+                    key={col.name}
+                    className="px-4 py-2.5 text-center tabular-nums text-neutral-700 dark:text-neutral-300"
+                  >
+                    {pct != null ? `${pct.toFixed(1)}%` : "—"}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 /* ══════════════════════════════════════════════════════════════════════════
-   Panel 2 – Currency Analysis
+   Panel – Currency Analysis
    ══════════════════════════════════════════════════════════════════════════ */
 
 function CurrencyPanel({
   state,
   expanded,
   onToggle,
-  selectedCurrencyColumn,
-  onCurrencyColumnChange,
-  aiSuggestions,
 }: {
   state: PanelState<CurrencyResult>;
   expanded: boolean;
   onToggle: () => void;
-  selectedCurrencyColumn: string | undefined;
-  onCurrencyColumnChange: (col: string) => void;
-  aiSuggestions?: string[];
 }) {
-  const d = state.data;
-  const subtitle = d
-    ? d.exists
-      ? `${d.distinctCount} currencies detected`
-      : "No currency column found"
-    : "Analysing currency distribution";
-
-  const availableCols = mergeColumnLists(d?.availableCurrencyColumns, aiSuggestions);
+  const table = state.data?.distributionTable;
+  const colCount = table?.columns.length ?? 0;
+  const valueCount = table?.rows.length ?? 0;
+  const subtitle = state.loading
+    ? "Analysing currency distribution"
+    : table?.exists
+      ? `${colCount} column${colCount === 1 ? "" : "s"} · ${valueCount} unique value${valueCount === 1 ? "" : "s"}`
+      : "No currency columns found";
 
   return (
     <SurfaceCard noPadding>
@@ -1587,71 +1442,19 @@ function CurrencyPanel({
           >
             <div className="border-t border-neutral-100 dark:border-neutral-800">
               {state.loading && (
-                <PanelSpinner message="Analysing currency quality…" />
+                <PanelSpinner message="Analysing currency columns…" />
               )}
-              {state.error && !d && <PanelError message={state.error} />}
-              {d && !d.exists && (
-                <EmptyState icon={Coins} message="No currency column found" />
+              {state.error && !state.data && <PanelError message={state.error} />}
+              {table && !table.exists && (
+                <EmptyState icon={Coins} message="No currency columns found" />
               )}
-              {d && d.exists && (
-                <>
-                  {availableCols.length > 1 && (
-                    <div className="px-6 py-3 border-b border-neutral-100 dark:border-neutral-800 flex items-center gap-3">
-                      <label className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
-                        Currency column:
-                      </label>
-                      <select
-                        value={selectedCurrencyColumn ?? d.currencyColumn ?? ""}
-                        onChange={(e) => onCurrencyColumnChange(e.target.value)}
-                        className="text-sm rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-2 py-1 text-neutral-800 dark:text-neutral-200 focus:ring-2 focus:ring-amber-500/30 outline-none"
-                      >
-                        {availableCols.map((c) => (
-                          <option key={c} value={c}>{c}</option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-
-                  <StructuredInsight insight={d.aiInsight} accentColor="amber" />
-
-                  {d.currencyTable.length > 0 && (
-                    <DeepDiveSection>
-                      <div className="overflow-x-auto rounded-b-2xl">
-                        <table className="w-full text-sm">
-                          <thead>
-                            <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-                              <th className="px-6 py-3 sticky left-0 bg-neutral-50 dark:bg-neutral-800/50 z-10">Currency Code</th>
-                              <th className="px-4 py-3 text-center">% of Rows</th>
-                              <th className="px-4 py-3 text-right">Local Spend</th>
-                              <th className="px-4 py-3 text-right">Reporting Spend</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                            {d.currencyTable.map((row, idx) => (
-                              <tr
-                                key={row.currencyCode}
-                                className={`hover:bg-neutral-100/60 dark:hover:bg-neutral-700/20 transition-colors ${idx % 2 === 0 ? "bg-neutral-50/30 dark:bg-neutral-800/10" : ""}`}
-                              >
-                                <td className="px-6 py-2.5 font-medium text-neutral-800 dark:text-neutral-200 sticky left-0 bg-white dark:bg-neutral-900 z-10">
-                                  {row.currencyCode}
-                                </td>
-                                <td className="px-4 py-2.5 text-center tabular-nums text-neutral-700 dark:text-neutral-300">
-                                  {row.rowPct.toFixed(1)}%
-                                </td>
-                                <td className="px-4 py-2.5 text-right tabular-nums text-neutral-700 dark:text-neutral-300">
-                                  {d.hasLocalSpend ? fmtSpend(row.localSpend) : "N/A"}
-                                </td>
-                                <td className="px-4 py-2.5 text-right tabular-nums text-neutral-700 dark:text-neutral-300">
-                                  {d.hasReportingSpend ? fmtSpend(row.reportingSpend) : "N/A"}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </DeepDiveSection>
-                  )}
-                </>
+              {table && table.exists && table.rows.length > 0 && (
+                <DeepDiveSection>
+                  <ValueDistributionTable table={table} valueLabel="Currency" />
+                </DeepDiveSection>
+              )}
+              {table && table.exists && table.rows.length === 0 && (
+                <EmptyState icon={Coins} message="No currency values found in identified columns" />
               )}
             </div>
           </motion.div>
@@ -1669,26 +1472,19 @@ function PaymentTermsPanel({
   state,
   expanded,
   onToggle,
-  selectedPaymentTermsColumn,
-  onPaymentTermsColumnChange,
-  aiSuggestions,
 }: {
   state: PanelState<PaymentTermsResult>;
   expanded: boolean;
   onToggle: () => void;
-  selectedPaymentTermsColumn: string | undefined;
-  onPaymentTermsColumnChange: (col: string) => void;
-  aiSuggestions?: string[];
 }) {
-  const d = state.data;
-  const subtitle = d
-    ? d.exists
-      ? `${d.uniqueCount} unique payment terms`
-      : "No Payment Terms column found"
-    : "Analysing payment terms";
-
-  const currencyCols = d?.currencyColumns ?? [];
-  const availableCols = mergeColumnLists(d?.availablePaymentTermsColumns, aiSuggestions);
+  const table = state.data?.distributionTable;
+  const colCount = table?.columns.length ?? 0;
+  const valueCount = table?.rows.length ?? 0;
+  const subtitle = state.loading
+    ? "Analysing payment terms"
+    : table?.exists
+      ? `${colCount} column${colCount === 1 ? "" : "s"} · ${valueCount} unique term${valueCount === 1 ? "" : "s"}`
+      : "No payment terms columns found";
 
   return (
     <SurfaceCard noPadding>
@@ -1714,84 +1510,19 @@ function PaymentTermsPanel({
           >
             <div className="border-t border-neutral-100 dark:border-neutral-800">
               {state.loading && (
-                <PanelSpinner message="Analysing payment terms…" />
+                <PanelSpinner message="Analysing payment terms columns…" />
               )}
-              {state.error && !d && <PanelError message={state.error} />}
-              {d && !d.exists && (
-                <EmptyState icon={FileText} message="Payment Terms column not found" />
+              {state.error && !state.data && <PanelError message={state.error} />}
+              {table && !table.exists && (
+                <EmptyState icon={FileText} message="Payment Terms columns not found" />
               )}
-              {d && d.exists && (
-                <>
-                  {availableCols.length > 1 && (
-                    <div className="px-6 py-3 border-b border-neutral-100 dark:border-neutral-800 flex items-center gap-3">
-                      <label className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
-                        Payment terms column:
-                      </label>
-                      <select
-                        value={selectedPaymentTermsColumn ?? d.availablePaymentTermsColumns?.[0] ?? ""}
-                        onChange={(e) => onPaymentTermsColumnChange(e.target.value)}
-                        className="text-sm rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-2 py-1 text-neutral-800 dark:text-neutral-200 focus:ring-2 focus:ring-violet-500/30 outline-none"
-                      >
-                        {availableCols.map((c) => (
-                          <option key={c} value={c}>{c}</option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-
-                  <StructuredInsight insight={d.aiInsight} accentColor="violet" />
-
-                  {d.paymentTerms.length > 0 && (
-                    <DeepDiveSection>
-                      <div className="overflow-x-auto rounded-b-2xl">
-                        <table className="w-full text-sm">
-                          <thead>
-                            <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-                              <th className="px-6 py-3 sticky left-0 bg-neutral-50 dark:bg-neutral-800/50 z-10">Term</th>
-                              <th className="px-4 py-3 text-right">Spend (Reporting)</th>
-                              <th className="px-4 py-3 text-center">% of Rows</th>
-                              {currencyCols.map((ccy) => (
-                                <th key={ccy} className="px-4 py-3 text-right">
-                                  {ccy}
-                                </th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                            {d.paymentTerms.map((row, idx) => (
-                              <tr
-                                key={row.term}
-                                className={`hover:bg-neutral-100/60 dark:hover:bg-neutral-700/20 transition-colors ${idx % 2 === 0 ? "bg-neutral-50/30 dark:bg-neutral-800/10" : ""}`}
-                              >
-                                <td className="px-6 py-2.5 font-medium text-neutral-800 dark:text-neutral-200 sticky left-0 bg-white dark:bg-neutral-900 z-10">
-                                  {row.term}
-                                </td>
-                                <td className="px-4 py-2.5 text-right tabular-nums text-neutral-700 dark:text-neutral-300">
-                                  {fmtSpend(row.spend)}
-                                </td>
-                                <td className="px-4 py-2.5 text-center tabular-nums text-neutral-700 dark:text-neutral-300">
-                                  {row.pctOfRows != null
-                                    ? `${row.pctOfRows.toFixed(1)}%`
-                                    : "—"}
-                                </td>
-                                {currencyCols.map((ccy) => (
-                                  <td
-                                    key={ccy}
-                                    className="px-4 py-2.5 text-right tabular-nums text-neutral-700 dark:text-neutral-300"
-                                  >
-                                    {row.currencySpend?.[ccy] != null
-                                      ? fmtSpend(row.currencySpend[ccy])
-                                      : "—"}
-                                  </td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </DeepDiveSection>
-                  )}
-                </>
+              {table && table.exists && table.rows.length > 0 && (
+                <DeepDiveSection>
+                  <ValueDistributionTable table={table} valueLabel="Term" />
+                </DeepDiveSection>
+              )}
+              {table && table.exists && table.rows.length === 0 && (
+                <EmptyState icon={FileText} message="No payment terms found in identified columns" />
               )}
             </div>
           </motion.div>
@@ -1809,26 +1540,23 @@ function CountryRegionPanel({
   state,
   expanded,
   onToggle,
-  selectedCountryColumn,
-  onCountryColumnChange,
 }: {
   state: PanelState<CountryRegionResult>;
   expanded: boolean;
   onToggle: () => void;
-  selectedCountryColumn: string | undefined;
-  onCountryColumnChange: (col: string) => void;
 }) {
-  const d = state.data;
+  const countryTable = state.data?.countryTable;
+  const regionTable = state.data?.regionTable;
+  const hasCountry = countryTable?.exists && (countryTable.columns.length ?? 0) > 0;
+  const hasRegion = regionTable?.exists && (regionTable.columns.length ?? 0) > 0;
   const parts: string[] = [];
-  if (d?.countryColumn) parts.push(`Country: ${d.countryValues?.length ?? 0}`);
-  if (d?.regionColumn) parts.push(`Region: ${d.regionValues?.length ?? 0}`);
-  const subtitle = d
-    ? parts.length > 0
-      ? parts.join(" · ") + " unique values"
-      : "No country or region columns found"
-    : "Analysing country & region data";
-
-  const availableCols = d?.availableCountryColumns ?? [];
+  if (hasCountry) parts.push(`${countryTable!.columns.length} country column(s)`);
+  if (hasRegion) parts.push(`${regionTable!.columns.length} region column(s)`);
+  const subtitle = state.loading
+    ? "Analysing country & region data"
+    : parts.length > 0
+      ? parts.join(" · ")
+      : "No country or region columns found";
 
   return (
     <SurfaceCard noPadding>
@@ -1854,107 +1582,35 @@ function CountryRegionPanel({
           >
             <div className="border-t border-neutral-100 dark:border-neutral-800">
               {state.loading && (
-                <PanelSpinner message="Analysing country & region values…" />
+                <PanelSpinner message="Analysing country & region columns…" />
               )}
-              {state.error && !d && <PanelError message={state.error} />}
-              {d && (
-                <>
-                  {/* Country column dropdown */}
-                  {availableCols.length > 1 && (
-                    <div className="px-6 py-3 border-b border-neutral-100 dark:border-neutral-800 flex items-center gap-3">
-                      <label className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
-                        Country column:
-                      </label>
-                      <select
-                        value={selectedCountryColumn ?? d.countryColumn ?? ""}
-                        onChange={(e) => onCountryColumnChange(e.target.value)}
-                        className="text-sm rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 px-2 py-1 text-neutral-800 dark:text-neutral-200 focus:ring-2 focus:ring-emerald-500/30 outline-none"
-                      >
-                        {availableCols.map((c) => (
-                          <option key={c} value={c}>
-                            {c}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+              {state.error && !state.data && <PanelError message={state.error} />}
+              {!state.loading && !hasCountry && !hasRegion && (
+                <EmptyState icon={Globe} message="No country or region columns found" />
+              )}
+              {hasCountry && (
+                <div className="border-b border-neutral-100 dark:border-neutral-800">
+                  <p className="px-6 pt-4 pb-2 text-[10px] uppercase tracking-wider font-semibold text-neutral-500 dark:text-neutral-400">
+                    Country
+                  </p>
+                  {countryTable!.rows.length > 0 ? (
+                    <ValueDistributionTable table={countryTable!} valueLabel="Country" />
+                  ) : (
+                    <EmptyState icon={Globe} message="No country values found in identified columns" />
                   )}
-
-                  {/* AI insights — country and region stacked */}
-                  <StructuredInsight insight={d.countryAiInsight} accentColor="emerald" />
-                  <StructuredInsight insight={d.regionAiInsight} accentColor="emerald" />
-
-                  {/* Deep dive: country and region value grids */}
-                  {(
-                    (d.countryValues && d.countryValues.length > 0) ||
-                    (d.regionValues && d.regionValues.length > 0)
-                  ) && (
-                    <DeepDiveSection>
-                      {d.countryValues && d.countryValues.length > 0 && (
-                        <div className="px-6 py-4 border-b border-neutral-100 dark:border-neutral-800">
-                          <p className="text-[10px] uppercase tracking-wider font-semibold text-neutral-500 dark:text-neutral-400 mb-3">
-                            Unique Country Values ({d.countryValues.length})
-                            {d.countryColumn && (
-                              <span className="ml-1 font-normal normal-case text-neutral-400">
-                                — {d.countryColumn}
-                              </span>
-                            )}
-                          </p>
-                          <div className="rounded-xl overflow-hidden border border-neutral-200 dark:border-neutral-700">
-                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-                              {d.countryValues.slice(0, 100).map((v, idx) => (
-                                <div
-                                  key={v}
-                                  className={`px-4 py-2 text-sm text-neutral-700 dark:text-neutral-300 border-b border-r border-neutral-100 dark:border-neutral-800 ${idx % 2 === 0 ? "bg-neutral-50/30 dark:bg-neutral-800/10" : ""}`}
-                                >
-                                  {v}
-                                </div>
-                              ))}
-                            </div>
-                            {d.countryValues.length > 100 && (
-                              <div className="px-4 py-2 text-xs text-neutral-400 text-center bg-neutral-50/50 dark:bg-neutral-800/30">
-                                +{d.countryValues.length - 100} more
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
-
-                      {d.regionValues && d.regionValues.length > 0 && (
-                        <div className="px-6 py-4">
-                          <p className="text-[10px] uppercase tracking-wider font-semibold text-neutral-500 dark:text-neutral-400 mb-3">
-                            Unique Region Values ({d.regionValues.length})
-                            {d.regionColumn && (
-                              <span className="ml-1 font-normal normal-case text-neutral-400">
-                                — {d.regionColumn}
-                              </span>
-                            )}
-                          </p>
-                          <div className="rounded-xl overflow-hidden border border-neutral-200 dark:border-neutral-700">
-                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-                              {d.regionValues.slice(0, 100).map((v, idx) => (
-                                <div
-                                  key={v}
-                                  className={`px-4 py-2 text-sm text-neutral-700 dark:text-neutral-300 border-b border-r border-neutral-100 dark:border-neutral-800 ${idx % 2 === 0 ? "bg-neutral-50/30 dark:bg-neutral-800/10" : ""}`}
-                                >
-                                  {v}
-                                </div>
-                              ))}
-                            </div>
-                            {d.regionValues.length > 100 && (
-                              <div className="px-4 py-2 text-xs text-neutral-400 text-center bg-neutral-50/50 dark:bg-neutral-800/30">
-                                +{d.regionValues.length - 100} more
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </DeepDiveSection>
+                </div>
+              )}
+              {hasRegion && (
+                <div>
+                  <p className="px-6 pt-4 pb-2 text-[10px] uppercase tracking-wider font-semibold text-neutral-500 dark:text-neutral-400">
+                    Region
+                  </p>
+                  {regionTable!.rows.length > 0 ? (
+                    <ValueDistributionTable table={regionTable!} valueLabel="Region" />
+                  ) : (
+                    <EmptyState icon={Globe} message="No region values found in identified columns" />
                   )}
-
-                  {!d.countryColumn && !d.regionColumn && (
-                    <EmptyState icon={Globe} message="No country or region columns found in the dataset." />
-                  )}
-                </>
+                </div>
               )}
             </div>
           </motion.div>
@@ -2226,115 +1882,4 @@ function FillRateSpendCell({
     );
   }
   return <span className="text-neutral-400">N/A</span>;
-}
-
-/* ══════════════════════════════════════════════════════════════════════════
-   Spend Bifurcation Panel
-   ══════════════════════════════════════════════════════════════════════════ */
-
-function SpendBifurcationPanel({
-  state,
-  expanded,
-  onToggle,
-}: {
-  state: PanelState<SpendBifurcationResult>;
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  const d = state.data;
-  const subtitle = d
-    ? d.type === "none"
-      ? "No spend column found"
-      : `Positive vs negative spend (${d.column})`
-    : "Computing spend bifurcation…";
-
-  return (
-    <SurfaceCard noPadding>
-      <PanelHeader
-        icon={
-          <SplitSquareHorizontal className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-        }
-        iconBg="bg-indigo-100 dark:bg-indigo-950/40"
-        title="Spend Bifurcation"
-        subtitle={subtitle}
-        expanded={expanded}
-        onToggle={onToggle}
-      />
-
-      <AnimatePresence initial={false}>
-        {expanded && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={EXPAND_TRANSITION}
-            className="overflow-hidden"
-          >
-            <div className="border-t border-neutral-100 dark:border-neutral-800">
-              {state.loading && (
-                <PanelSpinner message="Computing spend bifurcation…" />
-              )}
-              {state.error && !d && <PanelError message={state.error} />}
-              {d && d.type === "none" && (
-                <EmptyState icon={SplitSquareHorizontal} message="No spend column found in the dataset." />
-              )}
-              {d && (d.type === "reporting" || d.type === "local_single") && (
-                <div className="overflow-x-auto rounded-b-2xl">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-                        <th className="px-6 py-3 text-right">Total Positive Spend</th>
-                        <th className="px-4 py-3 text-right">Total Negative Spend</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        <td className="px-6 py-3 text-right tabular-nums font-semibold text-emerald-700 dark:text-emerald-400">
-                          {fmtSpend(d.positiveSpend ?? 0)}
-                        </td>
-                        <td className="px-4 py-3 text-right tabular-nums font-semibold text-red-600 dark:text-red-400">
-                          {fmtSpend(d.negativeSpend ?? 0)}
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              {d && d.type === "local" && d.currencies && (
-                <div className="overflow-x-auto rounded-b-2xl">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="bg-neutral-50 dark:bg-neutral-800/50 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
-                        <th className="px-6 py-3">Currency</th>
-                        <th className="px-4 py-3 text-right">Total +ve Spend</th>
-                        <th className="px-4 py-3 text-right">Total -ve Spend</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                      {d.currencies.map((c, idx) => (
-                        <tr
-                          key={c.code}
-                          className={`hover:bg-neutral-100/60 dark:hover:bg-neutral-700/20 transition-colors ${idx % 2 === 0 ? "bg-neutral-50/30 dark:bg-neutral-800/10" : ""}`}
-                        >
-                          <td className="px-6 py-2.5 font-medium text-neutral-800 dark:text-neutral-200">
-                            {c.code}
-                          </td>
-                          <td className="px-4 py-2.5 text-right tabular-nums text-emerald-700 dark:text-emerald-400">
-                            {fmtSpend(c.positiveSpend)}
-                          </td>
-                          <td className="px-4 py-2.5 text-right tabular-nums text-red-600 dark:text-red-400">
-                            {fmtSpend(c.negativeSpend)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </SurfaceCard>
-  );
 }

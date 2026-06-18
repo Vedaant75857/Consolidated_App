@@ -1,7 +1,7 @@
 """Country / Region analysis panel for the Data Quality Assessment.
 
-Collects unique country and region values and asks AI whether standardisation
-is needed.
+Uses AI-identified country and region columns to build multi-column value
+distribution tables with fill rates.
 """
 
 from __future__ import annotations
@@ -9,91 +9,60 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from shared.db import DuckDBConnection, quote_id, read_table_columns
+from shared.db import DuckDBConnection, read_table_columns
 
-from .ai_prompts import generate_country_region_insight
-from .column_resolver import find_country_columns, resolve_column
-from .metrics import _non_null_condition
+from .column_resolver import find_country_columns, resolve_all_columns
+from .value_distribution import compute_value_distribution_table, merge_identified_columns
 
 logger = logging.getLogger(__name__)
 
 
-def _unique_values(
-    conn: DuckDBConnection,
-    table_name: str,
-    column: str,
-    limit: int = 1000,
-) -> list[str]:
-    """Return distinct non-empty values for a column, capped at *limit*."""
-    tbl = quote_id(table_name)
-    qc = quote_id(column)
-    nn = _non_null_condition(qc)
-    rows = conn.execute(
-        f"SELECT DISTINCT TRIM({qc}) AS val FROM {tbl} "
-        f"WHERE {nn} LIMIT ?",
-        (limit,),
-    ).fetchall()
-    return [str(r["val"]) for r in rows]
+def _find_region_columns(available: set[str]) -> list[str]:
+    """Return all region-type columns found in the table."""
+    resolved = resolve_all_columns(available, "region")
+    resolved_set = set(resolved)
+    extras = sorted(
+        c for c in available
+        if "region" in c.lower() and c not in resolved_set
+    )
+    return resolved + extras
 
 
 def run_country_region_analysis_sql(
     conn: DuckDBConnection,
     table_name: str,
-    country_column: str | None = None,
+    identified_country_columns: list[str] | None = None,
+    identified_region_columns: list[str] | None = None,
 ) -> dict[str, Any]:
-    """SQL-only phase: unique country/region values.
+    """SQL-only phase: multi-column country and region value distributions.
 
     Args:
         conn: DuckDB session connection.
         table_name: Target table.
-        country_column: User-selected country column override. If None,
-            defaults to the first available country column.
+        identified_country_columns: AI-identified country column names.
+        identified_region_columns: AI-identified region column names.
 
     Must be called under the session lock.
 
     Returns:
-        JSON-serialisable dict with AI insight fields set to ``None``.
+        JSON-serialisable dict with ``countryTable`` and ``regionTable``.
     """
     available = set(read_table_columns(conn, table_name))
 
-    available_country_cols = find_country_columns(available)
-
-    # Resolve user's selection or default to first available
-    country_col: str | None = None
-    if country_column and country_column in available:
-        country_col = country_column
-    elif available_country_cols:
-        country_col = available_country_cols[0]
-
-    country_values: list[str] | None = None
-    if country_col:
-        country_values = _unique_values(conn, table_name, country_col)
-
-    region_col = resolve_column(available, "region", fuzzy=False)
-
-    region_values: list[str] | None = None
-    if region_col:
-        region_values = _unique_values(conn, table_name, region_col)
-
-    if country_col is None and region_col is None:
-        return {
-            "availableCountryColumns": available_country_cols,
-            "countryColumn": None,
-            "regionColumn": None,
-            "countryValues": None,
-            "regionValues": None,
-            "countryAiInsight": None,
-            "regionAiInsight": None,
-        }
+    country_cols = merge_identified_columns(
+        identified_country_columns, available, find_country_columns,
+    )
+    region_cols = merge_identified_columns(
+        identified_region_columns, available, _find_region_columns,
+    )
 
     return {
-        "availableCountryColumns": available_country_cols,
-        "countryColumn": country_col,
-        "regionColumn": region_col,
-        "countryValues": country_values,
-        "regionValues": region_values,
-        "countryAiInsight": None,
-        "regionAiInsight": None,
+        "countryTable": compute_value_distribution_table(
+            conn, table_name, country_cols,
+        ),
+        "regionTable": compute_value_distribution_table(
+            conn, table_name, region_cols,
+        ),
     }
 
 
@@ -101,30 +70,5 @@ def run_country_region_analysis_ai(
     sql_result: dict[str, Any],
     api_key: str,
 ) -> dict[str, Any]:
-    """AI phase: generate insight from pre-computed SQL data.
-
-    Safe to call without any database lock held.
-    """
-    if sql_result.get("countryAiInsight") is not None:
-        return sql_result
-
-    ai_payload = {
-        "countryValues": sql_result["countryValues"],
-        "regionValues": sql_result["regionValues"],
-        "countryColumn": sql_result["countryColumn"],
-        "regionColumn": sql_result["regionColumn"],
-    }
-    try:
-        insights = generate_country_region_insight(ai_payload, api_key)
-        sql_result["countryAiInsight"] = insights.get("countryInsight")
-        sql_result["regionAiInsight"] = insights.get("regionInsight")
-    except Exception as exc:
-        logger.warning("Country/region AI insight generation failed: %s", exc)
-        sql_result["countryAiInsight"] = (
-            ["AI insight generation failed."] if sql_result["countryColumn"] else None
-        )
-        sql_result["regionAiInsight"] = (
-            ["AI insight generation failed."] if sql_result["regionColumn"] else None
-        )
-
+    """No-op AI phase kept for API compatibility."""
     return sql_result

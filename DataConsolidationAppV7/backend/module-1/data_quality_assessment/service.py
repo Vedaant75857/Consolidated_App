@@ -95,9 +95,9 @@ def _validate_table(conn: DuckDBConnection, table_name: str) -> str:
 def collect_column_samples(
     conn: DuckDBConnection,
     table_name: str,
-    sample_size: int = 5,
+    sample_size: int = 75,
 ) -> dict[str, list[str]]:
-    """Read column names and a few non-null sample values for each column.
+    """Read column names and non-null sample values for each column.
 
     Must be called under the session lock.
 
@@ -132,7 +132,7 @@ def run_dqa_suggest_columns(
     column_samples: dict[str, list[str]],
     api_key: str,
 ) -> dict[str, list[str]]:
-    """Ask the LLM to suggest the top-3 columns per DQA role.
+    """Ask the LLM to identify all columns per DQA role.
 
     Safe to call without the session lock.
     """
@@ -160,11 +160,11 @@ def run_dqa_date_ai(sql_result: dict[str, Any], api_key: str) -> dict[str, Any]:
 def run_dqa_currency_sql(
     conn: DuckDBConnection,
     table_name: str,
-    currency_column: str | None = None,
+    identified_columns: list[str] | None = None,
 ) -> dict[str, Any]:
     """Currency SQL phase. Call under session lock."""
     table_name = _validate_table(conn, table_name)
-    return run_currency_analysis_sql(conn, table_name, currency_column)
+    return run_currency_analysis_sql(conn, table_name, identified_columns)
 
 
 def run_dqa_currency_ai(sql_result: dict[str, Any], api_key: str) -> dict[str, Any]:
@@ -175,11 +175,11 @@ def run_dqa_currency_ai(sql_result: dict[str, Any], api_key: str) -> dict[str, A
 def run_dqa_payment_terms_sql(
     conn: DuckDBConnection,
     table_name: str,
-    payment_terms_column: str | None = None,
+    identified_columns: list[str] | None = None,
 ) -> dict[str, Any]:
     """Payment terms SQL phase. Call under session lock."""
     table_name = _validate_table(conn, table_name)
-    return run_payment_terms_analysis_sql(conn, table_name, payment_terms_column)
+    return run_payment_terms_analysis_sql(conn, table_name, identified_columns)
 
 
 def run_dqa_payment_terms_ai(sql_result: dict[str, Any], api_key: str) -> dict[str, Any]:
@@ -190,11 +190,17 @@ def run_dqa_payment_terms_ai(sql_result: dict[str, Any], api_key: str) -> dict[s
 def run_dqa_country_region_sql(
     conn: DuckDBConnection,
     table_name: str,
-    country_column: str | None = None,
+    identified_country_columns: list[str] | None = None,
+    identified_region_columns: list[str] | None = None,
 ) -> dict[str, Any]:
     """Country/Region SQL phase. Call under session lock."""
     table_name = _validate_table(conn, table_name)
-    return run_country_region_analysis_sql(conn, table_name, country_column)
+    return run_country_region_analysis_sql(
+        conn,
+        table_name,
+        identified_country_columns,
+        identified_region_columns,
+    )
 
 
 def run_dqa_country_region_ai(sql_result: dict[str, Any], api_key: str) -> dict[str, Any]:
@@ -276,7 +282,7 @@ def run_dqa_entity_ai(
     """
     country_payload = None
     region_payload = None
-    if country_sql:
+    if country_sql and not country_sql.get("countryTable"):
         country_payload = {
             "countryValues": country_sql.get("countryValues"),
             "countryColumn": country_sql.get("countryColumn"),
@@ -324,12 +330,20 @@ def run_dqa_all_sql(
     table_name = _validate_table(conn, table_name)
     return {
         "date": run_date_analysis_sql(conn, table_name, date_column),
-        "currency": run_currency_analysis_sql(conn, table_name, currency_column),
-        "paymentTerms": run_payment_terms_analysis_sql(conn, table_name, payment_terms_column),
-        "countryRegion": run_country_region_analysis_sql(conn, table_name, country_column),
+        "currency": run_currency_analysis_sql(
+            conn, table_name, [currency_column] if currency_column else None,
+        ),
+        "paymentTerms": run_payment_terms_analysis_sql(
+            conn, table_name, [payment_terms_column] if payment_terms_column else None,
+        ),
+        "countryRegion": run_country_region_analysis_sql(
+            conn,
+            table_name,
+            [country_column] if country_column else None,
+            None,
+        ),
         "supplier": run_supplier_analysis_sql(conn, table_name, vendor_column),
         "fillRate": run_fill_rate_analysis(conn, table_name),
-        "spendBifurcation": run_spend_bifurcation(conn, table_name),
     }
 
 
@@ -346,8 +360,11 @@ def _build_date_ai_payload(sql: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_currency_ai_payload(sql: dict[str, Any]) -> dict[str, Any]:
+def _build_currency_ai_payload(sql: dict[str, Any]) -> dict[str, Any] | None:
     """Extract the fields the AI prompt needs from currency SQL results."""
+    dist = sql.get("distributionTable")
+    if dist:
+        return None
     return {
         "currencyTable": sql.get("currencyTable"),
         "distinctCount": sql.get("distinctCount"),
@@ -355,8 +372,10 @@ def _build_currency_ai_payload(sql: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_payment_ai_payload(sql: dict[str, Any]) -> dict[str, Any]:
+def _build_payment_ai_payload(sql: dict[str, Any]) -> dict[str, Any] | None:
     """Extract the fields the AI prompt needs from payment terms SQL results."""
+    if sql.get("distributionTable"):
+        return None
     return {
         "paymentTerms": sql.get("paymentTerms"),
         "totalSpend": sql.get("totalSpend"),
