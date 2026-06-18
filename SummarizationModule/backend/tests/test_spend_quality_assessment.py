@@ -429,5 +429,101 @@ class SpendQualityAssessmentTests(unittest.TestCase):
         self.assertIn("zero or negative", dashboard["message"])
 
 
+class CapexOpexClassificationTests(unittest.TestCase):
+    def test_classify_from_explicit_indicator_column(self):
+        from services.spend_quality_assessment.capex_opex import classify_capex_opex_spend
+
+        conn = duckdb_connect(":memory:")
+        conn.execute(
+            """
+            CREATE TABLE "analysis_data" (
+                description VARCHAR,
+                capex_opex_indicator VARCHAR,
+                total_spend DOUBLE
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO "analysis_data" VALUES
+                ('Server upgrade', 'CAPEX', 50000),
+                ('Monthly license', 'OPEX', 1200),
+                ('Office supplies', '0', 300),
+                ('Maintenance', 'N', 800),
+                ('Unknown bucket', 'Other', 100),
+                ('No flag', NULL, 50)
+            """
+        )
+
+        result = classify_capex_opex_spend(conn)
+        conn.close()
+
+        self.assertTrue(result["feasible"])
+        self.assertEqual(result["sourceColumn"], "capex_opex_indicator")
+        by_label = {c["label"]: c for c in result["categories"]}
+        self.assertEqual(by_label["CAPEX"]["matchingRows"], 1)
+        self.assertEqual(by_label["CAPEX"]["totalSpend"], 50000)
+        self.assertEqual(by_label["OPEX"]["matchingRows"], 4)
+        self.assertEqual(by_label["OPEX"]["totalSpend"], 2400)
+        self.assertEqual(result["unclassifiedRows"], 1)
+        self.assertEqual(result["unclassifiedSpend"], 50)
+
+    def test_description_not_used_without_indicator(self):
+        from services.spend_quality_assessment.capex_opex import classify_capex_opex_spend
+
+        conn = duckdb_connect(":memory:")
+        conn.execute(
+            """
+            CREATE TABLE "analysis_data" (
+                description VARCHAR,
+                total_spend DOUBLE
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO "analysis_data" VALUES
+                ('Server CAPEX upgrade', 50000),
+                ('Monthly OPEX license', 1200)
+            """
+        )
+
+        result = classify_capex_opex_spend(conn)
+        conn.close()
+
+        self.assertFalse(result["feasible"])
+        self.assertEqual(result["categories"], [])
+
+    def test_y_and_zero_flags(self):
+        from services.spend_quality_assessment.capex_opex import classify_capex_opex_spend
+
+        conn = duckdb_connect(":memory:")
+        conn.execute(
+            """
+            CREATE TABLE "analysis_data" (
+                gl_account VARCHAR,
+                total_spend DOUBLE
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO "analysis_data" VALUES
+                ('Y', 10000),
+                ('0', 2000),
+                ('1', 5000)
+            """
+        )
+
+        result = classify_capex_opex_spend(conn)
+        conn.close()
+
+        by_label = {c["label"]: c for c in result["categories"]}
+        self.assertEqual(by_label["CAPEX"]["matchingRows"], 2)
+        self.assertEqual(by_label["CAPEX"]["totalSpend"], 15000)
+        self.assertEqual(by_label["OPEX"]["matchingRows"], 1)
+        self.assertEqual(by_label["OPEX"]["totalSpend"], 2000)
+
+
 if __name__ == "__main__":
     unittest.main()

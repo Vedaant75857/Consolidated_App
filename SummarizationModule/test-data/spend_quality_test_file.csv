@@ -1,0 +1,11 @@
+Total Spend,Description,Vendor Name,Vendor Country,CAPEX/OPEX Indicator,Spend Classification L1
+50000,Server hardware purchase,External Supplier Ltd,United Kingdom,CAPEX,IT Infrastructure
+1200,Monthly SaaS license,External Supplier Ltd,United States,OPEX,Software
+800,Office cleaning services,CleanCo Services,Germany,0,Facilities
+15000,Factory equipment upgrade,MachineWorks AG,Switzerland,Y,Manufacturing
+2500,Payroll processing fee,ADP Payroll,United States,N,Payroll
+600,Corporate income tax payment,HMRC,United Kingdom,OPEX,Tax
+300,Intercompany IT recharge,Acme Corp Internal Billing,United Kingdom,Other,Intercompany
+950,Utilities - electricity,PowerGrid Inc,United States,0,Utilities
+10000,Blank indicator test row,External Supplier Ltd,France,,General
+4200,CapEx spelled in description only,External Supplier Ltd,India,OPEX,IT

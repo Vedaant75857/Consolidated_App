@@ -1,9 +1,4 @@
-"""Intercompany Spend — keyword-based spend search across vendor name columns.
-
-Lets users pick vendor-related columns from ``analysis_data``, enter keywords,
-and see how many rows match plus the total spend (reporting currency) for each.
-Mirrors the Not Procurable Spend functionality but scoped to vendor columns.
-"""
+"""Intercompany Spend — scan vendor names for the client company name."""
 
 from __future__ import annotations
 
@@ -13,103 +8,155 @@ from typing import Any
 
 from shared.duckdb_compat import DuckDBConnection
 
+from services.spend_quality_assessment.analysis_data import (
+    field_mapped_with_data,
+    get_mapped_field_keys,
+    list_analysis_columns,
+    quote_id,
+)
+
 logger = logging.getLogger(__name__)
 
-VENDOR_FIELD_KEYS: list[str] = [
-    "supplier",
-    "vendor_country",
-]
+VENDOR_COLUMN = "supplier"
 
 VENDOR_DISPLAY_NAMES: dict[str, str] = {
     "supplier": "Vendor Name",
-    "vendor_country": "Vendor Country",
 }
-
-
-def _quote_id(name: str) -> str:
-    """Double-quote a SQL identifier."""
-    return f'"{name}"'
 
 
 def get_vendor_searchable_columns(
     conn: DuckDBConnection,
 ) -> list[dict[str, str]]:
-    """Return the vendor columns in ``analysis_data`` available for keyword search.
-
-    Only columns that actually exist in the table *and* appear in
-    ``VENDOR_FIELD_KEYS`` are returned, preserving the preferred order.
-
-    Args:
-        conn: DuckDB session connection.
-
-    Returns:
-        List of ``{"fieldKey": str, "displayName": str}`` dicts.
-    """
-    rows = conn.execute(
-        "SELECT column_name FROM information_schema.columns "
-        "WHERE table_name = 'analysis_data' ORDER BY ordinal_position"
-    ).fetchall()
-    present: set[str] = {str(r[0]) for r in rows}
-
+    """Return vendor name column when mapped and populated."""
+    mapped = get_mapped_field_keys(conn, [VENDOR_COLUMN])
     return [
         {"fieldKey": fk, "displayName": VENDOR_DISPLAY_NAMES.get(fk, fk)}
-        for fk in VENDOR_FIELD_KEYS
-        if fk in present
+        for fk in mapped
     ]
 
 
 def search_intercompany_keyword(
     conn: DuckDBConnection,
-    columns: list[str],
-    keyword: str,
+    client_name: str,
 ) -> dict[str, Any]:
-    """Search ``analysis_data`` for rows where *keyword* appears in any of *columns*.
+    """Search vendor names for *client_name* (case-insensitive substring match)."""
+    if not client_name or not client_name.strip():
+        raise ValueError("Client name must not be empty.")
 
-    The match is case-insensitive (``ILIKE``). Spend is summed from
-    ``total_spend`` (reporting currency).
+    if not field_mapped_with_data(conn, VENDOR_COLUMN):
+        raise ValueError(
+            "Vendor Name is not mapped or has no data. Map supplier in Step 3."
+        )
 
-    Args:
-        conn: DuckDB session connection.
-        columns: Column names to search (must be a subset of ``VENDOR_FIELD_KEYS``).
-        keyword: The search term (non-empty string).
-
-    Returns:
-        ``{"keyword": str, "matchingRows": int, "totalSpend": float}``
-
-    Raises:
-        ValueError: If *columns* is empty, *keyword* is blank, or a column name
-                    is not in the allowed set.
-    """
-    if not keyword or not keyword.strip():
-        raise ValueError("Keyword must not be empty.")
-    if not columns:
-        raise ValueError("At least one column must be selected.")
-
-    allowed = set(VENDOR_FIELD_KEYS)
-    invalid = [c for c in columns if c not in allowed]
-    if invalid:
-        raise ValueError(f"Invalid column(s): {', '.join(invalid)}")
-
-    keyword = keyword.strip()
+    keyword = client_name.strip()
     escaped = re.sub(r"([%_\\])", r"\\\1", keyword)
     like_pattern = f"%{escaped}%"
+    qc = quote_id(VENDOR_COLUMN)
 
-    where_clauses = [
-        f"{_quote_id(col)} ILIKE ?" for col in columns
-    ]
-    where_sql = " OR ".join(where_clauses)
-    params = [like_pattern] * len(columns)
-
-    sql = (
+    row = conn.execute(
         "SELECT COUNT(*) AS match_count, "
         "  COALESCE(SUM(TRY_CAST(total_spend AS DOUBLE)), 0) AS total_spend "
-        f'FROM "analysis_data" '
-        f"WHERE {where_sql}"
-    )
+        f'FROM "analysis_data" WHERE {qc} ILIKE ?',
+        [like_pattern],
+    ).fetchone()
 
-    row = conn.execute(sql, params).fetchone()
     return {
         "keyword": keyword,
         "matchingRows": int(row[0] or 0),
         "totalSpend": round(float(row[1] or 0)),
+    }
+
+
+def suggest_intercompany_vendors(
+    conn: DuckDBConnection,
+    client_name: str,
+    *,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Return distinct vendor names that may be intercompany matches."""
+    if not client_name or not client_name.strip():
+        return []
+    if not field_mapped_with_data(conn, VENDOR_COLUMN):
+        return []
+
+    keyword = client_name.strip()
+    escaped = re.sub(r"([%_\\])", r"\\\1", keyword)
+    like_pattern = f"%{escaped}%"
+    qc = quote_id(VENDOR_COLUMN)
+
+    rows = conn.execute(
+        f"""
+        SELECT
+            TRIM(CAST({qc} AS VARCHAR)) AS vendor,
+            COUNT(*) AS row_count,
+            COALESCE(SUM(TRY_CAST(total_spend AS DOUBLE)), 0) AS spend
+        FROM "analysis_data"
+        WHERE {qc} IS NOT NULL
+          AND TRIM(CAST({qc} AS VARCHAR)) != ''
+          AND {qc} ILIKE ?
+        GROUP BY 1
+        ORDER BY spend DESC
+        LIMIT ?
+        """,
+        [like_pattern, limit],
+    ).fetchall()
+
+    return [
+        {
+            "vendor": str(r[0]),
+            "matchingRows": int(r[1] or 0),
+            "totalSpend": round(float(r[2] or 0)),
+        }
+        for r in rows
+    ]
+
+
+def detect_intercompany_spend(
+    conn: DuckDBConnection,
+    client_name: str,
+) -> dict[str, Any]:
+    """Scan supplier column for the client company name."""
+    if not field_mapped_with_data(conn, "total_spend"):
+        return {
+            "feasible": False,
+            "message": "Total Spend is not mapped. Confirm column mapping in Step 3.",
+            "clientName": client_name,
+            "summary": None,
+            "vendors": [],
+        }
+
+    if not field_mapped_with_data(conn, VENDOR_COLUMN):
+        return {
+            "feasible": False,
+            "message": (
+                "Vendor Name is not mapped or has no data. Map the supplier "
+                "column in Step 3."
+            ),
+            "clientName": client_name,
+            "summary": None,
+            "vendors": [],
+        }
+
+    if not client_name or not client_name.strip():
+        return {
+            "feasible": False,
+            "message": "Enter your client company name to scan vendor names.",
+            "clientName": client_name,
+            "summary": None,
+            "vendors": [],
+        }
+
+    summary = search_intercompany_keyword(conn, client_name)
+    vendors = suggest_intercompany_vendors(conn, client_name)
+
+    return {
+        "feasible": True,
+        "message": (
+            f"No vendor names contain \"{client_name.strip()}\"."
+            if summary["matchingRows"] == 0
+            else None
+        ),
+        "clientName": client_name.strip(),
+        "summary": summary,
+        "vendors": vendors,
     }

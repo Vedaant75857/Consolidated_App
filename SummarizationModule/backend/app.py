@@ -8,6 +8,12 @@ import sys as _sys
 _sys.dont_write_bytecode = True
 os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
+# Stable session folder so uploads survive backend restarts during dev.
+if not os.environ.get("SESSION_DB_DIR") and not getattr(_sys, "frozen", False):
+    os.environ["SESSION_DB_DIR"] = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", ".sessions")
+    )
+
 from flask import Flask
 from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS

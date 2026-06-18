@@ -424,24 +424,110 @@ export async function searchNotProcurableKeyword(
   });
 }
 
+export interface NotProcurableDetectResult {
+  feasible: boolean;
+  message: string | null;
+  columnsUsed: string[];
+  keywords: KeywordSearchResult[];
+  uniqueMatchingRows: number;
+  uniqueTotalSpend: number;
+}
+
+export async function detectNotProcurableSpend(
+  sessionId: string,
+  columns?: string[]
+) {
+  return post<NotProcurableDetectResult>(
+    "/not-procurable/detect",
+    {
+      sessionId,
+      ...(columns && columns.length > 0 ? { columns } : {}),
+    },
+    600_000
+  );
+}
+
 /* ── Intercompany Spend ──────────────────────────────────────────────── */
 
+export interface IntercompanyVendorMatch {
+  vendor: string;
+  matchingRows: number;
+  totalSpend: number;
+}
+
+export interface IntercompanyDetectResult {
+  feasible: boolean;
+  message: string | null;
+  clientName: string;
+  summary: KeywordSearchResult | null;
+  vendors: IntercompanyVendorMatch[];
+}
+
 export async function getIntercompanyColumns(sessionId: string) {
-  return post<{ columns: SearchableColumn[] }>("/intercompany/columns", {
-    sessionId,
-  });
+  return post<{ columns: SearchableColumn[]; vendorColumn: string }>(
+    "/intercompany/columns",
+    { sessionId }
+  );
+}
+
+export async function detectIntercompanySpend(
+  sessionId: string,
+  clientName: string
+) {
+  return post<IntercompanyDetectResult>(
+    "/intercompany/detect",
+    { sessionId, clientName },
+    600_000
+  );
 }
 
 export async function searchIntercompanyKeyword(
   sessionId: string,
-  columns: string[],
-  keyword: string
+  clientName: string
 ) {
   return post<KeywordSearchResult>("/intercompany/search", {
     sessionId,
-    columns,
-    keyword,
+    clientName,
   });
+}
+
+/* ── CAPEX / OPEX Spend ──────────────────────────────────────────────── */
+
+export interface CapexOpexCategory {
+  label: string;
+  matchingRows: number;
+  totalSpend: number;
+}
+
+export interface CapexOpexClassifyResult {
+  feasible: boolean;
+  message: string | null;
+  sourceColumn: string | null;
+  sourceColumnDisplayName: string | null;
+  categories: CapexOpexCategory[];
+  assumptions: string[];
+  unclassifiedRows: number | null;
+  unclassifiedSpend: number | null;
+}
+
+export async function getCapexOpexColumns(sessionId: string) {
+  return post<{ columns: SearchableColumn[] }>("/capex-opex/columns", {
+    sessionId,
+  });
+}
+
+export async function classifyCapexOpexSpend(
+  sessionId: string,
+  column?: string
+) {
+  return post<CapexOpexClassifyResult>(
+    "/capex-opex/classify",
+    {
+      sessionId,
+      ...(column ? { column } : {}),
+    },
+    600_000
+  );
 }
 
 /* ── CSV Export ──────────────────────────────────────────────────────── */
