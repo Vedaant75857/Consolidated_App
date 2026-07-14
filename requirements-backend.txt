@@ -1,0 +1,15 @@
+Flask>=3.1,<4
+Werkzeug>=3.1,<4
+flask-cors>=6.0,<7
+duckdb>=1.0,<2
+pandas>=2.2,<3
+requests>=2.31,<3
+python-dotenv>=1.0,<2
+portkey-ai>=2.2,<3
+pydantic>=2.10,<3
+openpyxl>=3.1,<4
+python-calamine>=0.2.0
+reportlab>=4.2,<5
+Pillow>=11,<12
+httpx>=0.28,<1
+langdetect>=1.0.9,<2

@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test test/playground-overlay.contract.test.mjs",
+    "test:contracts": "node --test test/playground-overlay.contract.test.mjs",
+    "test:playground": "node --test test/playground-overlay.contract.test.mjs"
   },
   "dependencies": {
     "@nivo/bar": "^0.88.0",

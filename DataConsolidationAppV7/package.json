@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -n mod1,vite -c blue,magenta \"npm run dev:mod1\" \"npm run dev:vite\"",
-    "dev:mod1": "backend\\.venv\\Scripts\\python backend/module-1/app.py",
+    "dev:mod1": "..\\.venv\\Scripts\\python.exe backend/module-1/app.py",
     "dev:vite": "cd frontend && npx vite",
     "build": "cd frontend && npx vite build",
     "start": "npm run dev:mod1",

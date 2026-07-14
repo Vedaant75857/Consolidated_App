@@ -7,6 +7,7 @@ export interface FileInventoryItem {
   table_key: string;
   rows: number;
   cols: number;
+  playgroundOnly?: boolean;
 }
 
 export interface UploadWarning {

@@ -1,8 +1,9 @@
 import logging
+from copy import deepcopy
 
 from flask import Blueprint, jsonify, request
 
-from shared.db import get_meta, session_exists, get_session_db
+from shared.db import get_meta, get_session_lock, session_exists, get_session_db
 from services.email.email_generator import generate_email, build_fallback_email
 
 logger = logging.getLogger(__name__)
@@ -18,13 +19,16 @@ def gen_email():
         api_key = (body.get("apiKey") or "").strip()
         context = body.get("context", {})
 
-        if not session_id or not session_exists(session_id):
+        if not session_id:
             return jsonify({"error": "Invalid session"}), 400
         if not api_key:
             return jsonify({"error": "apiKey required"}), 400
 
-        conn = get_session_db(session_id)
-        view_results = get_meta(conn, "view_results") or []
+        with get_session_lock(session_id):
+            if not session_exists(session_id):
+                return jsonify({"error": "Invalid session"}), 400
+            conn = get_session_db(session_id)
+            view_results = deepcopy(get_meta(conn, "view_results") or [])
 
         if not view_results:
             return jsonify({"error": "No view results found. Run analysis first."}), 400

@@ -50,6 +50,7 @@ from routes.mapping_routes import mapping_bp
 from routes.views_routes import views_bp
 from routes.export_routes import export_bp
 from routes.email_routes import email_bp
+from routes.preview_routes import preview_bp
 
 app = Flask(__name__)
 app.json = SafeJSONProvider(app)
@@ -60,6 +61,7 @@ app.register_blueprint(mapping_bp, url_prefix="/api")
 app.register_blueprint(views_bp, url_prefix="/api")
 app.register_blueprint(export_bp, url_prefix="/api")
 app.register_blueprint(email_bp, url_prefix="/api")
+app.register_blueprint(preview_bp, url_prefix="/api")
 
 logger = logging.getLogger("module3")
 

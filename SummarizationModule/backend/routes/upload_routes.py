@@ -8,6 +8,7 @@ from flask import Blueprint, jsonify, request
 from shared.db import get_session_db, get_session_lock, set_meta, get_meta, delete_meta, get_all_meta_keys, session_exists
 from services.mapping.column_mapper import STANDARD_FIELDS
 from services.upload.file_loader import (
+    _EXCEL_EXTS,
     load_zip_to_session,
     load_single_file,
     collect_column_info,
@@ -36,7 +37,11 @@ def upload():
         conn = get_session_db(session_id)
 
         ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-        if ext == "zip" or zipfile.is_zipfile(io.BytesIO(file_data)):
+        excel_exts = {item.lstrip(".") for item in _EXCEL_EXTS}
+        is_zip_archive = ext == "zip" or (
+            ext not in excel_exts and zipfile.is_zipfile(io.BytesIO(file_data))
+        )
+        if is_zip_archive:
             table_keys, warnings = load_zip_to_session(conn, file_data)
         else:
             table_keys, warnings = load_single_file(conn, filename, file_data)
@@ -245,16 +250,20 @@ def set_header_row():
         if custom_column_names and isinstance(custom_column_names, dict):
             custom_names = {int(k): v for k, v in custom_column_names.items()}
 
-        conn = get_session_db(session_id)
-        set_header_row_for_table(conn, table_key, header_row_index, custom_names)
+        with get_session_lock(session_id):
+            if not session_exists(session_id):
+                return jsonify({"error": "Invalid session"}), 400
 
-        inventory = build_inventory(conn)
-        previews = build_preview(conn)
-        set_meta(conn, "inventory", inventory)
+            conn = get_session_db(session_id)
+            set_header_row_for_table(conn, table_key, header_row_index, custom_names)
 
-        table_keys = [inv["table_key"] for inv in inventory]
-        columns = collect_column_info(conn, table_keys)
-        set_meta(conn, "columns", columns)
+            inventory = build_inventory(conn)
+            previews = build_preview(conn)
+            set_meta(conn, "inventory", inventory)
+
+            table_keys = [inv["table_key"] for inv in inventory]
+            columns = collect_column_info(conn, table_keys)
+            set_meta(conn, "columns", columns)
 
         return jsonify({
             "inventory": inventory,

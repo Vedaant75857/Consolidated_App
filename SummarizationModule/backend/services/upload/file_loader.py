@@ -76,7 +76,23 @@ def _ensure_registry(conn: DuckDBConnection):
         "CREATE TABLE IF NOT EXISTS _table_registry "
         "(table_key VARCHAR PRIMARY KEY, data_table VARCHAR, raw_table VARCHAR)"
     )
+    _ensure_column_metadata(conn)
     conn.commit()
+
+
+def _ensure_column_metadata(conn: DuckDBConnection):
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS _column_metadata ("
+        "table_key VARCHAR, "
+        "column_key VARCHAR, "
+        "physical_name VARCHAR, "
+        "display_name VARCHAR, "
+        "data_type VARCHAR, "
+        "column_order INTEGER, "
+        "hidden BOOLEAN, "
+        "PRIMARY KEY (table_key, column_key)"
+        ")"
+    )
 
 
 def _register_table(conn: DuckDBConnection, table_key: str, data_table: str, raw_table: str):
@@ -94,6 +110,202 @@ def _get_registry(conn: DuckDBConnection) -> list[dict[str, str]]:
 
 def _unregister_table(conn: DuckDBConnection, table_key: str):
     conn.execute("DELETE FROM _table_registry WHERE table_key = ?", (table_key,))
+    _ensure_column_metadata(conn)
+    conn.execute("DELETE FROM _column_metadata WHERE table_key = ?", (table_key,))
+
+
+def _original_headers_from_df(df: pd.DataFrame) -> list[str]:
+    if df is None or df.empty:
+        return []
+    return ["" if pd.isna(value) else str(value) for value in df.iloc[0]]
+
+
+def _display_headers_for_data_columns(headers: list[str], display_headers: list[str]) -> list[str]:
+    return [
+        display_headers[index] if index < len(display_headers) else headers[index]
+        for index, header in enumerate(headers)
+        if header != "RECORD_ID"
+    ]
+
+
+def _legacy_display_headers_for_data_table(
+    conn: DuckDBConnection,
+    raw_table: str,
+    data_table: str,
+) -> list[str]:
+    data_columns = [
+        column["physical_name"]
+        for column in _data_table_columns(conn, data_table)
+        if column["physical_name"] != "RECORD_ID"
+    ]
+    if not data_columns:
+        return []
+
+    raw_values = _first_raw_row_values(conn, raw_table)
+    if raw_values:
+        raw_headers = _dedupe_headers([_clean_header(value) for value in raw_values])
+        candidate_columns = []
+        candidate_display_headers = []
+        for index, header in enumerate(raw_headers):
+            if header == "RECORD_ID":
+                continue
+            candidate_columns.append(header)
+            candidate_display_headers.append(raw_values[index] if index < len(raw_values) else header)
+        if candidate_columns == data_columns:
+            return candidate_display_headers
+
+    return data_columns
+
+
+def _preview_data_type(duckdb_type: str) -> str:
+    upper = str(duckdb_type or "").upper()
+    if any(token in upper for token in ("INT", "UBIGINT", "BIGINT", "SMALLINT", "TINYINT")):
+        return "INTEGER"
+    if any(token in upper for token in ("DOUBLE", "FLOAT", "REAL", "DECIMAL", "NUMERIC")):
+        return "DOUBLE"
+    if "DATE" in upper or "TIME" in upper:
+        return "DATE"
+    if "BOOL" in upper:
+        return "BOOLEAN"
+    return "TEXT"
+
+
+def _data_table_columns(conn: DuckDBConnection, data_table: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT column_name, data_type, ordinal_position "
+        "FROM information_schema.columns "
+        "WHERE table_schema = 'main' AND table_name = ? "
+        "ORDER BY ordinal_position",
+        (data_table,),
+    ).fetchall()
+    return [
+        {
+            "physical_name": row[0],
+            "data_type": _preview_data_type(row[1]),
+            "ordinal_position": int(row[2] or 0),
+        }
+        for row in rows
+    ]
+
+
+def _first_raw_row_values(conn: DuckDBConnection, raw_table: str) -> list[str]:
+    try:
+        raw_cols_info = conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'main' AND table_name = ? "
+            "ORDER BY ordinal_position",
+            (raw_table,),
+        ).fetchall()
+        raw_cols = [row[0] for row in raw_cols_info]
+        if not raw_cols:
+            return []
+        col_list = ", ".join(f'"{c}"' for c in raw_cols)
+        row = conn.execute(f'SELECT {col_list} FROM "{raw_table}" LIMIT 1').fetchone()
+        if not row:
+            return []
+        return ["" if value is None else str(value) for value in row]
+    except Exception:
+        return []
+
+
+def _store_column_metadata(
+    conn: DuckDBConnection,
+    table_key: str,
+    data_table: str,
+    display_headers: list[str],
+):
+    _ensure_column_metadata(conn)
+    conn.execute("DELETE FROM _column_metadata WHERE table_key = ?", (table_key,))
+    visible_index = 0
+    rows: list[tuple[Any, ...]] = []
+    for column in _data_table_columns(conn, data_table):
+        physical = column["physical_name"]
+        if physical == "RECORD_ID":
+            rows.append((
+                table_key,
+                "RECORD_ID",
+                physical,
+                "RECORD_ID",
+                column["data_type"],
+                -1,
+                True,
+            ))
+            continue
+        display_name = (
+            display_headers[visible_index]
+            if visible_index < len(display_headers)
+            else physical
+        )
+        rows.append((
+            table_key,
+            f"COL_{visible_index}",
+            physical,
+            display_name,
+            column["data_type"],
+            visible_index,
+            False,
+        ))
+        visible_index += 1
+    if rows:
+        conn.executemany(
+            "INSERT OR REPLACE INTO _column_metadata "
+            "(table_key, column_key, physical_name, display_name, data_type, column_order, hidden) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+
+
+def get_column_metadata(conn: DuckDBConnection, table_key: str) -> list[dict[str, Any]]:
+    _ensure_column_metadata(conn)
+    rows = conn.execute(
+        "SELECT column_key, physical_name, display_name, data_type, column_order, hidden "
+        "FROM _column_metadata "
+        "WHERE table_key = ? "
+        "ORDER BY column_order, column_key",
+        (table_key,),
+    ).fetchall()
+    return [
+        {
+            "key": row[0],
+            "physicalName": row[1],
+            "displayName": row[2],
+            "dataType": row[3],
+            "order": int(row[4] or 0),
+            "hidden": bool(row[5]),
+        }
+        for row in rows
+    ]
+
+
+def ensure_column_metadata_for_table(conn: DuckDBConnection, table_key: str) -> list[dict[str, Any]]:
+    metadata = get_column_metadata(conn, table_key)
+    if metadata:
+        return metadata
+
+    registry = _get_registry(conn)
+    entry = next((row for row in registry if row["table_key"] == table_key), None)
+    if not entry:
+        return []
+    display_headers = _legacy_display_headers_for_data_table(
+        conn,
+        entry["raw_table"],
+        entry["data_table"],
+    )
+    _store_column_metadata(conn, table_key, entry["data_table"], display_headers)
+    conn.commit()
+    return get_column_metadata(conn, table_key)
+
+
+def refresh_column_metadata_for_table(
+    conn: DuckDBConnection,
+    table_key: str,
+    display_headers: list[str],
+):
+    registry = _get_registry(conn)
+    entry = next((row for row in registry if row["table_key"] == table_key), None)
+    if not entry:
+        raise ValueError(f"Table key not found: {table_key}")
+    _store_column_metadata(conn, table_key, entry["data_table"], display_headers)
 
 
 # ──────────────────────────────────────────────
@@ -229,6 +441,8 @@ def _load_source_file(
         _store_raw_table(conn, raw_tbl, df)
         _store_data_table_from_raw(conn, data_tbl, raw_tbl, headers)
         _register_table(conn, table_key, data_tbl, raw_tbl)
+        display_headers = _display_headers_for_data_columns(headers, _original_headers_from_df(df))
+        _store_column_metadata(conn, table_key, data_tbl, display_headers)
         table_keys.append(table_key)
 
     elif ext in _EXCEL_EXTS:
@@ -241,6 +455,8 @@ def _load_source_file(
             _store_raw_table(conn, raw_tbl, df)
             _store_data_table_from_raw(conn, data_tbl, raw_tbl, headers)
             _register_table(conn, table_key, data_tbl, raw_tbl)
+            display_headers = _display_headers_for_data_columns(headers, _original_headers_from_df(df))
+            _store_column_metadata(conn, table_key, data_tbl, display_headers)
             table_keys.append(table_key)
 
 
@@ -323,6 +539,8 @@ def load_single_file(
                 _store_raw_table(conn, raw_tbl, df)
                 _store_data_table_from_raw(conn, data_tbl, raw_tbl, headers)
                 _register_table(conn, table_key, data_tbl, raw_tbl)
+                display_headers = _display_headers_for_data_columns(headers, _original_headers_from_df(df))
+                _store_column_metadata(conn, table_key, data_tbl, display_headers)
                 table_keys.append(table_key)
 
         elif ext in _EXCEL_EXTS:
@@ -622,23 +840,34 @@ def set_header_row_for_table(
         raise ValueError("Header row not found.")
 
     headers = []
+    display_headers = []
     for i, cell in enumerate(list(header_row)):
         if custom_names and i in custom_names and custom_names[i].strip():
             headers.append(_clean_header(custom_names[i]))
+            display_headers.append(str(custom_names[i]))
         elif cell is not None and str(cell).strip():
             headers.append(_clean_header(str(cell)))
+            display_headers.append(str(cell))
         else:
             headers.append(f"COL_{i}")
+            display_headers.append("")
     headers = _dedupe_headers(headers)
+    keep_columns = [
+        (raw_col, header, display_headers[index])
+        for index, (raw_col, header) in enumerate(zip(raw_cols, headers))
+        if header != "RECORD_ID"
+    ]
+    if not keep_columns:
+        raise ValueError("Header row must include at least one data column.")
 
     # Rebuild data table from raw via SQL, skipping the header row
     select_parts = ", ".join(
         f'CAST("{rc}" AS VARCHAR) AS "{hdr}"'
-        for rc, hdr in zip(raw_cols[:len(headers)], headers)
+        for rc, hdr, _display in keep_columns
     )
     null_check = " AND ".join(
         f'("{rc}" IS NULL OR TRIM(CAST("{rc}" AS VARCHAR)) = \'\')'
-        for rc in raw_cols[:len(headers)]
+        for rc, _hdr, _display in keep_columns
     )
     conn.execute(f'DROP TABLE IF EXISTS "{data_tbl}"')
     conn.execute(
@@ -653,6 +882,7 @@ def set_header_row_for_table(
         f"AND NOT ({null_check})",
         (header_row_index + 1,),
     )
+    _store_column_metadata(conn, table_key, data_tbl, [display for _rc, _hdr, display in keep_columns])
     conn.commit()
 
 

@@ -1,9 +1,9 @@
 import logging
-import threading
+from copy import deepcopy
 
 from flask import Blueprint, jsonify, request
 
-from shared.db import get_session_db, get_meta, set_meta, session_exists
+from shared.db import get_session_db, get_session_lock, get_meta, set_meta, session_exists
 from services.views.view_engine import get_available_views, compute_views
 from services.dashboard.ai_summary import generate_summary_for_view
 from services.spend_quality_assessment.data_quality import (
@@ -29,30 +29,20 @@ logger = logging.getLogger(__name__)
 
 views_bp = Blueprint("views", __name__)
 
-_VIEW_LOCK_GUARD = threading.Lock()
-_VIEW_LOCKS: dict[str, threading.RLock] = {}
-
-
-def _view_lock(session_id: str) -> threading.RLock:
-    with _VIEW_LOCK_GUARD:
-        lock = _VIEW_LOCKS.get(session_id)
-        if lock is None:
-            lock = threading.RLock()
-            _VIEW_LOCKS[session_id] = lock
-        return lock
-
-
 @views_bp.route("/available-views", methods=["POST"])
 def available_views():
     try:
         body = request.get_json(force=True)
         session_id = body.get("sessionId")
 
-        if not session_id or not session_exists(session_id):
+        if not session_id:
             return jsonify({"error": "Invalid session"}), 400
 
-        conn = get_session_db(session_id)
-        mapping = get_meta(conn, "mapping")
+        with get_session_lock(session_id):
+            if not session_exists(session_id):
+                return jsonify({"error": "Invalid session"}), 400
+            conn = get_session_db(session_id)
+            mapping = get_meta(conn, "mapping")
 
         if not mapping:
             return jsonify({"error": "No mapping confirmed yet."}), 400
@@ -71,21 +61,24 @@ def compute():
         selected_views = body.get("selectedViews", [])
         config = body.get("config", {})
 
-        if not session_id or not session_exists(session_id):
+        if not session_id:
             return jsonify({"error": "Invalid session"}), 400
         if not selected_views:
             return jsonify({"error": "No views selected"}), 400
 
-        conn = get_session_db(session_id)
-        mapping = get_meta(conn, "mapping")
-        if not mapping:
-            return jsonify({"error": "No mapping confirmed yet."}), 400
+        with get_session_lock(session_id):
+            if not session_exists(session_id):
+                return jsonify({"error": "Invalid session"}), 400
+            conn = get_session_db(session_id)
+            mapping = get_meta(conn, "mapping")
+            if not mapping:
+                return jsonify({"error": "No mapping confirmed yet."}), 400
 
-        logger.info("Computing %d view(s) for session %s", len(selected_views), session_id)
-        results = compute_views(conn, selected_views, config, mapping)
+            logger.info("Computing %d view(s) for session %s", len(selected_views), session_id)
+            results = compute_views(conn, selected_views, config, mapping)
 
-        set_meta(conn, "view_results", results)
-        set_meta(conn, "step", 6)
+            set_meta(conn, "view_results", results)
+            set_meta(conn, "step", 6)
 
         return jsonify({"views": results})
     except Exception as exc:
@@ -102,18 +95,19 @@ def recompute_view():
         view_id = body.get("viewId")
         config = body.get("config", {})
 
-        if not session_id or not session_exists(session_id):
+        if not session_id:
             return jsonify({"error": "Invalid session"}), 400
         if not view_id:
             return jsonify({"error": "viewId required"}), 400
 
-        conn = get_session_db(session_id)
-        mapping = get_meta(conn, "mapping")
-        if not mapping:
-            return jsonify({"error": "No mapping confirmed yet."}), 400
+        with get_session_lock(session_id):
+            if not session_exists(session_id):
+                return jsonify({"error": "Invalid session"}), 400
+            conn = get_session_db(session_id)
+            mapping = get_meta(conn, "mapping")
+            if not mapping:
+                return jsonify({"error": "No mapping confirmed yet."}), 400
 
-        lock = _view_lock(session_id)
-        with lock:
             results = compute_views(conn, [view_id], config, mapping)
             if not results:
                 return jsonify({"error": f"View {view_id} not found or could not be computed"}), 404
@@ -140,27 +134,31 @@ def generate_summary():
         view_id = body.get("viewId")
         api_key = body.get("apiKey")
 
-        if not session_id or not session_exists(session_id):
+        if not session_id:
             return jsonify({"error": "Invalid session"}), 400
         if not view_id:
             return jsonify({"error": "viewId required"}), 400
         if not api_key or not api_key.strip():
             return jsonify({"error": "apiKey required"}), 400
 
-        conn = get_session_db(session_id)
-        lock = _view_lock(session_id)
-
-        with lock:
+        with get_session_lock(session_id):
+            if not session_exists(session_id):
+                return jsonify({"error": "Invalid session"}), 400
+            conn = get_session_db(session_id)
             view_results = get_meta(conn, "view_results") or []
             view = next((v for v in view_results if v.get("viewId") == view_id), None)
             if not view:
                 return jsonify({"error": f"View {view_id} not found"}), 404
+            view = deepcopy(view)
 
         # AI call runs outside the lock (slow operation)
         summary = generate_summary_for_view(view, api_key.strip())
 
-        with lock:
+        with get_session_lock(session_id):
             # Re-read fresh state, then update
+            if not session_exists(session_id):
+                return jsonify({"error": "Invalid session"}), 400
+            conn = get_session_db(session_id)
             view_results = get_meta(conn, "view_results") or []
             for v in view_results:
                 if v.get("viewId") == view_id:
@@ -175,19 +173,6 @@ def generate_summary():
 
 
 # ── Executive Summary (DQA) ──────────────────────────────────────────────
-
-_ES_LOCK_GUARD = threading.Lock()
-_ES_LOCKS: dict[str, threading.RLock] = {}
-
-
-def _es_lock(session_id: str) -> threading.RLock:
-    with _ES_LOCK_GUARD:
-        lock = _ES_LOCKS.get(session_id)
-        if lock is None:
-            lock = threading.RLock()
-            _ES_LOCKS[session_id] = lock
-        return lock
-
 
 def _is_current_executive_summary_cache(cached) -> bool:
     """Reject legacy caches so clients always get the current schema."""
@@ -220,15 +205,17 @@ def executive_summary():
         api_key = body.get("apiKey")
         force = body.get("force", False)
 
-        if not session_id or not session_exists(session_id):
+        if not session_id:
             return jsonify({"error": "Invalid session"}), 400
         if not api_key or not str(api_key).strip():
             return jsonify({"error": "Missing API key"}), 400
 
-        conn = get_session_db(str(session_id))
-        lock = _es_lock(str(session_id))
+        session_id = str(session_id)
 
-        with lock:
+        with get_session_lock(session_id):
+            if not session_exists(session_id):
+                return jsonify({"error": "Invalid session"}), 400
+            conn = get_session_db(session_id)
             if not force:
                 cached = get_meta(conn, "executive_summary")
                 if _is_current_executive_summary_cache(cached):
@@ -239,7 +226,10 @@ def executive_summary():
         # AI phase runs outside the lock to avoid blocking other requests
         result = run_executive_summary_ai(sql_result, str(api_key).strip())
 
-        with lock:
+        with get_session_lock(session_id):
+            if not session_exists(session_id):
+                return jsonify({"error": "Invalid session"}), 400
+            conn = get_session_db(session_id)
             set_meta(conn, "executive_summary", result)
 
         return jsonify(result)
@@ -264,11 +254,14 @@ def not_procurable_columns():
         body = request.get_json(force=True, silent=True) or {}
         session_id = body.get("sessionId")
 
-        if not session_id or not session_exists(session_id):
+        if not session_id:
             return jsonify({"error": "Invalid session"}), 400
 
-        conn = get_session_db(str(session_id))
-        columns = get_searchable_columns(conn)
+        with get_session_lock(str(session_id)):
+            if not session_exists(str(session_id)):
+                return jsonify({"error": "Invalid session"}), 400
+            conn = get_session_db(str(session_id))
+            columns = get_searchable_columns(conn)
         return jsonify({"columns": columns})
 
     except Exception as exc:
@@ -285,17 +278,20 @@ def not_procurable_search():
         columns = body.get("columns", [])
         keyword = body.get("keyword", "")
 
-        if not session_id or not session_exists(session_id):
+        if not session_id:
             return jsonify({"error": "Invalid session"}), 400
         if not keyword or not str(keyword).strip():
             return jsonify({"error": "Keyword must not be empty."}), 400
 
-        conn = get_session_db(str(session_id))
-        result = search_keyword_spend(
-            conn,
-            columns if columns else None,
-            str(keyword),
-        )
+        with get_session_lock(str(session_id)):
+            if not session_exists(str(session_id)):
+                return jsonify({"error": "Invalid session"}), 400
+            conn = get_session_db(str(session_id))
+            result = search_keyword_spend(
+                conn,
+                columns if columns else None,
+                str(keyword),
+            )
         return jsonify(result)
 
     except ValueError as exc:
@@ -313,11 +309,14 @@ def not_procurable_detect():
         session_id = body.get("sessionId")
         columns = body.get("columns") or None
 
-        if not session_id or not session_exists(session_id):
+        if not session_id:
             return jsonify({"error": "Invalid session"}), 400
 
-        conn = get_session_db(str(session_id))
-        result = detect_non_procurable_spend(conn, columns)
+        with get_session_lock(str(session_id)):
+            if not session_exists(str(session_id)):
+                return jsonify({"error": "Invalid session"}), 400
+            conn = get_session_db(str(session_id))
+            result = detect_non_procurable_spend(conn, columns)
         return jsonify(result)
 
     except ValueError as exc:
@@ -336,11 +335,14 @@ def intercompany_columns():
         body = request.get_json(force=True, silent=True) or {}
         session_id = body.get("sessionId")
 
-        if not session_id or not session_exists(session_id):
+        if not session_id:
             return jsonify({"error": "Invalid session"}), 400
 
-        conn = get_session_db(str(session_id))
-        columns = get_vendor_searchable_columns(conn)
+        with get_session_lock(str(session_id)):
+            if not session_exists(str(session_id)):
+                return jsonify({"error": "Invalid session"}), 400
+            conn = get_session_db(str(session_id))
+            columns = get_vendor_searchable_columns(conn)
         return jsonify({"columns": columns, "vendorColumn": "supplier"})
 
     except Exception as exc:
@@ -356,13 +358,16 @@ def intercompany_search():
         session_id = body.get("sessionId")
         client_name = body.get("clientName") or body.get("keyword", "")
 
-        if not session_id or not session_exists(session_id):
+        if not session_id:
             return jsonify({"error": "Invalid session"}), 400
         if not client_name or not str(client_name).strip():
             return jsonify({"error": "Client name must not be empty."}), 400
 
-        conn = get_session_db(str(session_id))
-        result = search_intercompany_keyword(conn, str(client_name))
+        with get_session_lock(str(session_id)):
+            if not session_exists(str(session_id)):
+                return jsonify({"error": "Invalid session"}), 400
+            conn = get_session_db(str(session_id))
+            result = search_intercompany_keyword(conn, str(client_name))
         return jsonify(result)
 
     except ValueError as exc:
@@ -380,11 +385,14 @@ def intercompany_detect():
         session_id = body.get("sessionId")
         client_name = body.get("clientName", "")
 
-        if not session_id or not session_exists(session_id):
+        if not session_id:
             return jsonify({"error": "Invalid session"}), 400
 
-        conn = get_session_db(str(session_id))
-        result = detect_intercompany_spend(conn, str(client_name))
+        with get_session_lock(str(session_id)):
+            if not session_exists(str(session_id)):
+                return jsonify({"error": "Invalid session"}), 400
+            conn = get_session_db(str(session_id))
+            result = detect_intercompany_spend(conn, str(client_name))
         return jsonify(result)
 
     except ValueError as exc:
@@ -403,11 +411,14 @@ def capex_opex_columns():
         body = request.get_json(force=True, silent=True) or {}
         session_id = body.get("sessionId")
 
-        if not session_id or not session_exists(session_id):
+        if not session_id:
             return jsonify({"error": "Invalid session"}), 400
 
-        conn = get_session_db(str(session_id))
-        columns = get_candidate_columns(conn)
+        with get_session_lock(str(session_id)):
+            if not session_exists(str(session_id)):
+                return jsonify({"error": "Invalid session"}), 400
+            conn = get_session_db(str(session_id))
+            columns = get_candidate_columns(conn)
         return jsonify({"columns": columns})
 
     except Exception as exc:
@@ -423,11 +434,14 @@ def capex_opex_classify():
         session_id = body.get("sessionId")
         column = body.get("column")
 
-        if not session_id or not session_exists(session_id):
+        if not session_id:
             return jsonify({"error": "Invalid session"}), 400
 
-        conn = get_session_db(str(session_id))
-        result = classify_capex_opex_spend(conn, column=column or None)
+        with get_session_lock(str(session_id)):
+            if not session_exists(str(session_id)):
+                return jsonify({"error": "Invalid session"}), 400
+            conn = get_session_db(str(session_id))
+            result = classify_capex_opex_spend(conn, column=column or None)
         return jsonify(result)
 
     except ValueError as exc:

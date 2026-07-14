@@ -11,17 +11,53 @@ import type {
   EmailContext,
   AnalysisFeasibilityResult,
 } from "../types";
+import type {
+  PreviewColumnValuesRequest,
+  PreviewColumnValuesResult,
+  PreviewHistoryRequest,
+  PreviewOperationRequest,
+  PreviewOperationResult,
+  PreviewRefreshInventoryRequest,
+  PreviewRefreshInventoryResult,
+  PreviewStateRequest,
+  PreviewTableState,
+} from "../types/excelPreview";
 
 const BASE = "/api";
 const DEFAULT_TIMEOUT_MS = 120_000;
+
+export class ApiClientError extends Error {
+  code?: string;
+  details?: Record<string, unknown>;
+  status: number;
+
+  constructor(message: string, status: number, code?: string, details?: Record<string, unknown>) {
+    super(message);
+    this.name = "ApiClientError";
+    this.status = status;
+    this.code = code;
+    this.details = details;
+  }
+}
 
 async function post<T>(
   path: string,
   body?: any,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<T> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const abortFromSignal = () => controller.abort();
+  if (signal?.aborted) {
+    controller.abort();
+  } else {
+    signal?.addEventListener("abort", abortFromSignal, { once: true });
+  }
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
 
   try {
     const res = await fetch(`${BASE}${path}`, {
@@ -32,16 +68,23 @@ async function post<T>(
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: res.statusText }));
-      throw new Error(err.error || `Request failed: ${res.status}`);
+      throw new ApiClientError(
+        err.error || `Request failed: ${res.status}`,
+        res.status,
+        typeof err.code === "string" ? err.code : undefined,
+        err.details && typeof err.details === "object" ? err.details : undefined,
+      );
     }
     return res.json();
   } catch (err: any) {
     if (err?.name === "AbortError") {
+      if (!timedOut) throw new Error(`Request to ${path} was cancelled`);
       throw new Error(`Request to ${path} timed out after ${timeoutMs / 1000}s`);
     }
     throw err;
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener("abort", abortFromSignal);
   }
 }
 
@@ -49,7 +92,12 @@ async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || `Request failed: ${res.status}`);
+    throw new ApiClientError(
+      err.error || `Request failed: ${res.status}`,
+      res.status,
+      typeof err.code === "string" ? err.code : undefined,
+      err.details && typeof err.details === "object" ? err.details : undefined,
+    );
   }
   return res.json();
 }
@@ -180,6 +228,38 @@ export async function deleteRows(
     preview: PreviewData;
     inventoryRow: FileInventoryItem;
   }>("/delete-rows", { sessionId, tableKey, rowIds });
+}
+
+export async function previewState(request: PreviewStateRequest, options?: { signal?: AbortSignal }) {
+  return post<PreviewTableState>("/preview/state", request, DEFAULT_TIMEOUT_MS, options?.signal);
+}
+
+export async function previewColumnValues(
+  request: PreviewColumnValuesRequest,
+  options?: { signal?: AbortSignal },
+) {
+  return post<PreviewColumnValuesResult>(
+    "/preview/column-values",
+    request,
+    DEFAULT_TIMEOUT_MS,
+    options?.signal,
+  );
+}
+
+export async function previewOperation(request: PreviewOperationRequest) {
+  return post<PreviewOperationResult>("/preview/operation", request);
+}
+
+export async function previewUndo(request: PreviewHistoryRequest) {
+  return post<PreviewOperationResult>("/preview/undo", request);
+}
+
+export async function previewRedo(request: PreviewHistoryRequest) {
+  return post<PreviewOperationResult>("/preview/redo", request);
+}
+
+export async function previewRefreshInventory(request: PreviewRefreshInventoryRequest) {
+  return post<PreviewRefreshInventoryResult>("/preview/refresh-inventory", request);
 }
 
 export async function generateEmail(

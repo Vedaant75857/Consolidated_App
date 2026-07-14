@@ -7,6 +7,7 @@ import {
   Sun,
   Moon,
   AlertCircle,
+  Table2,
 } from "lucide-react";
 import { useTheme } from "./theme/ThemeProvider";
 import { getConfig } from "./runtimeConfig";
@@ -52,6 +53,7 @@ import ContextModal from "./components/email/ContextModal";
 import EmailStep from "./components/email/EmailStep";
 import LoadingOverlay from "./components/common/LoadingOverlay";
 import StepChangeWarningDialog from "./components/common/StepChangeWarningDialog";
+import ExcelPreviewOverlay from "./components/playground/ExcelPreviewOverlay";
 import {
   clearSessionApiKey,
   hydrateApiKeyFromUrl,
@@ -127,6 +129,7 @@ export default function App() {
   const [confirmedMapping, setConfirmedMapping] = useState<Record<string, string | null>>({});
 
   const [showContextModal, setShowContextModal] = useState(false);
+  const [showDataPreview, setShowDataPreview] = useState(false);
   const [emailContext, setEmailContext] = useState<EmailContext | null>(null);
   const [generatedEmail, setGeneratedEmail] = useState<string | null>(null);
   const [emailSubject, setEmailSubject] = useState("");
@@ -365,6 +368,11 @@ export default function App() {
     },
     [sessionId]
   );
+
+  const openRawDataPreview = useCallback(() => {
+    if (!sessionId || inventory.length === 0) return;
+    setShowDataPreview(true);
+  }, [inventory.length, sessionId]);
 
   /* ──── Inventory table operations ──── */
 
@@ -718,6 +726,7 @@ export default function App() {
     setSavedStandardFields(null);
     setConfirmedMapping({});
     setShowContextModal(false);
+    setShowDataPreview(false);
     setEmailContext(null);
     setGeneratedEmail(null);
     setEmailSubject("");
@@ -823,14 +832,27 @@ export default function App() {
           <div className="flex-1 overflow-y-auto p-8">
             <div className="max-w-6xl mx-auto space-y-6">
 
-              {/* Top-right theme toggle */}
-              <div className="flex justify-end">
+              {/* Top-right actions */}
+              <div className="flex justify-end gap-2">
+                {sessionId && inventory.length > 0 && (
+                  <motion.button
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={openRawDataPreview}
+                    className="p-2.5 rounded-xl bg-white/80 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700 shadow-sm backdrop-blur-sm text-neutral-600 dark:text-neutral-300 hover:text-red-600 dark:hover:text-red-400 transition-colors"
+                    title="Raw Data Preview"
+                    aria-label="Raw Data Preview"
+                  >
+                    <Table2 className="w-4 h-4" />
+                  </motion.button>
+                )}
                 <motion.button
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
                   onClick={toggleTheme}
                   className="p-2.5 rounded-xl bg-white/80 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700 shadow-sm backdrop-blur-sm text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white transition-colors"
                   title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+                  aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
                 >
                   <AnimatePresence mode="wait" initial={false}>
                     {theme === "dark" ? (
@@ -988,6 +1010,22 @@ export default function App() {
           onCancel={() => setShowContextModal(false)}
         />
       )}
+
+      <AnimatePresence>
+        {showDataPreview && sessionId && (
+          <ExcelPreviewOverlay
+            sessionId={sessionId}
+            inventory={inventory}
+            onInventoryRefresh={(data) => {
+              setInventory(data.fileInventory || []);
+              setColumns(data.columns || []);
+              setPreviews(data.previews || {});
+            }}
+            onClose={() => setShowDataPreview(false)}
+            title="Raw Data Preview"
+          />
+        )}
+      </AnimatePresence>
 
       <StepChangeWarningDialog
         open={!!pendingInvalidation}
