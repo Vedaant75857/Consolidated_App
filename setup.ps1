@@ -1,20 +1,38 @@
 $ErrorActionPreference = "Stop"
 
-Write-Host "--- Installing node_modules for Frontends ---"
+Write-Host "--- Installing repository root node_modules ---"
+npm install
+if ($LASTEXITCODE -ne 0) {
+    throw "Root NPM dependency installation failed with exit code $LASTEXITCODE."
+}
+
+Write-Host "`n--- Installing node_modules for Frontends ---"
 
 $frontends = @(
-    ".\landing-page",
-    ".\DataConsolidationAppV7\frontend",
-    ".\ProcIP_Module2-main\frontend",
-    ".\SummarizationModule\frontend"
+    ".\frontend\landing",
+    ".\frontend\module1",
+    ".\frontend\module2",
+    ".\frontend\module3"
 )
 
 foreach ($frontend in $frontends) {
     if (Test-Path $frontend) {
         Write-Host "Installing NPM dependencies for $frontend"
         Push-Location $frontend
-        npm install
-        Pop-Location
+        try {
+            if ($frontend -eq ".\frontend\module1") {
+                # Module 1 currently uses React 19 while glide-data-grid's peer
+                # declaration only advertises support through React 18.
+                npm install --legacy-peer-deps
+            } else {
+                npm install
+            }
+            if ($LASTEXITCODE -ne 0) {
+                throw "NPM dependency installation failed for $frontend with exit code $LASTEXITCODE."
+            }
+        } finally {
+            Pop-Location
+        }
     } else {
         Write-Host "Path not found: $frontend"
     }
@@ -30,7 +48,16 @@ if (!(Test-Path $pythonExe)) {
     Write-Host "Creating repo root .venv"
     $venvCreated = $false
 
-    if (Get-Command py -ErrorAction SilentlyContinue) {
+    $portablePython313 = Join-Path $PSScriptRoot "bin\python-portable\python.exe"
+    if (Test-Path $portablePython313) {
+        $portablePythonVersion = & $portablePython313 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+        if ($LASTEXITCODE -eq 0 -and $portablePythonVersion -eq "3.13") {
+            & $portablePython313 -m venv $venvPath
+            $venvCreated = $LASTEXITCODE -eq 0 -and (Test-Path $pythonExe)
+        }
+    }
+
+    if (!$venvCreated -and (Get-Command py -ErrorAction SilentlyContinue)) {
         py -3.13 -m venv $venvPath
         $venvCreated = $LASTEXITCODE -eq 0 -and (Test-Path $pythonExe)
     }
@@ -68,8 +95,14 @@ if ($LASTEXITCODE -ne 0 -or $venvPythonVersion -ne "3.13") {
 
 Write-Host "Upgrading pip in repo root .venv"
 & $pythonExe -m pip install --upgrade pip
+if ($LASTEXITCODE -ne 0) {
+    throw "pip upgrade failed with exit code $LASTEXITCODE."
+}
 
 Write-Host "Installing backend runtime and dev requirements"
 & $pythonExe -m pip install -r .\requirements-dev.txt
+if ($LASTEXITCODE -ne 0) {
+    throw "Backend dependency installation failed with exit code $LASTEXITCODE."
+}
 
 Write-Host "`n--- Setup Complete ---"

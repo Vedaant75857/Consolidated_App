@@ -3,14 +3,17 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
+    "setup": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\setup.ps1",
+    "predev": "npm run setup",
     "dev": "concurrently -n landing,stitcher-be,stitcher-fe,normalizer-be,normalizer-fe,summarizer-be,summarizer-fe -c cyan,blue,magenta,green,yellow,red,white \"npm run dev:landing\" \"npm run dev:stitcher-be\" \"npm run dev:stitcher-fe\" \"npm run dev:normalizer-be\" \"npm run dev:normalizer-fe\" \"npm run dev:summarizer-be\" \"npm run dev:summarizer-fe\"",
-    "dev:landing": "cd landing-page && npx vite",
-    "dev:stitcher-be": "cd DataConsolidationAppV7 && ..\\.venv\\Scripts\\python.exe backend/module-1/app.py",
-    "dev:stitcher-fe": "cd DataConsolidationAppV7/frontend && npx vite",
-    "dev:normalizer-be": "cd ProcIP_Module2-main/backend && ..\\..\\.venv\\Scripts\\python.exe app.py",
-    "dev:normalizer-fe": "cd ProcIP_Module2-main/frontend && npx vite",
-    "dev:summarizer-be": "cd SummarizationModule && ..\\.venv\\Scripts\\python.exe backend/app.py",
-    "dev:summarizer-fe": "cd SummarizationModule/frontend && npx vite"
+    "dev:landing": "npm --prefix frontend/landing run dev",
+    "dev:stitcher-be": ".venv\\Scripts\\python.exe backend/module1/app.py",
+    "dev:stitcher-fe": "npm --prefix frontend/module1 run dev",
+    "dev:normalizer-be": ".venv\\Scripts\\python.exe backend/module2/app.py",
+    "dev:normalizer-fe": "npm --prefix frontend/module2 run dev",
+    "dev:summarizer-be": ".venv\\Scripts\\python.exe backend/module3/app.py",
+    "dev:summarizer-fe": "npm --prefix frontend/module3 run dev",
+    "build:frontends": "npm --prefix frontend/landing run build && npm --prefix frontend/module1 run build && npm --prefix frontend/module2 run build && npm --prefix frontend/module3 run build"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

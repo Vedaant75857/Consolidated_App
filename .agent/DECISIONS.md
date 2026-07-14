@@ -1,5 +1,36 @@
 # Durable Decisions
 
+## 2026-07-14 - Portable Bundle Dependency Exclusion Boundary
+
+The portable sharing archive must be built from an explicit staging allowlist, not
+by compressing the repository root. Root and application development dependency
+trees and caches are excluded, including frontend `node_modules`, `.venv`, logs,
+and agent metadata.
+
+`bin/node-portable/node_modules` is retained as part of the portable Node/npm
+runtime because `bin/node-portable/npm.cmd` loads npm from that tree. It is not
+treated as an installed application development cache. If policy later requires
+excluding every path component named `node_modules` without exception, the Node
+runtime must first be repackaged so npm no longer depends on that directory.
+
+The guarded `start.bat` should explicitly run setup only when root `node_modules`
+or `.venv` is missing, then invoke the root `dev` script with npm lifecycle scripts
+disabled for that call. This preserves `npm run dev` orchestration without allowing
+the existing `predev` hook to run setup unconditionally a second time.
+
+## 2026-07-14 - Unified Parent Folders With Independent Applications
+
+The suite should be physically consolidated under `backend/` and `frontend/` while preserving independent application boundaries:
+
+- `backend/module1`, `backend/module2`, `backend/module3`
+- `frontend/landing`, `frontend/module1`, `frontend/module2`, `frontend/module3`
+
+The relocation phase must not combine the three Flask apps into one Python process or merge the four Vite/React apps into one source/dependency tree. Existing endpoints, DTOs, ports, app-local imports, manifests, and lockfiles should remain stable until relocation parity is proven.
+
+The root `.venv`, `requirements-backend.txt`, and `requirements-dev.txt` remain the canonical combined local Python environment. Each backend may retain a module-scoped requirements manifest for independent deployment/build purposes.
+
+Vercel deployment readiness is a separate phase from folder relocation. Frontends may be deployed as separate Vercel projects from the monorepo. The filesystem-backed DuckDB backends require persistent hosting or an explicit external persistence, upload, and concurrency redesign before they are suitable for Vercel Functions.
+
 ## 2026-06-18 - SummarizationModule Excel Upload Classification
 
 When classifying uploaded files, explicit Excel extensions such as `.xlsx`, `.xlsm`, `.xlsb`, `.xltx`, and `.xltm` should route to the Excel parser before generic ZIP-container detection.

@@ -11,8 +11,12 @@ pytest-cache-files-*/
 **/sessions/*.duckdb*
 **/.sessions/*.duckdb*
 .venv/
+.agents/
+.codex/
+.agent/
 __pycache__/
 *.pyc
+*.tsbuildinfo
 .DS_Store
 *.log
 .env*
