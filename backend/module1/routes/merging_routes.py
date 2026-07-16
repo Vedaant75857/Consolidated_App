@@ -75,6 +75,8 @@ from shared.db import (
     quote_id,
     PREVIEW_POOL,
     pick_best_rows,
+    filter_data_columns,
+    public_projection,
 )
 
 from merging.guided_merge_service import (
@@ -95,6 +97,17 @@ from merging.guided_merge_service import (
 )
 
 merging_bp = Blueprint("merging_bp", __name__)
+
+
+def _export_columns(conn, table_name: str) -> list[str]:
+    """Return the exact user-facing schema for a merge export.
+
+    Merge tables retain ``__row_id`` for preview/edit stability, but exported
+    files and cross-module transfers must use the same public schema as their
+    SQL projection.  Keeping the filtering at this boundary prevents header /
+    row mismatches and avoids leaking provenance fields.
+    """
+    return filter_data_columns(read_table_columns(conn, table_name))
 
 
 @merging_bp.route("/merge/recommend-base", methods=["POST"])
@@ -413,7 +426,15 @@ def register_merged_group():
             group_id = f"merged_{int(time.time() * 1000)}"
             sql_name = f"merged_output_{int(time.time())}"
 
-            conn.execute(f"CREATE TABLE {quote_id(sql_name)} AS SELECT * FROM {quote_id('final_merged')}")
+            source_columns = read_table_columns(conn, "final_merged")
+            if not source_columns:
+                return jsonify({"error": "Merged data has no public columns"}), 400
+            conn.execute(
+                f"CREATE TABLE {quote_id(sql_name)} AS SELECT "
+                f"{public_projection(source_columns)}, "
+                f"CAST(ROW_NUMBER() OVER () AS BIGINT) AS {quote_id('__row_id')} "
+                f"FROM {quote_id('final_merged')}"
+            )
             conn.commit()
             register_table(conn, group_id, sql_name)
 
@@ -467,7 +488,7 @@ def download_csv():
             return jsonify({"error": "No merged data found"}), 404
 
         def _generate():
-            columns = read_table_columns(conn, target_table)
+            columns = _export_columns(conn, target_table)
             buf = io.StringIO()
             writer = csv.writer(buf)
             writer.writerow(columns)
@@ -475,7 +496,7 @@ def download_csv():
             buf.seek(0)
             buf.truncate()
 
-            cursor = conn.execute(f"SELECT * FROM {quote_id(target_table)}")
+            cursor = conn.execute(f"SELECT {public_projection(columns)} FROM {quote_id(target_table)}")
             while True:
                 rows = cursor.fetchmany(2000)
                 if not rows:
@@ -499,11 +520,11 @@ def download_csv():
 
 def _table_to_xlsx_bytes(conn, table_name: str) -> bytes:
     """Write a SQLite table into an in-memory xlsx buffer and return bytes."""
-    columns = read_table_columns(conn, table_name)
+    columns = _export_columns(conn, table_name)
     wb = Workbook(write_only=True)
     ws = wb.create_sheet()
     ws.append(columns)
-    cursor = conn.execute(f"SELECT * FROM {quote_id(table_name)}")
+    cursor = conn.execute(f"SELECT {public_projection(columns)} FROM {quote_id(table_name)}")
     while True:
         rows = cursor.fetchmany(2000)
         if not rows:
@@ -568,7 +589,7 @@ def download_step_csv():
         filename = f"step_merge_{safe_name}.csv"
 
         def _generate():
-            columns = read_table_columns(conn, step_table)
+            columns = _export_columns(conn, step_table)
             buf = io.StringIO()
             writer = csv.writer(buf)
             writer.writerow(columns)
@@ -576,7 +597,7 @@ def download_step_csv():
             buf.seek(0)
             buf.truncate()
 
-            cursor = conn.execute(f"SELECT * FROM {quote_id(step_table)}")
+            cursor = conn.execute(f"SELECT {public_projection(columns)} FROM {quote_id(step_table)}")
             while True:
                 rows = cursor.fetchmany(2000)
                 if not rows:
@@ -702,11 +723,11 @@ def download_all_csv():
                 tbl = entry["table_name"]
                 if not table_exists(conn, tbl):
                     continue
-                columns = read_table_columns(conn, tbl)
+                columns = _export_columns(conn, tbl)
                 csv_buf = io.StringIO()
                 writer = csv.writer(csv_buf)
                 writer.writerow(columns)
-                cursor = conn.execute(f"SELECT * FROM {quote_id(tbl)}")
+                cursor = conn.execute(f"SELECT {public_projection(columns)} FROM {quote_id(tbl)}")
                 while True:
                     rows = cursor.fetchmany(2000)
                     if not rows:
@@ -864,11 +885,11 @@ def _read_version_csv(conn, version: int | None) -> tuple[bytes, str]:
     if not table_exists(conn, target_table):
         raise ValueError("No merged data found")
 
-    columns = read_table_columns(conn, target_table)
+    columns = _export_columns(conn, target_table)
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(columns)
-    cursor = conn.execute(f"SELECT * FROM {quote_id(target_table)}")
+    cursor = conn.execute(f"SELECT {public_projection(columns)} FROM {quote_id(target_table)}")
     while True:
         rows = cursor.fetchmany(2000)
         if not rows:

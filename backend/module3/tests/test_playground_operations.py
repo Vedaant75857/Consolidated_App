@@ -508,6 +508,86 @@ def test_pivot_rejects_noncanonical_value_field_alias(playground_session):
     assert pivot.get_json()["code"] == "VALIDATION_ERROR"
 
 
+@pytest.mark.parametrize(
+    ("row_fields", "value_fields", "expected_field"),
+    [
+        (["COL_0"] * 6, [{"columnKey": "COL_1", "aggregation": "sum"}], "rowFields"),
+        ([], [{"columnKey": "COL_1", "aggregation": "count"}] * 6, "valueFields"),
+    ],
+)
+def test_pivot_rejects_row_and_value_fields_above_five(
+    playground_session,
+    row_fields,
+    value_fields,
+    expected_field,
+):
+    session_id, app = playground_session
+    pivot = _post(
+        app,
+        "/api/preview/operation",
+        session_id,
+        op="pivot",
+        params={
+            "rowFields": row_fields,
+            "columnFields": [],
+            "valueFields": value_fields,
+        },
+    )
+
+    assert pivot.status_code == 400
+    body = pivot.get_json()
+    assert body["code"] == "VALIDATION_ERROR"
+    assert body["details"]["field"] == expected_field
+
+
+def test_pivot_rejects_unsupported_aggregation(playground_session):
+    session_id, app = playground_session
+    pivot = _post(
+        app,
+        "/api/preview/operation",
+        session_id,
+        op="pivot",
+        params={
+            "rowFields": [],
+            "columnFields": [],
+            "valueFields": [{"columnKey": "COL_1", "aggregation": "median"}],
+        },
+    )
+
+    assert pivot.status_code == 400
+    assert pivot.get_json()["code"] == "VALIDATION_ERROR"
+
+
+def test_pivot_allows_aggregate_only_but_requires_rows_for_column_fields(playground_session):
+    session_id, app = playground_session
+    aggregate_only = _post(
+        app,
+        "/api/preview/operation",
+        session_id,
+        op="pivot",
+        params={
+            "rowFields": [],
+            "columnFields": [],
+            "valueFields": [{"columnKey": "COL_1", "aggregation": "sum"}],
+        },
+    )
+    with_columns = _post(
+        app,
+        "/api/preview/operation",
+        session_id,
+        op="pivot",
+        params={
+            "rowFields": [],
+            "columnFields": ["COL_2"],
+            "valueFields": [{"columnKey": "COL_1", "aggregation": "sum"}],
+        },
+    )
+
+    assert aggregate_only.status_code == 200
+    assert with_columns.status_code == 400
+    assert with_columns.get_json()["code"] == "VALIDATION_ERROR"
+
+
 def test_pivot_supports_multiple_value_fields(playground_session):
     session_id, app = playground_session
     pivot = _post(

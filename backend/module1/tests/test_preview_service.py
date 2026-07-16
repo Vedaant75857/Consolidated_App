@@ -404,8 +404,8 @@ def test_column_delete_blocks_last_column(preview_session):
         preview_ops.column_delete(conn, table_key, "AMOUNT")
 
 
-def test_rows_delete_rebuilds_row_ids(preview_session):
-    """rows_delete removes rows and renumbers __row_id sequentially."""
+def test_rows_delete_preserves_surviving_row_ids(preview_session):
+    """rows_delete removes rows without changing immutable survivor identities."""
     conn, table_key = preview_session
 
     preview_ops.get_preview_data(conn, table_key)
@@ -413,8 +413,66 @@ def test_rows_delete_rebuilds_row_ids(preview_session):
 
     assert result["totalRows"] == 3
     row_ids = [r["__row_id"] for r in result["rows"]]
-    assert row_ids == [1, 2, 3]
+    assert row_ids == [1, 3, 4]
     assert all(r["SUPPLIER NAME"] != "Beta Co" for r in result["rows"])
+
+
+def test_preview_mutations_reject_internal_identity(preview_session):
+    """No public column operation may mutate, rename, or reference __row_id."""
+    conn, table_key = preview_session
+    preview_ops.get_preview_data(conn, table_key)
+
+    rejected = [
+        lambda: preview_ops.cell_edit(conn, table_key, 1, "__row_id", 99),
+        lambda: preview_ops.column_rename(conn, table_key, "__row_id", "Identity"),
+        lambda: preview_ops.column_rename(conn, table_key, "AMOUNT", "__source_table"),
+        lambda: preview_ops.column_delete(conn, table_key, "__row_id"),
+        lambda: preview_ops.column_reorder(conn, table_key, ["__row_id"]),
+        lambda: preview_ops.column_change_type(conn, table_key, "__row_id", "TEXT"),
+        lambda: preview_ops.add_calculated_column(
+            conn, table_key, "__row_id", "[AMOUNT]", "DOUBLE",
+        ),
+        lambda: preview_ops.add_calculated_column(
+            conn, table_key, "Identity Copy", "[__row_id]", "INTEGER",
+        ),
+        lambda: preview_ops.create_pivot(
+            conn,
+            table_key,
+            ["__row_id"],
+            [],
+            [{"field": "AMOUNT", "aggregation": "sum"}],
+        ),
+    ]
+    for operation in rejected:
+        with pytest.raises(ValueError):
+            operation()
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "__row_id",
+        "CAST(__row_id AS VARCHAR)",
+        "TRIM(_source_table)",
+        'CAST("__row_id" AS VARCHAR)',
+    ],
+)
+def test_calculated_expression_rejects_bare_internal_identifiers(
+    preview_session,
+    expression,
+):
+    conn, table_key = preview_session
+    preview_ops.get_preview_data(conn, table_key)
+
+    with pytest.raises(ValueError, match="internal column"):
+        preview_ops.add_calculated_column(
+            conn, table_key, "Safe Output", expression, "TEXT",
+        )
+
+
+def test_calculated_expression_allows_internal_text_literal():
+    parsed = preview_ops._parse_calc_expression("'__row_id'", ["Amount"])
+    assert parsed == "'__row_id'"
 
 
 def test_create_pivot_sum_on_varchar_column(varchar_preview_session):

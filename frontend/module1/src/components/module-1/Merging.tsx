@@ -22,9 +22,9 @@ import {
   Lightbulb,
 } from "lucide-react";
 import { SurfaceCard, PrimaryButton, FillBar, itemVariants } from "../common/ui";
-import type { LogEntry } from "./StatusLog";
 import type { MergeOutput } from "../../types";
 import MergeReport from "./MergeReport";
+import { isReservedProvenanceColumn, sanitizeReservedRow } from "../../utils/reservedColumns";
 
 export interface MergeDedupConfig {
   strategy: "first" | "spend" | "date";
@@ -44,7 +44,6 @@ export interface MergingProps {
   setAiLoading: (v: boolean) => void;
   setLoadingMessage: (v: string) => void;
   setError: (v: string | null) => void;
-  addLog: (stepName: string, type: LogEntry["type"], message: string) => void;
   mergeBaseGroupId: string;
   setMergeBaseGroupId: (v: string) => void;
   mergeBaseRecommendation: any;
@@ -94,9 +93,12 @@ const BADGE_COLOR_MAP: Record<string, string> = {
 const SYSTEM_COLUMNS_TO_EXCLUDE = new Set([
   "File Name", "file_name", "FILE_NAME",
   "RecordID", "record_id", "recordid", "RECORD_ID", "RECORDID",
-  "source_table", "Source Table", "__source_table", "_source_table",
   "__source", "_source", "source",
 ]);
+
+function isExcludedSystemColumn(column: string): boolean {
+  return SYSTEM_COLUMNS_TO_EXCLUDE.has(column) || isReservedProvenanceColumn(column);
+}
 
 function getStatColor(metric: string, value: number): string {
   if (metric === "match_rate") return value >= 80 ? "text-emerald-600" : value >= 50 ? "text-amber-600" : "text-red-600";
@@ -139,7 +141,7 @@ export default function Merging(props: MergingProps) {
   const {
     sessionId, apiKey, step, setStep,
     groupSchema, groupNameMap, loading,
-    setLoading, setAiLoading, setLoadingMessage, setError, addLog,
+    setLoading, setAiLoading, setLoadingMessage, setError,
     mergeBaseGroupId, setMergeBaseGroupId,
     mergeBaseRecommendation, setMergeBaseRecommendation,
     mergeSourceGroupId, setMergeSourceGroupId,
@@ -224,23 +226,20 @@ export default function Merging(props: MergingProps) {
       const data = await res.json();
       if (data.prerequisite_missing) {
         setPrerequisiteMissing(true);
-        addLog("Merge", "error", data.error || "No table groups found. Please complete earlier steps first.");
         return;
       }
       setMergeBaseRecommendation(data);
       if (data.recommended && !mergeBaseGroupId) {
         setMergeBaseGroupId(data.recommended);
       }
-      addLog("Merge", "success", `Recommended base: ${groupNameMap[data.recommended] || data.recommended}`);
     } catch (err: any) {
-      addLog("Merge", "error", err.message);
       setError(err.message);
     } finally {
       setRecommendLoading(false);
       setAiLoading(false);
       setLoadingMessage("");
     }
-  }, [sessionId, apiKey, groupSchema, mergeBaseGroupId, groupNameMap, addLog, setAiLoading, setLoadingMessage, setMergeBaseGroupId, setMergeBaseRecommendation, setError]);
+  }, [sessionId, apiKey, groupSchema, mergeBaseGroupId, setAiLoading, setLoadingMessage, setMergeBaseGroupId, setMergeBaseRecommendation, setError]);
 
   useEffect(() => {
     if (step === 6 && !mergeBaseRecommendation && groupSchema.length > 0) {
@@ -306,23 +305,25 @@ export default function Merging(props: MergingProps) {
       if (data.error) {
         throw new Error(data.error);
       }
-      setKeySuggestions(data.suggestions || []);
-      addLog("Merge", "info", `AI suggested ${data.suggestions?.length || 0} join key combinations`);
+      const safeSuggestions = (data.suggestions || []).filter((suggestion: any) =>
+        (suggestion.base_columns || []).every((column: string) => !isExcludedSystemColumn(column))
+        && (suggestion.source_columns || []).every((column: string) => !isExcludedSystemColumn(column)),
+      );
+      setKeySuggestions(safeSuggestions);
     } catch (err: any) {
       setError(err.message);
-      addLog("Merge", "error", err.message);
       setKeySuggestions([]);
     } finally {
       setSuggestionsLoading(false);
       setAiLoading(false);
       setLoadingMessage("");
     }
-  }, [sessionId, mergeBaseGroupId, mergeSourceGroupId, apiKey, addLog, setError, setAiLoading, setLoadingMessage]);
+  }, [sessionId, mergeBaseGroupId, mergeSourceGroupId, apiKey, setError, setAiLoading, setLoadingMessage]);
 
   const applySuggestion = useCallback((suggestion: any) => {
     // Convert suggestion to key pairs format
-    const baseCols: string[] = suggestion.base_columns || [];
-    const sourceCols: string[] = suggestion.source_columns || [];
+    const baseCols: string[] = (suggestion.base_columns || []).filter((column: string) => !isExcludedSystemColumn(column));
+    const sourceCols: string[] = (suggestion.source_columns || []).filter((column: string) => !isExcludedSystemColumn(column));
 
     if (baseCols.length !== sourceCols.length) {
       setError("Invalid suggestion: mismatched column counts");
@@ -336,8 +337,7 @@ export default function Merging(props: MergingProps) {
 
     setMergeSelectedKeys(newKeyPairs);
     setShowKeySuggestions(false);
-    addLog("Merge", "success", `Applied AI suggestion: ${baseCols.join(" + ")} ↔ ${sourceCols.join(" + ")}`);
-  }, [setMergeSelectedKeys, addLog, setError]);
+  }, [setMergeSelectedKeys, setError]);
 
   /**
    * Get aligned columns for both base and source tables.
@@ -349,8 +349,8 @@ export default function Merging(props: MergingProps) {
     commonCols: Array<{ base_col: string; source_col: string }>
   ): { baseColumns: string[]; sourceColumns: string[] } {
     // Filter out system columns first
-    const filteredBaseCols = baseCols.filter(col => !SYSTEM_COLUMNS_TO_EXCLUDE.has(col));
-    const filteredSourceCols = sourceCols.filter(col => !SYSTEM_COLUMNS_TO_EXCLUDE.has(col));
+    const filteredBaseCols = baseCols.filter(col => !isExcludedSystemColumn(col));
+    const filteredSourceCols = sourceCols.filter(col => !isExcludedSystemColumn(col));
 
     // Build map of common columns
     const commonByBaseLocal = new Map<string, { base_col: string; source_col: string }>();
@@ -410,12 +410,14 @@ export default function Merging(props: MergingProps) {
         throw new Error(errMsg);
       }
       const data = await res.json();
-      const commonCols = data.common_columns || [];
+      const commonCols = (data.common_columns || []).filter((pair: any) =>
+        !isExcludedSystemColumn(pair?.base_col) && !isExcludedSystemColumn(pair?.source_col),
+      );
       setMergeCommonColumns(commonCols);
 
       // Filter system columns
-      const baseCols = (data.base_columns || []).filter((c: string) => !SYSTEM_COLUMNS_TO_EXCLUDE.has(c));
-      const sourceCols = (data.source_columns || []).filter((c: string) => !SYSTEM_COLUMNS_TO_EXCLUDE.has(c));
+      const baseCols = (data.base_columns || []).filter((c: string) => !isExcludedSystemColumn(c));
+      const sourceCols = (data.source_columns || []).filter((c: string) => !isExcludedSystemColumn(c));
       setAllBaseColumns(baseCols);
       setAllSourceColumns(sourceCols);
 
@@ -424,19 +426,14 @@ export default function Merging(props: MergingProps) {
       setAlignedBaseColumns(aligned.baseColumns);
       setAlignedSourceColumns(aligned.sourceColumns);
 
-      setBaseColClasses(data.base_column_classes || {});
-      setSourceColClasses(data.source_column_classes || {});
+      setBaseColClasses(Object.fromEntries(Object.entries(data.base_column_classes || {}).filter(([column]) => !isExcludedSystemColumn(column))));
+      setSourceColClasses(Object.fromEntries(Object.entries(data.source_column_classes || {}).filter(([column]) => !isExcludedSystemColumn(column))));
 
       if (data.base_preview) {
         // Filter system columns from preview rows
         const filteredBaseRows = data.base_preview.rows.map((row: Record<string, any>) => {
-          const filtered: Record<string, any> = {};
-          for (const key of Object.keys(row)) {
-            if (!SYSTEM_COLUMNS_TO_EXCLUDE.has(key)) {
-              filtered[key] = row[key];
-            }
-          }
-          return filtered;
+          const filtered = sanitizeReservedRow(row);
+          return Object.fromEntries(Object.entries(filtered).filter(([key]) => !isExcludedSystemColumn(key)));
         });
         setBasePreview({ columns: aligned.baseColumns, rows: filteredBaseRows });
         lastBasePreviewId.current = mergeBaseGroupId;
@@ -444,25 +441,18 @@ export default function Merging(props: MergingProps) {
       if (data.source_preview) {
         // Filter system columns from preview rows
         const filteredSourceRows = data.source_preview.rows.map((row: Record<string, any>) => {
-          const filtered: Record<string, any> = {};
-          for (const key of Object.keys(row)) {
-            if (!SYSTEM_COLUMNS_TO_EXCLUDE.has(key)) {
-              filtered[key] = row[key];
-            }
-          }
-          return filtered;
+          const filtered = sanitizeReservedRow(row);
+          return Object.fromEntries(Object.entries(filtered).filter(([key]) => !isExcludedSystemColumn(key)));
         });
         setSourcePreview({ columns: aligned.sourceColumns, rows: filteredSourceRows });
       }
-      addLog("Merge", "info", `Found ${commonCols.length} common column(s) (system columns excluded)`);
     } catch (err: any) {
       setError(err.message);
-      addLog("Merge", "error", err.message);
     } finally {
       setColumnsLoading(false);
       setLoadingMessage("");
     }
-  }, [sessionId, mergeBaseGroupId, mergeSourceGroupId, apiKey, addLog, setError, setLoadingMessage, setMergeCommonColumns]);
+  }, [sessionId, mergeBaseGroupId, mergeSourceGroupId, apiKey, setError, setLoadingMessage, setMergeCommonColumns]);
 
   useEffect(() => {
     if (mergeBaseGroupId && mergeSourceGroupId && step === 6) {
@@ -572,7 +562,6 @@ export default function Merging(props: MergingProps) {
     setMergeProgress(5);
     setMergeProgressMessage("Preparing merge...");
     setError(null);
-    addLog("Merge", "info", `Executing merge for source: ${groupNameMap[mergeSourceGroupId] || mergeSourceGroupId}...`);
     try {
       const res = await fetch("/api/merge/execute", {
         method: "POST",
@@ -653,7 +642,6 @@ export default function Merging(props: MergingProps) {
                 }
               }
 
-              addLog("Merge", "success", `Merged: ${data.result.merge_log?.rows || 0} rows, ${data.result.merge_log?.columns_pulled?.length || 0} columns pulled`);
             } else if (data.stage === "error") {
               throw new Error(data.message);
             }
@@ -665,13 +653,12 @@ export default function Merging(props: MergingProps) {
       reader.releaseLock();
     } catch (err: any) {
       setError(err.message);
-      addLog("Merge", "error", err.message);
     } finally {
       setExecutingMerge(false);
       setMergeProgress(0);
       setMergeProgressMessage("");
     }
-  }, [sessionId, mergeBaseGroupId, mergeSourceGroupId, mergeSelectedKeys, mergePullColumns, groupNameMap, addLog, setError, setMergeValidationReport, setMergeExecuteResult, setMergeHistory, setMergeOutputs, setOutputsPanelOpen, onRegisterMergedGroup]);
+  }, [sessionId, mergeBaseGroupId, mergeSourceGroupId, mergeSelectedKeys, mergePullColumns, groupNameMap, setError, setMergeValidationReport, setMergeExecuteResult, setMergeHistory, setMergeOutputs, setOutputsPanelOpen, onRegisterMergedGroup]);
 
   // --- Skip Merge ---
 
@@ -680,7 +667,6 @@ export default function Merging(props: MergingProps) {
     const baseId = mergeBaseGroupId || groupSchema[0].group_id;
     setAiLoading(true);
     setLoadingMessage("Using single table as final file...");
-    addLog("Merge", "info", "Skipping merge — using single table as final file.");
     try {
       const res = await fetch("/api/merge/skip", {
         method: "POST",
@@ -710,16 +696,14 @@ export default function Merging(props: MergingProps) {
         onRegisterMergedGroup(data.group_id, data.group_name, data.group_row);
       }
 
-      addLog("Merge", "success", `Final file: ${data.rows} rows × ${data.cols} columns (no merge)`);
       setStep(7);
     } catch (err: any) {
       setError(err.message || "Skip merge failed");
-      addLog("Merge", "error", err.message || "Skip merge failed");
     } finally {
       setAiLoading(false);
       setLoadingMessage("");
     }
-  }, [sessionId, groupSchema, mergeBaseGroupId, groupNameMap, addLog, setError, setAiLoading, setLoadingMessage, setMergeResult, setMergeHistory, setStep, setMergeOutputs, setOutputsPanelOpen, onRegisterMergedGroup]);
+  }, [sessionId, groupSchema, mergeBaseGroupId, groupNameMap, setError, setAiLoading, setLoadingMessage, setMergeResult, setMergeHistory, setStep, setMergeOutputs, setOutputsPanelOpen, onRegisterMergedGroup]);
 
   // --- Post-merge actions ---
 
@@ -737,9 +721,8 @@ export default function Merging(props: MergingProps) {
     setMergePullColumns([]);
     setMergeSimulation(null);
     setPendingBaseCols([]);
-    addLog("Merge", "info", "Redo merge — deleted output, returning to key selection.");
     setLoading(false);
-  }, [mergeExecuteResult, onDeleteMergeOutput, addLog, setLoading, setMergeExecuteResult, setMergeValidationReport, setMergeSelectedKeys, setMergePullColumns, setMergeSimulation]);
+  }, [mergeExecuteResult, onDeleteMergeOutput, setLoading, setMergeExecuteResult, setMergeValidationReport, setMergeSelectedKeys, setMergePullColumns, setMergeSimulation]);
 
   const handlePerformAnotherMerge = useCallback(() => {
     setMergeExecuteResult(null);
@@ -756,9 +739,8 @@ export default function Merging(props: MergingProps) {
     setSourcePreview(null);
     setBaseColClasses({});
     setSourceColClasses({});
-    addLog("Merge", "info", "Starting another merge — previous outputs preserved.");
     setTimeout(() => fetchRecommendation(), 0);
-  }, [addLog, setMergeExecuteResult, setMergeValidationReport, setMergeSimulation, setMergeSelectedKeys, setMergePullColumns, setMergeBaseGroupId, setMergeSourceGroupId, setMergeBaseRecommendation, setMergeCommonColumns, fetchRecommendation]);
+  }, [setMergeExecuteResult, setMergeValidationReport, setMergeSimulation, setMergeSelectedKeys, setMergePullColumns, setMergeBaseGroupId, setMergeSourceGroupId, setMergeBaseRecommendation, setMergeCommonColumns, fetchRecommendation]);
 
   // ===================== COLUMN COLOR HELPERS =====================
 
@@ -883,7 +865,7 @@ export default function Merging(props: MergingProps) {
 
   // Helper to reorder columns - common columns first (legacy, filters system columns)
   const getOrderedColumns = useCallback((columns: string[], side: "base" | "source") => {
-    const filtered = columns.filter(col => !SYSTEM_COLUMNS_TO_EXCLUDE.has(col));
+    const filtered = columns.filter(col => !isExcludedSystemColumn(col));
     const commonCols = filtered.filter(col =>
       side === "base" ? commonByBase.has(col) : commonBySource.has(col)
     );
@@ -1668,7 +1650,6 @@ export default function Merging(props: MergingProps) {
                   onClick={() => {
                     setMergeDedupConfig(localDedupConfig);
                     setShowDedupConfigPanel(false);
-                    addLog("Merge", "info", `Deduplication strategy set: ${localDedupConfig.strategy}${localDedupConfig.valueColumn ? ` (${localDedupConfig.valueColumn}, keep ${localDedupConfig.keep})` : ""}`);
                   }}
                   disabled={localDedupConfig.strategy !== "first" && !localDedupConfig.valueColumn}
                   className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-neutral-300 disabled:cursor-not-allowed text-white text-xs font-medium rounded-lg transition-colors"

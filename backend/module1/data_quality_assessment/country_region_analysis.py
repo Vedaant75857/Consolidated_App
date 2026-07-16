@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from shared.db import DuckDBConnection, read_table_columns
+from shared.db import DuckDBConnection, filter_data_columns, read_table_columns
 
 from .column_resolver import find_country_columns, resolve_all_columns
 from .value_distribution import compute_value_distribution_table, merge_identified_columns
@@ -47,7 +47,7 @@ def run_country_region_analysis_sql(
     Returns:
         JSON-serialisable dict with ``countryTable`` and ``regionTable``.
     """
-    available = set(read_table_columns(conn, table_name))
+    available = set(filter_data_columns(read_table_columns(conn, table_name)))
 
     country_cols = merge_identified_columns(
         identified_country_columns, available, find_country_columns,

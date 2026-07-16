@@ -14,10 +14,13 @@ if _backend_dir not in sys.path:
 from shared.ai import call_ai_json
 from shared.db import (
     DuckDBConnection,
+    INTERNAL_COLUMNS,
     all_registered_tables,
     column_stats,
     get_meta,
     get_overlap_sql,
+    filter_data_columns,
+    is_reserved_provenance_column,
     lookup_sql_name,
     quote_id,
     read_table_columns,
@@ -195,7 +198,11 @@ def run_append_mapping(
 
         if len(group_tables) < 2:
             single_sql = lookup_sql_name(conn, group_tables[0]) if group_tables else None
-            cols = read_table_columns(conn, single_sql) if single_sql else []
+            # Exclude __row_id / reserved provenance from identity maps.
+            cols = (
+                filter_data_columns(read_table_columns(conn, single_sql))
+                if single_sql else []
+            )
             mappings.append({
                 "group_id": group_id,
                 "canonical_schema": cols,
@@ -234,9 +241,94 @@ def run_append_execute(
     append_group_mappings: list[dict],
     unassigned_tables: list[str] | None,
 ) -> dict[str, Any]:
+    if not isinstance(append_group_mappings, list):
+        raise ValueError("appendGroupMappings must be a list")
+    if unassigned_tables is not None and not isinstance(unassigned_tables, list):
+        raise ValueError("unassignedTables must be a list")
+
+    seen_group_ids: set[str] = set()
+    output_names: set[str] = set()
+    validated_groups: list[tuple[dict, str, list[str]]] = []
+    for gm in append_group_mappings:
+        if not isinstance(gm, dict):
+            raise ValueError("Each append group mapping must be an object")
+        group_id = str(gm.get("group_id") or "").strip()
+        if not group_id or group_id in seen_group_ids:
+            raise ValueError(f"Invalid or duplicate append group_id: {group_id!r}")
+        seen_group_ids.add(group_id)
+        canonical = filter_data_columns([
+            str(c).strip() for c in (gm.get("canonical_schema") or [])
+            if str(c).strip() and not is_reserved_provenance_column(c)
+        ])
+        if not canonical or len({c.casefold() for c in canonical}) != len(canonical):
+            raise ValueError(f"Canonical schema for {group_id} must be non-empty and unique")
+        per_table = gm.get("per_table") or []
+        if not isinstance(per_table, list):
+            raise ValueError(f"per_table for {group_id} must be a list")
+        seen_tables: set[str] = set()
+        for entry in per_table:
+            if not isinstance(entry, dict) or not str(entry.get("table_key") or "").strip():
+                raise ValueError(f"Invalid table mapping in {group_id}")
+            table_key = str(entry["table_key"])
+            if table_key in seen_tables:
+                raise ValueError(f"Duplicate table_key {table_key!r} in {group_id}")
+            seen_tables.add(table_key)
+            mapping = entry.get("column_mapping") or {}
+            if not isinstance(mapping, dict):
+                raise ValueError(f"column_mapping for {table_key} must be an object")
+            # Ignore internal/reserved keys left in stale mappings.
+            unknown_targets = [
+                k for k in mapping
+                if k not in canonical
+                and k not in INTERNAL_COLUMNS
+                and not is_reserved_provenance_column(k)
+            ]
+            if unknown_targets:
+                raise ValueError(f"Unknown canonical mapping targets for {table_key}: {unknown_targets}")
+            src_sql = lookup_sql_name(conn, table_key)
+            if not src_sql or not table_exists(conn, src_sql):
+                raise ValueError(f"Source table not found for append mapping: {table_key}")
+            source_columns = set(read_table_columns(conn, src_sql))
+            # Skip ignored keys; reject real targets that map from internal/reserved cols.
+            invalid_sources = [
+                value for key, value in mapping.items()
+                if value
+                and key not in INTERNAL_COLUMNS
+                and not is_reserved_provenance_column(key)
+                and (
+                    str(value) not in source_columns
+                    or str(value) in INTERNAL_COLUMNS
+                    or is_reserved_provenance_column(value)
+                )
+            ]
+            if invalid_sources:
+                raise ValueError(f"Invalid source mappings for {table_key}: {invalid_sources}")
+        output_name = safe_table_name("appended", group_id)
+        if output_name.casefold() in output_names:
+            raise ValueError(f"Append output name collision for group {group_id}")
+        output_names.add(output_name.casefold())
+        validated_groups.append((gm, group_id, canonical))
+
+    seen_unassigned: set[str] = set()
+    for table_key_raw in unassigned_tables or []:
+        if not isinstance(table_key_raw, str) or not table_key_raw.strip():
+            raise ValueError("Each unassigned table key must be non-blank")
+        table_key = table_key_raw.strip()
+        if table_key in seen_unassigned:
+            raise ValueError(f"Duplicate unassigned table key: {table_key}")
+        seen_unassigned.add(table_key)
+        source_sql = lookup_sql_name(conn, table_key)
+        if not source_sql or not table_exists(conn, source_sql):
+            raise ValueError(f"Source table not found for unassigned append: {table_key}")
+        output_name = safe_table_name("appended", table_key)
+        if output_name.casefold() in output_names:
+            raise ValueError(f"Append output name collision for table {table_key}")
+        output_names.add(output_name.casefold())
+
     append_log: list[dict] = []
     group_schema: list[dict] = []
     append_report: list[dict] = []
+    swap_plans: list[tuple[str, str, str]] = []
 
     append_groups = get_meta(conn, "appendGroups") or []
     group_name_lookup: dict[str, str] = {
@@ -244,19 +336,19 @@ def run_append_execute(
         for g in append_groups if g.get("group_name")
     }
 
-    for gm in append_group_mappings:
-        group_id = gm.get("group_id")
-        canonical: list[str] = list(gm.get("canonical_schema") or [])
+    for group_index, (gm, group_id, canonical) in enumerate(validated_groups):
         per_table = {p["table_key"]: p for p in (gm.get("per_table") or []) if isinstance(p, dict) and p.get("table_key")}
 
-        all_columns = [*canonical, "_source_table"]
         appended_sql = safe_table_name("appended", str(group_id))
+        temp_sql = f"__append_build_{group_index}"
 
-        col_defs = ", ".join(f"{quote_id(c)} TEXT" for c in all_columns)
-        conn.execute(f"DROP TABLE IF EXISTS {quote_id(appended_sql)}")
-        conn.execute(f"CREATE TABLE {quote_id(appended_sql)} ({col_defs})")
+        col_defs = ", ".join(f"{quote_id(c)} TEXT" for c in canonical)
+        col_defs += f", {quote_id('__row_id')} BIGINT"
+        conn.execute(f"DROP TABLE IF EXISTS {quote_id(temp_sql)}")
+        conn.execute(f"CREATE TABLE {quote_id(temp_sql)} ({col_defs})")
 
         table_row_counts: dict[str, int] = {}
+        row_id_offset = 0
 
         for p in gm.get("per_table") or []:
             t = p.get("table_key") if isinstance(p, dict) else None
@@ -270,52 +362,70 @@ def run_append_execute(
 
             table_row_counts[t] = table_row_count(conn, src_sql)
             mapping = (per_table.get(t) or {}).get("column_mapping") or {}
+            source_columns = set(read_table_columns(conn, src_sql))
 
             select_parts = []
             for c in canonical:
                 src_col = mapping.get(c)
-                select_parts.append(quote_id(str(src_col)) if src_col else "NULL")
-            select_parts.append(f"'{t.replace(chr(39), chr(39)+chr(39))}'")
+                valid_source = (
+                    str(src_col) if src_col and str(src_col) in source_columns
+                    and str(src_col) not in INTERNAL_COLUMNS
+                    and not is_reserved_provenance_column(src_col) else None
+                )
+                select_parts.append(quote_id(valid_source) if valid_source else "NULL")
 
-            dest_cols = ", ".join(quote_id(c) for c in all_columns)
-            conn.execute(f"INSERT INTO {quote_id(appended_sql)} ({dest_cols}) SELECT {', '.join(select_parts)} FROM {quote_id(src_sql)}")
+            dest_cols = ", ".join(quote_id(c) for c in [*canonical, "__row_id"])
+            conn.execute(
+                f"INSERT INTO {quote_id(temp_sql)} ({dest_cols}) "
+                f"SELECT {', '.join(select_parts)}, "
+                f"CAST(ROW_NUMBER() OVER () + ? AS BIGINT) FROM {quote_id(src_sql)}",
+                (row_id_offset,),
+            )
+            row_id_offset += table_row_counts[t]
 
-        conn.commit()
-        register_table(conn, str(group_id), appended_sql)
+        swap_plans.append((temp_sql, appended_sql, str(group_id)))
 
-        appended_rows = table_row_count(conn, appended_sql)
-        append_log.append({"stage": "append", "group_id": group_id, "status": "ok", "out_shape": [appended_rows, len(all_columns)]})
+        appended_rows = table_row_count(conn, temp_sql)
+        append_log.append({"stage": "append", "group_id": group_id, "status": "ok", "out_shape": [appended_rows, len(canonical)]})
         expected = sum(table_row_counts.values())
 
         group_schema.append({
             "group_id": group_id,
             "group_name": group_name_lookup.get(str(group_id), ""),
             "rows": appended_rows,
-            "cols": len(all_columns),
+            "cols": len(canonical),
             "columns_preview": ", ".join(canonical[:60]) + (" ..." if len(canonical) > 60 else ""),
             "columns": canonical,
         })
         append_report.append({
             "group_id": group_id,
             "total_rows": appended_rows,
-            "total_cols": len(all_columns),
+            "total_cols": len(canonical),
             "tables_detail": [{"table_key": tk, "rows_contributed": rc} for tk, rc in table_row_counts.items()],
+            "provenance": {"kind": "append_contribution", "tables": dict(table_row_counts)},
             "expected_total_rows": expected,
             "row_integrity": appended_rows == expected,
-            "column_stats": column_stats(conn, appended_sql, all_columns),
+            "column_stats": column_stats(conn, temp_sql, canonical),
         })
 
-    for t in (unassigned_tables or []):
+    for standalone_index, t in enumerate(unassigned_tables or []):
         src_sql = lookup_sql_name(conn, t)
         if not src_sql or not table_exists(conn, src_sql) or table_row_count(conn, src_sql) == 0:
             continue
-        cols = read_table_columns(conn, src_sql)
+        cols = filter_data_columns(read_table_columns(conn, src_sql))
         n_rows = table_row_count(conn, src_sql)
         appended_sql = safe_table_name("appended", t)
-        conn.execute(f"DROP TABLE IF EXISTS {quote_id(appended_sql)}")
-        conn.execute(f"CREATE TABLE {quote_id(appended_sql)} AS SELECT * FROM {quote_id(src_sql)}")
-        conn.commit()
-        register_table(conn, t, appended_sql)
+        if not cols:
+            continue
+        temp_sql = f"__append_standalone_{standalone_index}"
+        conn.execute(f"DROP TABLE IF EXISTS {quote_id(temp_sql)}")
+        projection = ", ".join(quote_id(c) for c in cols)
+        conn.execute(
+            f"CREATE TABLE {quote_id(temp_sql)} AS "
+            f"SELECT {projection}, CAST(ROW_NUMBER() OVER () AS BIGINT) "
+            f"AS {quote_id('__row_id')} FROM {quote_id(src_sql)}"
+        )
+        swap_plans.append((temp_sql, appended_sql, t))
 
         group_schema.append({
             "group_id": t, "group_name": group_name_lookup.get(t, ""),
@@ -326,12 +436,29 @@ def run_append_execute(
         append_report.append({
             "group_id": t, "total_rows": n_rows, "total_cols": len(cols),
             "tables_detail": [{"table_key": t, "rows_contributed": n_rows}],
+            "provenance": {"kind": "append_contribution", "tables": {t: n_rows}},
             "expected_total_rows": n_rows, "row_integrity": True, "is_standalone": True,
-            "column_stats": column_stats(conn, appended_sql, cols),
+            "column_stats": column_stats(conn, temp_sql, cols),
         })
 
     group_schema.sort(key=lambda x: x.get("rows", 0), reverse=True)
-    set_meta(conn, "groupSchemaTableRows", group_schema)
-    set_meta(conn, "appendLog", append_log)
+    try:
+        conn.execute("BEGIN TRANSACTION")
+        for temp_sql, appended_sql, table_key in swap_plans:
+            conn.execute(f"DROP TABLE IF EXISTS {quote_id(appended_sql)}")
+            conn.execute(f"ALTER TABLE {quote_id(temp_sql)} RENAME TO {quote_id(appended_sql)}")
+            register_table(conn, table_key, appended_sql, commit=False)
+        set_meta(conn, "groupSchemaTableRows", group_schema, commit=False)
+        set_meta(conn, "appendLog", append_log, commit=False)
+        set_meta(conn, "appendReport", append_report, commit=False)
+        conn.execute("COMMIT")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        for temp_sql, _appended_sql, _table_key in swap_plans:
+            conn.execute(f"DROP TABLE IF EXISTS {quote_id(temp_sql)}")
+        raise
 
     return {"groupSchema": group_schema, "appendLog": append_log, "appendReport": append_report}

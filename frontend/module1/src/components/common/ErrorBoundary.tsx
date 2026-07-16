@@ -12,6 +12,14 @@ interface ErrorBoundaryState {
 }
 
 export default class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  // React's runtime package is present, but its declaration package is not part
+  // of this frontend's installed dependency tree. Keep these inherited members
+  // explicit so TypeScript can type-check the boundary without changing runtime
+  // behavior.
+  declare readonly props: Readonly<ErrorBoundaryProps>;
+  declare state: ErrorBoundaryState;
+  declare setState: (state: ErrorBoundaryState) => void;
+
   constructor(props: ErrorBoundaryProps) {
     super(props);
     this.state = { hasError: false, error: null };

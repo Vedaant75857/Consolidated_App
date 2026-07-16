@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from shared.db import DuckDBConnection, read_table_columns
+from shared.db import DuckDBConnection, filter_data_columns, read_table_columns
 
 from .column_resolver import find_currency_columns
 from .value_distribution import compute_value_distribution_table, merge_identified_columns
@@ -34,7 +34,7 @@ def run_currency_analysis_sql(
     Returns:
         JSON-serialisable dict with ``distributionTable``.
     """
-    available = set(read_table_columns(conn, table_name))
+    available = set(filter_data_columns(read_table_columns(conn, table_name)))
     columns = merge_identified_columns(
         identified_columns, available, find_currency_columns,
     )

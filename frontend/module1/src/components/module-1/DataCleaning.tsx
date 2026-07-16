@@ -268,7 +268,7 @@ export default function DataCleaning({
     if (!selectedGroup || stdAnalysisResults.length === 0) return;
     setStdApplyLoading(true);
     try {
-      const actionsList = Object.values(stdActions).filter((a) => a.operation !== "none");
+      const actionsList = (Object.values(stdActions) as StdAction[]).filter((action) => action.operation !== "none");
       await onApplyStandardize(selectedGroup, actionsList);
       setGroupPreviews((prev) => { const n = { ...prev }; delete n[selectedGroup!]; return n; });
       fetchGroupPreview(selectedGroup);
@@ -316,6 +316,7 @@ export default function DataCleaning({
   if (step !== 5) return null;
 
   const gn = (id: string) => groupNameMap[id] || id;
+  const hasApplicableStdAction = (Object.values(stdActions) as StdAction[]).some((action) => action.operation !== "none");
 
   const groupSidebar = (statusKey: "clean" | "dedup" | "standardize" | "concat") => (
     <div className="w-64 border-r border-neutral-100 dark:border-neutral-800 bg-neutral-50/30 dark:bg-neutral-800 overflow-y-auto shrink-0">
@@ -942,7 +943,7 @@ export default function DataCleaning({
                     </SecondaryButton>
                     <PrimaryButton
                       onClick={handleStdApply}
-                      disabled={stdAnalysisResults.length === 0 || stdApplyLoading || Object.values(stdActions).every((a) => a.operation === "none")}
+                      disabled={stdAnalysisResults.length === 0 || stdApplyLoading || !hasApplicableStdAction}
                       className="text-xs px-4 py-2"
                     >
                       {stdApplyLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}

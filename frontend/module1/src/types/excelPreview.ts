@@ -28,18 +28,25 @@ export interface PreviewSort {
   dir: "asc" | "desc";
 }
 
-export interface PreviewTableState {
-  tableKey: string;
+/** Successful response from POST /api/preview/state. */
+export interface PreviewStateResponse {
   columns: string[];
-  columnOrder: string[];
-  columnTypes?: Record<string, ColumnDataType>;
+  columnTypes: Record<string, ColumnDataType>;
   rows: Record<string, unknown>[];
   totalRows: number;
-  filters: PreviewFilter[];
-  sort: PreviewSort[];
-  search: string;
   offset: number;
   limit: number;
+}
+
+/** Backwards-compatible name for the server preview-state DTO. */
+export type PreviewTableState = PreviewStateResponse;
+
+export interface PreviewView {
+  offset?: number;
+  limit?: number;
+  search?: string;
+  filters?: PreviewFilter[];
+  sort?: PreviewSort[];
 }
 
 export interface PreviewOperationRequest {
@@ -59,18 +66,30 @@ export interface PreviewOperationRequest {
     | "undo"
     | "redo";
   params: Record<string, unknown>;
+  view?: PreviewView;
 }
 
 /** Data type options for column type change */
 export type ColumnDataType = "TEXT" | "INTEGER" | "DOUBLE" | "DATE" | "BOOLEAN";
 
 export interface PreviewOperationResult {
-  columns: string[];
+  ok: boolean;
+  columns?: string[];
   columnTypes?: Record<string, ColumnDataType>;
-  rows: Record<string, unknown>[];
-  totalRows: number;
-  applied: boolean;
+  rows?: Record<string, unknown>[];
+  totalRows?: number;
+  offset?: number;
+  limit?: number;
+  success?: boolean;
   message?: string;
+  newTableKey?: string;
+  tableName?: string;
+}
+
+export interface PreviewColumnValuesResponse {
+  values: string[];
+  hasBlanks: boolean;
+  totalDistinct: number;
 }
 
 export type ApplyTargetKind = "raw" | "group" | "merge_version" | "merge_group";

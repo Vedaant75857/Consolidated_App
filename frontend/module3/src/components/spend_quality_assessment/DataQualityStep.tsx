@@ -5,6 +5,7 @@ import ExecutiveSummary from "./ExecutiveSummary";
 import NotProcurableSpend from "./NotProcurableSpend";
 import IntercompanySpend from "./IntercompanySpend";
 import CapexOpexSpend from "./CapexOpexSpend";
+import type { StandardField } from "../../types";
 
 type Tab = "executive" | "not-procurable" | "capex-opex" | "intercompany";
 
@@ -12,6 +13,8 @@ interface DataQualityStepProps {
   sessionId: string;
   apiKey: string;
   setApiKey: (key: string) => void;
+  confirmedMapping: Record<string, string | null>;
+  standardFields: StandardField[];
   onProceed: () => void;
 }
 
@@ -19,6 +22,8 @@ export default function DataQualityStep({
   sessionId,
   apiKey,
   setApiKey,
+  confirmedMapping,
+  standardFields,
   onProceed,
 }: DataQualityStepProps) {
   const [loaded, setLoaded] = useState(false);
@@ -103,6 +108,8 @@ export default function DataQualityStep({
         <ExecutiveSummary
           sessionId={sessionId}
           apiKey={apiKey}
+          confirmedMapping={confirmedMapping}
+          standardFields={standardFields}
           onLoaded={handleLoaded}
         />
       </div>

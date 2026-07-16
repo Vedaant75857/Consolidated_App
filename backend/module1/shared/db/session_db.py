@@ -81,6 +81,11 @@ def _open_connection(db_path: str) -> DuckDBConnection:
         sql_name  VARCHAR NOT NULL
     )""")
     conn.commit()
+    # The connection is not published in the cache yet, so this initial legacy
+    # cleanup is exclusive. Cached-session callers can use the locked wrapper.
+    from .table_ops import sanitize_reserved_provenance_columns
+
+    sanitize_reserved_provenance_columns(conn)
     return conn
 
 
@@ -133,6 +138,14 @@ def get_session_db(session_id: str) -> DuckDBConnection:
             evict_id, _evict_conn = _db_cache.popitem(last=False)
             _logger.debug("Evicted session %s from connection cache (not closed)", evict_id)
         return conn
+
+
+def sanitize_session_reserved_columns(session_id: str) -> dict:
+    """Run the idempotent legacy provenance cleanup under the session lock."""
+    from .table_ops import sanitize_reserved_provenance_columns
+
+    with get_session_lock(session_id):
+        return sanitize_reserved_provenance_columns(get_session_db(session_id))
 
 
 def close_session_db(session_id: str) -> None:

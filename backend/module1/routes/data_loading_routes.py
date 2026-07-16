@@ -340,7 +340,7 @@ def set_header_row():
                     return jsonify({"error": f"headerRowIndex {header_row_index} is out of range."}), 400
                 new_df_raw = array_to_objects(raw_arr, header_row_index, custom_map)
                 tbl_name = safe_table_name("tbl", table_key)
-                store_table(conn, tbl_name, new_df_raw)
+                store_table(conn, tbl_name, new_df_raw, provision_row_id=True)
                 bulk_clean_table(conn, tbl_name)
                 register_table(conn, table_key, tbl_name)
 

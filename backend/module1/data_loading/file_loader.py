@@ -24,6 +24,7 @@ from shared.db import (
     table_exists,
     table_row_count,
     read_table_columns,
+    filter_data_columns,
     quote_id,
 )
 from shared.utils import make_unique
@@ -71,7 +72,7 @@ def bulk_clean_table(conn: DuckDBConnection, table_name: str) -> None:
     that processes the entire table at columnar speed. Empty strings are
     set to NULL for consistency.
     """
-    cols = read_table_columns(conn, table_name)
+    cols = filter_data_columns(read_table_columns(conn, table_name))
     if not cols:
         return
     set_clauses = ", ".join(
@@ -222,7 +223,8 @@ def _load_excel_sheet(
             f"SELECT "
             f"  {fname_lit} AS \"FILE_NAME\", "
             f"  CAST(ROW_NUMBER() OVER () AS VARCHAR) AS \"RECORD_ID\", "
-            f"  {raw_select} "
+            f"  {raw_select}, "
+            f"  CAST(ROW_NUMBER() OVER () AS BIGINT) AS \"__row_id\" "
             f"FROM ("
             f"  SELECT *, ROW_NUMBER() OVER () AS _rn FROM {quote_id(raw_name)}"
             f") _sub "
@@ -279,7 +281,8 @@ def _load_csv(
             f"SELECT "
             f"  {fname_lit} AS \"FILE_NAME\", "
             f"  CAST(ROW_NUMBER() OVER () AS VARCHAR) AS \"RECORD_ID\", "
-            f"  {raw_select} "
+            f"  {raw_select}, "
+            f"  CAST(ROW_NUMBER() OVER () AS BIGINT) AS \"__row_id\" "
             f"FROM ("
             f"  SELECT *, ROW_NUMBER() OVER () AS _rn FROM {quote_id(raw_name)}"
             f") _sub "
@@ -584,7 +587,9 @@ def rebuild_table_from_raw_table(
                 yield [file_name, str(record_id)] + out_row
 
     tbl_name = safe_table_name("tbl", table_key)
-    store_table_streaming(conn, tbl_name, output_columns, _data_gen())
+    store_table_streaming(
+        conn, tbl_name, output_columns, _data_gen(), provision_row_id=True,
+    )
     bulk_clean_table(conn, tbl_name)
     register_table(conn, table_key, tbl_name)
 

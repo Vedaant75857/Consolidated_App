@@ -9,7 +9,14 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from shared.db import DuckDBConnection, quote_id, read_table_columns, table_exists, table_row_count
+from shared.db import (
+    DuckDBConnection,
+    filter_data_columns,
+    quote_id,
+    read_table_columns,
+    table_exists,
+    table_row_count,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -61,12 +68,12 @@ def _safe_pct(num: int, den: int) -> float:
 
 def _non_null_condition(qc: str) -> str:
     """SQL fragment: column is non-null and non-empty after trimming."""
-    return f"{qc} IS NOT NULL AND TRIM({qc}) != ''"
+    return f"{qc} IS NOT NULL AND TRIM(CAST({qc} AS VARCHAR)) != ''"
 
 
 def _strip_thousands(qc: str) -> str:
     """SQL expression that removes commas and spaces from a column value."""
-    return f"REPLACE(REPLACE(TRIM({qc}), ',', ''), ' ', '')"
+    return f"REPLACE(REPLACE(TRIM(CAST({qc} AS VARCHAR)), ',', ''), ' ', '')"
 
 
 def numeric_spend_expr(qc: str) -> str:
@@ -760,7 +767,7 @@ def compute_fill_rate_summary(
         List of dicts with ``columnName``, ``filledRows``, ``totalRows``,
         ``fillRate``, ``uniqueValues``.
     """
-    all_cols = read_table_columns(conn, table_name)
+    all_cols = filter_data_columns(read_table_columns(conn, table_name))
     skip = _SYSTEM_COLUMNS | (exclude or set())
     columns = [c for c in all_cols if c not in skip]
 

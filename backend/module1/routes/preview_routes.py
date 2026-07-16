@@ -31,7 +31,15 @@ def _handle_preview_error(exc: Exception, route: str):
     if isinstance(exc, ValueError):
         return _json_ok({"error": str(exc), "code": "VALIDATION_ERROR"}, 400)
     logger.exception("%s failed", route)
-    return _json_ok({"error": str(exc) or "Internal server error"}, 500)
+    return _json_ok({
+        "error": "Preview operation failed.",
+        "code": "PREVIEW_INTERNAL_ERROR",
+    }, 500)
+
+
+def _validation_error(message: str):
+    """Return the stable validation envelope used by preview endpoints."""
+    return _json_ok({"error": message, "code": "VALIDATION_ERROR"}, 400)
 
 
 @bp.route("/preview/state", methods=["POST"])
@@ -47,9 +55,9 @@ def preview_state():
     sort = data.get("sort")
 
     if not session_id:
-        return _json_ok({"error": "Missing sessionId"}, 400)
+        return _validation_error("Missing sessionId")
     if not table_key:
-        return _json_ok({"error": "Missing tableKey"}, 400)
+        return _validation_error("Missing tableKey")
 
     try:
         with get_session_lock(session_id):
@@ -80,11 +88,11 @@ def preview_column_values():
     limit = data.get("limit", 500)
 
     if not session_id:
-        return _json_ok({"error": "Missing sessionId"}, 400)
+        return _validation_error("Missing sessionId")
     if not table_key:
-        return _json_ok({"error": "Missing tableKey"}, 400)
+        return _validation_error("Missing tableKey")
     if not column:
-        return _json_ok({"error": "Missing column"}, 400)
+        return _validation_error("Missing column")
 
     try:
         with get_session_lock(session_id):
@@ -110,18 +118,21 @@ def preview_operation():
     table_key = data.get("tableKey")
     op = data.get("op")
     params = data.get("params", {})
+    view = data.get("view")
 
     if not session_id:
-        return _json_ok({"error": "Missing sessionId"}, 400)
+        return _validation_error("Missing sessionId")
     if not table_key:
-        return _json_ok({"error": "Missing tableKey"}, 400)
+        return _validation_error("Missing tableKey")
     if not op:
-        return _json_ok({"error": "Missing operation"}, 400)
+        return _validation_error("Missing operation")
+    if not isinstance(params, dict):
+        return _validation_error("params must be an object")
 
     try:
         with get_session_lock(session_id):
             conn = get_session_db(session_id)
-            result = preview_ops.run_operation(conn, table_key, op, params)
+            result = preview_ops.run_operation(conn, table_key, op, params, view)
         return _json_ok({"ok": True, **result})
     except Exception as exc:
         return _handle_preview_error(exc, "preview/operation")
@@ -133,14 +144,15 @@ def preview_undo():
     data = request.get_json() or {}
     session_id = data.get("sessionId")
     table_key = data.get("tableKey")
+    view = data.get("view")
 
     if not session_id or not table_key:
-        return _json_ok({"error": "Missing sessionId or tableKey"}, 400)
+        return _validation_error("Missing sessionId or tableKey")
 
     try:
         with get_session_lock(session_id):
             conn = get_session_db(session_id)
-            result = preview_ops.undo_operation(conn, table_key)
+            result = preview_ops.undo_operation(conn, table_key, view)
         return _json_ok({"ok": True, **result})
     except Exception as exc:
         return _handle_preview_error(exc, "preview/undo")
@@ -152,14 +164,15 @@ def preview_redo():
     data = request.get_json() or {}
     session_id = data.get("sessionId")
     table_key = data.get("tableKey")
+    view = data.get("view")
 
     if not session_id or not table_key:
-        return _json_ok({"error": "Missing sessionId or tableKey"}, 400)
+        return _validation_error("Missing sessionId or tableKey")
 
     try:
         with get_session_lock(session_id):
             conn = get_session_db(session_id)
-            result = preview_ops.redo_operation(conn, table_key)
+            result = preview_ops.redo_operation(conn, table_key, view)
         return _json_ok({"ok": True, **result})
     except Exception as exc:
         return _handle_preview_error(exc, "preview/redo")

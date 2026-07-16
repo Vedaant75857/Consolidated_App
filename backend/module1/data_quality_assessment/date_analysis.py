@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from shared.db import DuckDBConnection, quote_id, read_table_columns
+from shared.db import DuckDBConnection, filter_data_columns, quote_id, read_table_columns
 
 from .ai_prompts import generate_date_insight
 from .column_resolver import find_date_columns, pick_currency_code_column, pick_spend_column, resolve_column
@@ -362,7 +362,7 @@ def run_date_analysis_sql(
         JSON-serialisable dict with all data fields. The ``aiInsight`` key
         is set to ``None`` — the caller fills it in via :func:`run_date_analysis_ai`.
     """
-    available = set(read_table_columns(conn, table_name))
+    available = set(filter_data_columns(read_table_columns(conn, table_name)))
     available_date_cols = find_date_columns(available)
     file_name_col = resolve_column(available, "file_name", fuzzy=False)
 

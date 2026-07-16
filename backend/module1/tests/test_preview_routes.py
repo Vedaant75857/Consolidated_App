@@ -87,6 +87,47 @@ def test_preview_column_values_happy_path(seeded_preview_session):
     assert data["hasBlanks"] is False
 
 
+def test_preview_operation_view_is_optional_and_scopes_mutation_response(
+    seeded_preview_session,
+):
+    """New callers can request their current page while legacy callers keep defaults."""
+    client, session_id, table_key = seeded_preview_session
+
+    scoped = client.post(
+        "/api/preview/operation",
+        json={
+            "sessionId": session_id,
+            "tableKey": table_key,
+            "op": "cell_edit",
+            "params": {"rowId": 1, "column": "AMOUNT", "value": "150"},
+            "view": {"offset": 1, "limit": 1},
+        },
+    )
+    assert scoped.status_code == 200
+    scoped_data = scoped.get_json()
+    assert scoped_data["ok"] is True
+    assert scoped_data["offset"] == 1
+    assert scoped_data["limit"] == 1
+    assert len(scoped_data["rows"]) == 1
+    assert scoped_data["rows"][0]["AMOUNT"] == "200"
+
+    legacy = client.post(
+        "/api/preview/operation",
+        json={
+            "sessionId": session_id,
+            "tableKey": table_key,
+            "op": "cell_edit",
+            "params": {"rowId": 2, "column": "AMOUNT", "value": "250"},
+        },
+    )
+    assert legacy.status_code == 200
+    legacy_data = legacy.get_json()
+    assert legacy_data["ok"] is True
+    assert legacy_data["offset"] == 0
+    assert len(legacy_data["rows"]) == 2
+    assert [row["AMOUNT"] for row in legacy_data["rows"]] == ["150", "250"]
+
+
 def test_preview_state_missing_table_returns_400(seeded_preview_session):
     """Unknown table_key must return 400 validation error, not 500."""
     client, session_id, _ = seeded_preview_session
@@ -108,6 +149,26 @@ def test_preview_state_invalid_session_returns_400(app_client):
     )
     assert resp.status_code == 400
     assert "error" in resp.get_json()
+
+
+def test_preview_state_sanitizes_internal_errors(app_client, monkeypatch):
+    """Unexpected preview failures must not expose database or SQL details."""
+    from routes import preview_routes
+
+    monkeypatch.setattr(
+        preview_routes.preview_ops,
+        "get_preview_data",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("secret SELECT")),
+    )
+    response = app_client.post(
+        "/api/preview/state",
+        json={"sessionId": uuid.uuid4().hex, "tableKey": "x::y"},
+    )
+    assert response.status_code == 500
+    assert response.get_json() == {
+        "error": "Preview operation failed.",
+        "code": "PREVIEW_INTERNAL_ERROR",
+    }
 
 
 def test_get_preview_happy_path(seeded_preview_session):

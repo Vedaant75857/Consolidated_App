@@ -1,16 +1,15 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   AlertCircle, RefreshCw, CheckCircle2, KeyRound,
   Building2, Globe, Calendar, DollarSign, MapPin,
   ClipboardList, Download, Sun, Moon, ArrowLeft, Layers,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import DataLoading from "./components/module-1/DataLoading";
-import DataInventory from "./components/module-1/DataInventory";
+import DataLoading from "./components/module-2/DataLoading";
+import DataInventory from "./components/module-2/DataInventory";
 import NormDashboard from "./components/module-2/NormDashboard";
 import LoadingOverlay from "./components/module-2/LoadingOverlay";
 import StepChangeWarningDialog from "./components/module-2/StepChangeWarningDialog";
-import StatusLog, { type LogEntry } from "./components/module-1/StatusLog";
 import { useTheme } from "./components/common/ThemeProvider";
 import { StepHero } from "./components/common/ui";
 import { getConfig } from "./runtimeConfig";
@@ -66,15 +65,6 @@ export default function App() {
   const [importSource, setImportSource]       = useState<string | null>(null);
   const [importSessionId, setImportSessionId] = useState<string | null>(null);
 
-  /* ── Live pipeline activity log ── */
-  const [statusLog, setStatusLog] = useState<LogEntry[]>([]);
-  const logIdRef = useRef(0);
-  const addLog = useCallback((stepName: string, type: LogEntry["type"], message: string) => {
-    setStatusLog((prev) => [
-      ...prev,
-      { id: ++logIdRef.current, timestamp: new Date(), step: stepName, type, message },
-    ]);
-  }, []);
 
   
 
@@ -116,25 +106,21 @@ export default function App() {
         .then((data) => {
           if (data.error) {
             setError(data.error);
-            addLog("IMPORT", "error", data.error);
             return;
           }
           if (data.inventory?.length) {
             setInventory(data.inventory);
             setStep(2);
             setMaxStepReached(2);
-            addLog("IMPORT", "success", `Data imported from ${source === "stitcher" ? "DataStitcher" : "external module"} — ${data.inventory.length} table(s) ready.`);
           } else {
             setError("Imported session has no data. Please re-import from the source module.");
-            addLog("IMPORT", "error", "Imported session has no data.");
           }
         })
         .catch((err) => {
           setError("Failed to load imported data. The session may have expired.");
-          addLog("IMPORT", "error", err?.message || "Failed to load imported data from backend.");
         });
     }
-  }, [addLog]);
+  }, []);
 
   useEffect(() => {
     setMaxStepReached((prev) => Math.max(prev, step));
@@ -193,7 +179,6 @@ export default function App() {
     setUploadProgress(0);
     setLoadingMessage("Uploading your data…");
     setError(null);
-    addLog("UPLOAD", "info", "Uploading and extracting " + file.name + "…");
     try {
       const formData = new FormData();
       formData.append("file", file);
@@ -224,11 +209,9 @@ export default function App() {
 
       setInventory(data.inventory || []);
       setFilename(file.name);
-      addLog("UPLOAD", "success", "Extracted " + (data.inventory?.length || 0) + " table(s) successfully.");
       setStep(2);
     } catch (err: any) {
       setError(err.message);
-      addLog("UPLOAD", "error", err.message);
     } finally {
       setLoading(false);
       setLoadingMessage("");
@@ -253,7 +236,6 @@ export default function App() {
     setLoading(true);
     setLoadingMessage("Locking table into pipeline…");
     setError(null);
-    addLog("INVENTORY", "info", "Locking table " + tableKey + " into pipeline…");
     try {
       const res = await fetch("/api/select-table", {
         method: "POST",
@@ -262,11 +244,9 @@ export default function App() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
-      addLog("INVENTORY", "success", "Locked dataset with " + data.rows + " rows.");
       setStep(3);
     } catch (err: any) {
       setError(err.message);
-      addLog("INVENTORY", "error", err.message);
     } finally {
       setLoading(false);
       setLoadingMessage("");
@@ -309,7 +289,6 @@ export default function App() {
               apiKey={apiKey}
               activeTab={normActiveTab}
               setActiveTab={setNormActiveTab}
-              addLog={addLog}
               setLoadingMessage={setLoadingMessage}
               setLoadingOnCancel={setLoadingOnCancel}
               sessionId={sessionId}
@@ -536,8 +515,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* ─ Live pipeline activity (sticky bottom bar) ─ */}
-        <StatusLog entries={statusLog} onClear={() => setStatusLog([])} />
         <LoadingOverlay isLoading={!!loadingMessage} message={loadingMessage} onCancel={loadingOnCancel || undefined} progress={uploadProgress} />
 
         <StepChangeWarningDialog

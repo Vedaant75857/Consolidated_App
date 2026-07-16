@@ -11,6 +11,7 @@ This module provides operations for the Excel-like preview grid:
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from datetime import datetime
@@ -21,6 +22,7 @@ from shared.db.duckdb_compat import DuckDBConnection
 from shared.db.meta_ops import get_meta, set_meta
 from shared.db.table_ops import (
     drop_table,
+    filter_data_columns,
     quote_id,
     read_table_columns,
     read_table_column_types,
@@ -44,6 +46,12 @@ __all__ = [
 ROW_ID_COL = "__row_id"
 PREVIEW_META_PREFIX = "preview_ops_"
 DEFAULT_PAGE_SIZE = 200
+MAX_PAGE_SIZE = 1000
+MAX_OFFSET = 10_000_000
+MAX_FILTERS = 25
+MAX_FILTER_VALUES = 500
+MAX_SORTS = 10
+MAX_SEARCH_LENGTH = 500
 MAX_PIVOT_COLUMNS = 200
 
 # Filter operators mapping
@@ -122,9 +130,162 @@ def _save_preview_state(conn: DuckDBConnection, table_key: str, state: dict[str,
     set_meta(conn, key, state)
 
 
+def _advance_table_revision(
+    conn: DuckDBConnection,
+    table_key: str,
+    *,
+    invalidate_metadata: bool = False,
+    invalidate_count: bool = False,
+) -> None:
+    """Advance a table revision while retaining cache entries that stay valid."""
+    state = _get_preview_state(conn, table_key)
+    revision = int(state.get("revision", 0) or 0) + 1
+    state["revision"] = revision
+    cache = state.get("preview_cache")
+    if isinstance(cache, dict):
+        cache = dict(cache)
+        cache["revision"] = revision
+        cache.pop("query_count", None)
+        if invalidate_metadata:
+            cache.pop("columns", None)
+            cache.pop("column_types", None)
+        if invalidate_count:
+            cache.pop("unfiltered_count", None)
+        state["preview_cache"] = cache
+    _save_preview_state(conn, table_key, state)
+
+
+def _validate_page(offset: Any, limit: Any) -> tuple[int, int]:
+    """Validate and cap page coordinates before they reach DuckDB."""
+    if isinstance(offset, bool) or not isinstance(offset, int):
+        raise ValueError("offset must be an integer")
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        raise ValueError("limit must be an integer")
+    if offset < 0 or offset > MAX_OFFSET:
+        raise ValueError(f"offset must be between 0 and {MAX_OFFSET}")
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    return offset, min(limit, MAX_PAGE_SIZE)
+
+
+def _validate_query_shape(
+    search: Any,
+    filters: Any,
+    sort: Any,
+    display_cols: list[str],
+) -> tuple[str | None, list[dict[str, Any]] | None, list[dict[str, str]] | None]:
+    """Validate bounded filter/sort/search request structures."""
+    if search is not None and not isinstance(search, str):
+        raise ValueError("search must be a string")
+    if isinstance(search, str) and len(search) > MAX_SEARCH_LENGTH:
+        raise ValueError(f"search cannot exceed {MAX_SEARCH_LENGTH} characters")
+    if filters is not None and not isinstance(filters, list):
+        raise ValueError("filters must be a list")
+    if sort is not None and not isinstance(sort, list):
+        raise ValueError("sort must be a list")
+    if filters and len(filters) > MAX_FILTERS:
+        raise ValueError(f"At most {MAX_FILTERS} filters are allowed")
+    if sort and len(sort) > MAX_SORTS:
+        raise ValueError(f"At most {MAX_SORTS} sort columns are allowed")
+
+    col_set = set(display_cols)
+    valid_ops = set(_FILTER_OPS) | {"in", "not_in"}
+    for item in filters or []:
+        if not isinstance(item, dict):
+            raise ValueError("Each filter must be an object")
+        column = item.get("column")
+        op = item.get("op", "eq")
+        if column not in col_set:
+            raise ValueError(f"Column not found: {column}")
+        if op not in valid_ops:
+            raise ValueError(f"Unsupported filter operator: {op}")
+        if op in ("in", "not_in"):
+            values = item.get("values") or []
+            if not isinstance(values, list):
+                raise ValueError("Filter values must be a list")
+            if len(values) > MAX_FILTER_VALUES:
+                raise ValueError(f"At most {MAX_FILTER_VALUES} filter values are allowed")
+
+    for item in sort or []:
+        if not isinstance(item, dict):
+            raise ValueError("Each sort must be an object")
+        column = item.get("column")
+        direction = str(item.get("dir", "asc")).lower()
+        if column not in col_set:
+            raise ValueError(f"Column not found: {column}")
+        if direction not in ("asc", "desc"):
+            raise ValueError("Sort direction must be asc or desc")
+    return search, filters, sort
+
+
+def _view_kwargs(view: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Convert an additive operation view into get_preview_data kwargs."""
+    if view is None:
+        return {}
+    if not isinstance(view, Mapping):
+        raise ValueError("view must be an object")
+    allowed = {"offset", "limit", "search", "filters", "sort"}
+    unknown = set(view) - allowed
+    if unknown:
+        raise ValueError(f"Unsupported view field: {sorted(unknown)[0]}")
+    return {key: view[key] for key in allowed if key in view}
+
+
+def _preview_for_view(
+    conn: DuckDBConnection,
+    table_key: str,
+    view: Mapping[str, Any] | None = None,
+    column_renames: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    kwargs = _view_kwargs(view)
+    if view is not None:
+        sql_table = lookup_sql_name(conn, table_key)
+        if not sql_table or not table_exists(conn, sql_table):
+            raise ValueError(f"Table not found: {table_key}")
+        current_columns = set(_data_columns(read_table_columns(conn, sql_table)))
+        renames = dict(column_renames or {})
+        for key in ("filters", "sort"):
+            reconciled: list[dict[str, Any]] = []
+            for item in kwargs.get(key) or []:
+                updated = dict(item)
+                column = renames.get(updated.get("column"), updated.get("column"))
+                if column in current_columns:
+                    updated["column"] = column
+                    reconciled.append(updated)
+            if key in kwargs:
+                kwargs[key] = reconciled
+    return get_preview_data(conn, table_key, **kwargs)
+
+
+def _validate_operation_view(
+    conn: DuckDBConnection,
+    table_key: str,
+    view: Mapping[str, Any] | None,
+) -> None:
+    """Validate an optional post-mutation view before changing table state."""
+    if view is None:
+        return
+    kwargs = _view_kwargs(view)
+    _validate_page(kwargs.get("offset", 0), kwargs.get("limit", DEFAULT_PAGE_SIZE))
+    sql_table = lookup_sql_name(conn, table_key)
+    if not sql_table or not table_exists(conn, sql_table):
+        raise ValueError(f"Table not found: {table_key}")
+    display_cols = _data_columns(read_table_columns(conn, sql_table))
+    _validate_query_shape(
+        kwargs.get("search"), kwargs.get("filters"), kwargs.get("sort"), display_cols,
+    )
+
+
 def _data_columns(cols: list[str]) -> list[str]:
     """Return display columns excluding the internal row-id column."""
-    return [c for c in cols if c != ROW_ID_COL]
+    return filter_data_columns(cols)
+
+
+def _require_public_column_name(name: str, *, field: str = "column") -> str:
+    """Reject internal/reserved names at public preview mutation boundaries."""
+    if not name or filter_data_columns([name]) != [name]:
+        raise ValueError(f"Cannot use internal column for {field}: {name}")
+    return name
 
 
 def _ordered_display_columns(
@@ -312,14 +473,14 @@ def _rebuild_row_id_table(
     conn.commit()
 
 
-def _ensure_row_id(conn: DuckDBConnection, sql_table: str) -> None:
+def _ensure_row_id(conn: DuckDBConnection, sql_table: str) -> bool:
     """Ensure table has __row_id column for stable row identification."""
     if not table_exists(conn, sql_table):
         raise ValueError(f"Table {sql_table} does not exist")
 
     cols = read_table_columns(conn, sql_table)
     if ROW_ID_COL in cols:
-        return
+        return False
 
     data_cols = _data_columns(cols)
     if not data_cols:
@@ -345,6 +506,7 @@ def _ensure_row_id(conn: DuckDBConnection, sql_table: str) -> None:
     drop_table(conn, sql_table, commit=False)
     conn.execute(f"ALTER TABLE {quoted_temp} RENAME TO {quoted_table}")
     conn.commit()
+    return True
 
 
 def _build_where_clause(
@@ -379,7 +541,7 @@ def _build_where_clause(
                 raise ValueError(f"Column not found: {col}")
 
             quoted_col = quote_id(col)
-            sql_op = _FILTER_OPS.get(op, "=")
+            sql_op = _FILTER_OPS.get(op)
 
             if op in ("is_null", "is_not_null"):
                 conditions.append(f"{quoted_col} {sql_op}")
@@ -448,6 +610,7 @@ def _build_order_clause(
             order_parts.append(f"{expr} {dir} NULLS LAST")
 
     if order_parts:
+        order_parts.append(f"{quote_id(ROW_ID_COL)} ASC")
         return " ORDER BY " + ", ".join(order_parts)
     return f" ORDER BY {quote_id(ROW_ID_COL)}"
 
@@ -512,6 +675,20 @@ def _parse_calc_expression(
     )
     if not allowed_pattern.fullmatch(parsed):
         raise ValueError("Expression contains unsupported characters")
+
+    # Bracket references are validated against public ``columns`` above. Also
+    # reject raw quoted or bare internal identifiers before DuckDB can bind
+    # expressions such as ``__row_id`` or ``CAST(__row_id AS VARCHAR)``.
+    quoted_identifiers = [
+        value.replace('""', '"')
+        for value in re.findall(r'"((?:[^"]|"")*)"', parsed)
+    ]
+    bare_source = re.sub(r'"(?:[^"]|"")*"', ' ', parsed)
+    bare_source = re.sub(r"'[^']*'", ' ', bare_source)
+    bare_identifiers = re.findall(r'\b[A-Za-z_][A-Za-z0-9_]*\b', bare_source)
+    for identifier in [*quoted_identifiers, *bare_identifiers]:
+        if filter_data_columns([identifier]) != [identifier]:
+            raise ValueError(f"Cannot reference internal column: {identifier}")
 
     # Check for disallowed SQL keywords
     disallowed = {'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'DROP', 'CREATE',
@@ -591,27 +768,58 @@ def get_preview_data(
     sort: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Get paginated preview data with filtering, sorting, and search."""
+    offset, limit = _validate_page(offset, limit)
     sql_table = lookup_sql_name(conn, table_key)
     if not sql_table or not table_exists(conn, sql_table):
         raise ValueError(f"Table not found: {table_key}")
 
-    # Ensure row_id exists
-    _ensure_row_id(conn, sql_table)
+    # New materializations provision identity up front; this remains the legacy fallback.
+    row_id_added = _ensure_row_id(conn, sql_table)
+    if row_id_added:
+        _advance_table_revision(
+            conn, table_key, invalidate_metadata=True, invalidate_count=False,
+        )
 
-    cols = read_table_columns(conn, sql_table)
+    state = _get_preview_state(conn, table_key)
+    revision = int(state.get("revision", 0) or 0)
+    cached = state.get("preview_cache")
+    cache_changed = False
+    if not isinstance(cached, dict) or cached.get("revision") != revision:
+        cached = {"revision": revision}
+        cache_changed = True
+
+    cached_cols = cached.get("columns")
+    if isinstance(cached_cols, list):
+        cols = list(cached_cols)
+    else:
+        cols = read_table_columns(conn, sql_table)
+        cache_changed = True
     if not cols:
         raise ValueError(f"Table has no columns: {table_key}")
 
     display_cols = _data_columns(cols)
     display_cols = _ordered_display_columns(conn, table_key, display_cols)
 
-    # Sample rows for type inference (lightweight)
     quoted_table = quote_id(sql_table)
-    sample_sql = f"SELECT * FROM {quoted_table} LIMIT 20"
-    sample_raw = conn.execute(sample_sql).fetchall()
-    sample_rows = [dict(zip(r.keys(), r)) for r in sample_raw]
-    column_types = _resolve_effective_column_types(
-        conn, sql_table, table_key, display_cols, sample_rows
+    cached_types = cached.get("column_types")
+    if isinstance(cached_types, dict) and set(cached_types) == set(display_cols):
+        column_types = {col: str(cached_types[col]) for col in display_cols}
+    else:
+        sample_projection = ", ".join(quote_id(c) for c in display_cols)
+        sample_sql = f"SELECT {sample_projection} FROM {quoted_table} LIMIT 20"
+        sample_raw = conn.execute(sample_sql).fetchall()
+        sample_rows = [dict(zip(r.keys(), r)) for r in sample_raw]
+        column_types = _resolve_effective_column_types(
+            conn, sql_table, table_key, display_cols, sample_rows
+        )
+        cache_changed = True
+
+    cached["columns"] = cols
+    cached["column_types"] = column_types
+    state["preview_cache"] = cached
+
+    search, filters, sort = _validate_query_shape(
+        search, filters, sort, display_cols,
     )
 
     # Build query
@@ -619,8 +827,36 @@ def get_preview_data(
     order_clause = _build_order_clause(sort, column_types)
 
     # Get total count
-    count_sql = f"SELECT COUNT(*) FROM {quoted_table}{where_clause}"
-    total_rows = conn.execute(count_sql, where_params).fetchone()[0]
+    query_count_key = json.dumps(
+        {"search": search or "", "filters": filters or []},
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    cached_query_count = cached.get("query_count")
+    if not where_clause and isinstance(cached.get("unfiltered_count"), int):
+        total_rows = cached["unfiltered_count"]
+    elif (
+        where_clause
+        and isinstance(cached_query_count, dict)
+        and cached_query_count.get("key") == query_count_key
+        and isinstance(cached_query_count.get("value"), int)
+    ):
+        total_rows = cached_query_count["value"]
+    else:
+        count_sql = f"SELECT COUNT(*) FROM {quoted_table}{where_clause}"
+        total_rows = int(conn.execute(count_sql, where_params).fetchone()[0])
+        if not where_clause:
+            cached["unfiltered_count"] = total_rows
+            state["preview_cache"] = cached
+            cache_changed = True
+        else:
+            cached["query_count"] = {"key": query_count_key, "value": total_rows}
+            state["preview_cache"] = cached
+            cache_changed = True
+
+    if cache_changed:
+        _save_preview_state(conn, table_key, state)
 
     # Get data
     col_list = ", ".join(quote_id(c) for c in cols)
@@ -656,16 +892,21 @@ def get_column_filter_values(
     limit: int = 500,
 ) -> dict[str, Any]:
     """Return distinct values for a column, respecting other active column filters."""
+    _, limit = _validate_page(0, limit)
     sql_table = lookup_sql_name(conn, table_key)
     if not sql_table or not table_exists(conn, sql_table):
         raise ValueError(f"Table not found: {table_key}")
 
-    _ensure_row_id(conn, sql_table)
+    if _ensure_row_id(conn, sql_table):
+        _advance_table_revision(
+            conn, table_key, invalidate_metadata=True, invalidate_count=False,
+        )
 
     cols = read_table_columns(conn, sql_table)
     display_cols = _data_columns(cols)
     if column not in display_cols:
         raise ValueError(f"Column not found: {column}")
+    _, filters, _ = _validate_query_shape(None, filters, None, display_cols)
 
     quoted_table = quote_id(sql_table)
     quoted_col = quote_id(column)
@@ -723,6 +964,7 @@ def cell_edit(
     row_id: int,
     column: str,
     value: Any,
+    view: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Edit a single cell value."""
     sql_table = lookup_sql_name(conn, table_key)
@@ -731,8 +973,8 @@ def cell_edit(
 
     _ensure_row_id(conn, sql_table)
 
-    cols = read_table_columns(conn, sql_table)
-    if column not in cols:
+    all_cols = read_table_columns(conn, sql_table)
+    if column not in _data_columns(all_cols):
         raise ValueError(f"Column not found: {column}")
 
     quoted_table = quote_id(sql_table)
@@ -765,8 +1007,8 @@ def cell_edit(
         [value, row_id],
     )
     conn.commit()
-
-    return get_preview_data(conn, table_key)
+    _advance_table_revision(conn, table_key)
+    return _preview_for_view(conn, table_key, view)
 
 
 def column_rename(
@@ -774,6 +1016,7 @@ def column_rename(
     table_key: str,
     old_name: str,
     new_name: str,
+    view: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Rename a column."""
     if not new_name or new_name == old_name:
@@ -783,7 +1026,8 @@ def column_rename(
     if not sql_table or not table_exists(conn, sql_table):
         raise ValueError(f"Table not found: {table_key}")
 
-    cols = read_table_columns(conn, sql_table)
+    _require_public_column_name(new_name, field="newName")
+    cols = _data_columns(read_table_columns(conn, sql_table))
     if old_name not in cols:
         raise ValueError(f"Column not found: {old_name}")
     if new_name in cols:
@@ -795,14 +1039,17 @@ def column_rename(
 
     conn.execute(f"ALTER TABLE {quoted_table} RENAME COLUMN {quoted_old} TO {quoted_new}")
     conn.commit()
-
-    return get_preview_data(conn, table_key)
+    _advance_table_revision(conn, table_key, invalidate_metadata=True)
+    return _preview_for_view(
+        conn, table_key, view, column_renames={old_name: new_name},
+    )
 
 
 def column_delete(
     conn: DuckDBConnection,
     table_key: str,
     column: str,
+    view: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Delete a column."""
     sql_table = lookup_sql_name(conn, table_key)
@@ -840,21 +1087,22 @@ def column_delete(
     drop_table(conn, sql_table, commit=False)
     conn.execute(f"ALTER TABLE {quoted_temp} RENAME TO {quoted_table}")
     conn.commit()
-
-    return get_preview_data(conn, table_key)
+    _advance_table_revision(conn, table_key, invalidate_metadata=True)
+    return _preview_for_view(conn, table_key, view)
 
 
 def column_reorder(
     conn: DuckDBConnection,
     table_key: str,
     new_order: list[str],
+    view: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Store column order preference (virtual reorder)."""
     sql_table = lookup_sql_name(conn, table_key)
     if not sql_table or not table_exists(conn, sql_table):
         raise ValueError(f"Table not found: {table_key}")
 
-    cols = read_table_columns(conn, sql_table)
+    cols = _data_columns(read_table_columns(conn, sql_table))
     # Validate all columns exist
     for col in new_order:
         if col not in cols:
@@ -865,7 +1113,7 @@ def column_reorder(
     state["column_order"] = new_order
     _save_preview_state(conn, table_key, state)
 
-    return get_preview_data(conn, table_key)
+    return _preview_for_view(conn, table_key, view)
 
 
 def column_change_type(
@@ -873,6 +1121,7 @@ def column_change_type(
     table_key: str,
     column: str,
     new_type: str,
+    view: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Change the data type of a column.
 
@@ -888,8 +1137,8 @@ def column_change_type(
     if not sql_table or not table_exists(conn, sql_table):
         raise ValueError(f"Table not found: {table_key}")
 
-    cols = read_table_columns(conn, sql_table)
-    if column not in cols:
+    all_cols = read_table_columns(conn, sql_table)
+    if column not in _data_columns(all_cols):
         raise ValueError(f"Column not found: {column}")
 
     quoted_table = quote_id(sql_table)
@@ -902,7 +1151,7 @@ def column_change_type(
 
     # Build column list with the changed type
     col_defs = []
-    for col in cols:
+    for col in all_cols:
         if col == column:
             col_defs.append(f"CAST({quote_id(col)} AS {new_type}) AS {quote_id(col)}")
         else:
@@ -921,14 +1170,15 @@ def column_change_type(
     conn.commit()
 
     _save_column_type_override(conn, table_key, column, new_type)
-
-    return get_preview_data(conn, table_key)
+    _advance_table_revision(conn, table_key, invalidate_metadata=True)
+    return _preview_for_view(conn, table_key, view)
 
 
 def rows_delete(
     conn: DuckDBConnection,
     table_key: str,
     row_ids: list[int],
+    view: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Delete specific rows by their __row_id values."""
     if not row_ids:
@@ -954,12 +1204,8 @@ def rows_delete(
 
     conn.commit()
 
-    # Rebuild __row_id to maintain sequential numbering
-    cols = read_table_columns(conn, sql_table)
-    display_cols = _data_columns(cols)
-    _rebuild_row_id_table(conn, sql_table, display_cols)
-
-    return get_preview_data(conn, table_key)
+    _advance_table_revision(conn, table_key, invalidate_count=True)
+    return _preview_for_view(conn, table_key, view)
 
 
 def _remove_column_after_failed_add(
@@ -969,7 +1215,7 @@ def _remove_column_after_failed_add(
 ) -> None:
     """Remove a newly added column after a failed calculated-column update."""
     cols = read_table_columns(conn, sql_table)
-    if column not in cols:
+    if column not in _data_columns(cols):
         return
 
     keep_cols = [c for c in cols if c != column]
@@ -997,6 +1243,7 @@ def add_calculated_column(
     name: str,
     expression: str,
     data_type: str = "TEXT",
+    view: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Add a calculated column."""
     data_type = _normalize_calc_data_type(data_type)
@@ -1008,7 +1255,8 @@ def add_calculated_column(
     if not sql_table or not table_exists(conn, sql_table):
         raise ValueError(f"Table not found: {table_key}")
 
-    cols = read_table_columns(conn, sql_table)
+    _require_public_column_name(name, field="name")
+    cols = _data_columns(read_table_columns(conn, sql_table))
     if name in cols:
         raise ValueError(f"Column already exists: {name}")
 
@@ -1051,7 +1299,8 @@ def add_calculated_column(
         _remove_column_after_failed_add(conn, sql_table, name)
         raise ValueError(_format_calc_error(exc)) from exc
 
-    return get_preview_data(conn, table_key)
+    _advance_table_revision(conn, table_key, invalidate_metadata=True)
+    return _preview_for_view(conn, table_key, view)
 
 
 def apply_filter_sort(
@@ -1082,7 +1331,7 @@ def create_pivot(
     if not sql_table or not table_exists(conn, sql_table):
         raise ValueError(f"Table not found: {table_key}")
 
-    cols = read_table_columns(conn, sql_table)
+    cols = _data_columns(read_table_columns(conn, sql_table))
 
     # Validate fields
     for f in row_fields + column_fields:
@@ -1164,7 +1413,8 @@ def create_pivot(
     # Build and execute CREATE TABLE AS SELECT
     pivot_sql = f"""
         CREATE TABLE {quoted_pivot} AS
-        SELECT {', '.join(select_parts)}
+        SELECT {', '.join(select_parts)},
+               ROW_NUMBER() OVER () AS {quote_id(ROW_ID_COL)}
         FROM {quoted_table}
         {f"GROUP BY {group_by}" if row_fields else ""}
     """
@@ -1175,7 +1425,7 @@ def create_pivot(
     _validate_pivot_has_values(conn, pivot_table_name, row_fields)
 
     # Get the new table's columns and row count
-    pivot_cols = read_table_columns(conn, pivot_table_name)
+    pivot_cols = _data_columns(read_table_columns(conn, pivot_table_name))
     pivot_row_count = table_row_count(conn, pivot_table_name)
 
     # Register as a new table key for the playground preview overlay.
@@ -1193,8 +1443,13 @@ def create_pivot(
     }
 
 
-def undo_operation(conn: DuckDBConnection, table_key: str) -> dict[str, Any]:
+def undo_operation(
+    conn: DuckDBConnection,
+    table_key: str,
+    view: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Undo last operation."""
+    _validate_operation_view(conn, table_key, view)
     state = _get_preview_state(conn, table_key)
     undo_stack = state.get("undo_stack", [])
 
@@ -1219,12 +1474,17 @@ def undo_operation(conn: DuckDBConnection, table_key: str) -> dict[str, Any]:
     state["undo_stack"] = undo_stack
     state["redo_stack"] = state.get("redo_stack", []) + [last_op]
     _save_preview_state(conn, table_key, state)
+    _advance_table_revision(conn, table_key)
+    return _preview_for_view(conn, table_key, view)
 
-    return get_preview_data(conn, table_key)
 
-
-def redo_operation(conn: DuckDBConnection, table_key: str) -> dict[str, Any]:
+def redo_operation(
+    conn: DuckDBConnection,
+    table_key: str,
+    view: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Redo last undone operation."""
+    _validate_operation_view(conn, table_key, view)
     state = _get_preview_state(conn, table_key)
     redo_stack = state.get("redo_stack", [])
 
@@ -1249,8 +1509,8 @@ def redo_operation(conn: DuckDBConnection, table_key: str) -> dict[str, Any]:
     state["redo_stack"] = redo_stack
     state["undo_stack"] = state.get("undo_stack", []) + [next_op]
     _save_preview_state(conn, table_key, state)
-
-    return get_preview_data(conn, table_key)
+    _advance_table_revision(conn, table_key)
+    return _preview_for_view(conn, table_key, view)
 
 
 def apply_to_pipeline(
@@ -1313,8 +1573,10 @@ def run_operation(
     table_key: str,
     op: str,
     params: dict[str, Any],
+    view: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run a preview operation and return updated preview data."""
+    _validate_operation_view(conn, table_key, view)
     if op == "cell_edit":
         return cell_edit(
             conn,
@@ -1322,6 +1584,7 @@ def run_operation(
             params.get("rowId"),
             params.get("column", ""),
             params.get("value"),
+            view,
         )
     elif op == "column_rename":
         return column_rename(
@@ -1329,11 +1592,12 @@ def run_operation(
             table_key,
             params.get("oldName", ""),
             params.get("newName", ""),
+            view,
         )
     elif op == "column_delete":
-        return column_delete(conn, table_key, params.get("column", ""))
+        return column_delete(conn, table_key, params.get("column", ""), view)
     elif op == "column_reorder":
-        return column_reorder(conn, table_key, params.get("order", []))
+        return column_reorder(conn, table_key, params.get("order", []), view)
     elif op == "calculated_column":
         return add_calculated_column(
             conn,
@@ -1341,6 +1605,7 @@ def run_operation(
             params.get("name", ""),
             params.get("expression", ""),
             params.get("dataType", "TEXT"),
+            view,
         )
     elif op == "filter":
         return apply_filter_sort(
@@ -1370,16 +1635,18 @@ def run_operation(
             table_key,
             params.get("column", ""),
             params.get("newType", "TEXT"),
+            view,
         )
     elif op == "rows_delete":
         return rows_delete(
             conn,
             table_key,
             params.get("rowIds", []),
+            view,
         )
     elif op == "undo":
-        return undo_operation(conn, table_key)
+        return undo_operation(conn, table_key, view)
     elif op == "redo":
-        return redo_operation(conn, table_key)
+        return redo_operation(conn, table_key, view)
     else:
         raise ValueError(f"Unknown operation: {op}")

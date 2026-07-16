@@ -484,7 +484,10 @@ export default function App() {
     setLoading(true);
     setLoadingMessage("AI is detecting your column mappings…");
     try {
-      return await mapColumns(sessionId, apiKey);
+      const result = await mapColumns(sessionId, apiKey);
+      setSavedAiMappings(result.mappings);
+      setSavedStandardFields(result.standardFields);
+      return result;
     } finally {
       setLoading(false);
       setLoadingMessage("");
@@ -954,6 +957,8 @@ export default function App() {
                         sessionId={sessionId}
                         apiKey={apiKey}
                         setApiKey={setApiKey}
+                        confirmedMapping={confirmedMapping}
+                        standardFields={savedStandardFields ?? []}
                         onProceed={() => setStep(5)}
                       />
                     )}

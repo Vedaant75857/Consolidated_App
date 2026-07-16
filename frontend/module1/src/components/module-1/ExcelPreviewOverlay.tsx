@@ -11,6 +11,7 @@ import type {
   CalcColumnConfig,
   CellEditParams,
   ColumnDataType,
+  PreviewOperationRequest,
 } from "../../types/excelPreview";
 import {
   previewOperation,
@@ -21,6 +22,20 @@ import {
   previewRedo,
   previewRefreshInventory,
 } from "./services/stitchingApi";
+import {
+  isReservedProvenanceColumn,
+  pruneReservedColumnTargets,
+  sanitizePreviewDto,
+  sanitizePreviewMap,
+} from "../../utils/reservedColumns";
+import {
+  PREVIEW_PAGE_SIZE,
+  preserveResolvedRowIds,
+  previewPageOffset,
+  previewQueryKey,
+  readPreviewRow,
+  storePreviewPage,
+} from "../../utils/previewPageStore.js";
 
 // --- Types ---
 
@@ -33,7 +48,7 @@ interface InventoryItem {
 }
 
 interface ExcelPreviewOverlayProps {
-  previews: Record<string, { columns: string[]; rows: any[]; totalRows?: number }>;
+  previews: Record<string, { columns: string[]; rows: any[]; columnTypes?: Record<string, ColumnDataType>; totalRows?: number }>;
   inventory: InventoryItem[];
   onClose: () => void;
   title?: string;
@@ -57,7 +72,7 @@ interface ToolbarButtonProps {
 
 // --- Constants ---
 
-const PAGE_SIZE = 200;
+const PAGE_SIZE = PREVIEW_PAGE_SIZE;
 const ROW_ID_COL = "__row_id";
 
 /** Apply preview API payload to local grid state. */
@@ -79,16 +94,17 @@ function applyPreviewGridState(
   },
   offsetFallback = 0,
 ) {
-  if (Array.isArray(result.rows)) {
-    apply.setRows(result.rows);
+  const safe = sanitizePreviewDto(result);
+  if (Array.isArray(safe.rows)) {
+    apply.setRows(safe.rows);
   }
-  if (Array.isArray(result.columns)) {
-    const cols = result.columns.filter((c) => c !== ROW_ID_COL);
+  if (Array.isArray(safe.columns)) {
+    const cols = safe.columns.filter((c) => c !== ROW_ID_COL);
     apply.setColumns(cols);
     apply.setColumnOrder(cols);
   }
-  if (result.columnTypes) {
-    apply.setColumnTypes(result.columnTypes);
+  if (safe.columnTypes) {
+    apply.setColumnTypes(safe.columnTypes);
   }
   if (result.totalRows !== undefined) {
     apply.setTotalRows(result.totalRows);
@@ -142,13 +158,6 @@ const FILTER_HEADER_ICONS = {
 
 const ALL_HEADER_ICONS = { ...HEADER_ICONS, ...FILTER_HEADER_ICONS };
 
-/** Functions allowed in calculated column expressions (mirrors backend). */
-const ALLOWED_CALC_FUNCTIONS = [
-  "UPPER", "LOWER", "TRIM", "SUBSTRING", "LEFT", "RIGHT", "LEN", "LENGTH",
-  "ROUND", "ABS", "FLOOR", "CEIL", "POWER", "SQRT",
-  "COALESCE", "NULLIF", "CAST", "YEAR", "MONTH", "DAY", "DATE",
-];
-
 const EMPTY_GRID_SELECTION: GridSelection = {
   columns: CompactSelection.empty(),
   rows: CompactSelection.empty(),
@@ -182,7 +191,7 @@ function ToolbarButton({ icon, label, onClick, active, disabled, shortcut, varia
       onClick={onClick}
       disabled={disabled}
       className={`
-        flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all
+        inline-flex h-9 items-center justify-center gap-2 rounded-lg px-3 text-xs font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500
         ${danger
           ? "bg-red-600 text-white hover:bg-red-700 border border-red-600"
           : active
@@ -232,7 +241,7 @@ export default function ExcelPreviewOverlay({
   mergeHistory = [],
 }: ExcelPreviewOverlayProps) {
   // --- State ---
-  const [localPreviews, setLocalPreviews] = useState(previews);
+  const [localPreviews, setLocalPreviews] = useState(() => sanitizePreviewMap(previews));
   const [localInventory, setLocalInventory] = useState(inventory);
   /** Tab list prefers server inventory; falls back to preview keys when inventory is empty. */
   const tableKeys = useMemo(() => {
@@ -256,6 +265,7 @@ export default function ExcelPreviewOverlay({
   const [filters, setFilters] = useState<PreviewFilter[]>([]);
   const [sort, setSort] = useState<PreviewSort[]>([]);
   const [loading, setLoading] = useState(false);
+  const [backgroundLoading, setBackgroundLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
@@ -284,14 +294,31 @@ export default function ExcelPreviewOverlay({
 
   // Refs
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pageCacheRef = useRef<Map<number, { rows: Record<string, unknown>[] }>>(new Map());
+  const inFlightRef = useRef<Map<string, { controller: AbortController; promise: Promise<any>; offset: number; prefetch: boolean }>>(new Map());
+  const requestGenerationRef = useRef(0);
+  const latestViewRequestRef = useRef(0);
+  const focusOffsetRef = useRef(0);
+  const foregroundRequestKeyRef = useRef<string | null>(null);
+  const selectionReadRef = useRef<{ id: number; controller: AbortController } | null>(null);
+  const selectionRequestRef = useRef(0);
+  const queryKeyRef = useRef("");
+  const snapshotQueryKeyRef = useRef("");
+  const [, setCacheVersion] = useState(0);
   const activeMeta = useMemo(() => {
     return activeKey ? localInventory.find((inv) => inv.table_key === activeKey) : undefined;
   }, [activeKey, localInventory]);
+  const currentQueryKey = useMemo(() => previewQueryKey({
+    tableKey: activeKey,
+    search: debouncedSearch,
+    filters,
+    sort,
+  }), [activeKey, debouncedSearch, filters, sort]);
 
   // --- Effects ---
 
   useEffect(() => {
-    setLocalPreviews(previews);
+    setLocalPreviews(sanitizePreviewMap(previews));
     setLocalInventory(inventory);
   }, [previews, inventory]);
 
@@ -323,20 +350,30 @@ export default function ExcelPreviewOverlay({
   // Reset operational state when active table changes; bootstrap from snapshot if available
   useEffect(() => {
     if (!activeKey) return;
-    const snapshot = localPreviews[activeKey];
+    selectionRequestRef.current += 1;
+    selectionReadRef.current?.controller.abort();
+    selectionReadRef.current = null;
+    const snapshot = sanitizePreviewDto(localPreviews[activeKey] || {});
     if (snapshot?.columns?.length) {
       const cols = snapshot.columns.filter((c: string) => c !== ROW_ID_COL);
       setColumns(cols);
       setColumnOrder(cols);
       setRows(snapshot.rows || []);
       setTotalRows(snapshot.totalRows ?? snapshot.rows?.length ?? 0);
+      pageCacheRef.current = new Map([[0, { rows: snapshot.rows || [] }]]);
+      snapshotQueryKeyRef.current = previewQueryKey({ tableKey: activeKey });
+      setCacheVersion((version) => version + 1);
     } else {
       setColumns([]);
       setColumnOrder([]);
       setRows([]);
       setTotalRows(0);
+      pageCacheRef.current = new Map();
+      snapshotQueryKeyRef.current = "";
     }
     setRowOffset(0);
+    focusOffsetRef.current = 0;
+    foregroundRequestKeyRef.current = null;
     setSearch("");
     setDebouncedSearch("");
     setFilters([]);
@@ -345,12 +382,32 @@ export default function ExcelPreviewOverlay({
     setUndoStack([]);
     setRedoStack([]);
     setError(null);
-    setColumnTypes({});
+      setColumnTypes(snapshot.columnTypes || {});
     setGridSelection(EMPTY_GRID_SELECTION);
     setSelectedRowIds(new Map());
     setRowSelectionMode(false);
     setFilterPopover(null);
   }, [activeKey, localPreviews]);
+
+  useEffect(() => () => {
+    requestGenerationRef.current += 1;
+    selectionRequestRef.current += 1;
+    selectionReadRef.current?.controller.abort();
+    selectionReadRef.current = null;
+    for (const request of inFlightRef.current.values()) request.controller.abort();
+    inFlightRef.current.clear();
+    focusOffsetRef.current = 0;
+    foregroundRequestKeyRef.current = null;
+  }, []);
+
+  // Prune dependent state whenever a defensive boundary removes a reserved column.
+  useEffect(() => {
+    setFilters((prev) => pruneReservedColumnTargets(prev).filter((item) => columns.includes(item.column)));
+    setSort((prev) => pruneReservedColumnTargets(prev).filter((item) => columns.includes(item.column)));
+    if (filterPopover && !columns.includes(filterPopover.column)) setFilterPopover(null);
+    if (showColumnMenu && !columns.includes(showColumnMenu.column)) setShowColumnMenu(null);
+    if (showTypePicker && !columns.includes(showTypePicker.column)) setShowTypePicker(null);
+  }, [columns, filterPopover, showColumnMenu, showTypePicker]);
 
   // Clear row selection when view changes (sort/filter/search)
   useEffect(() => {
@@ -361,8 +418,24 @@ export default function ExcelPreviewOverlay({
   // Fetch data when operations change
   useEffect(() => {
     if (!activeKey) return;
-    fetchPreviewData();
-  }, [activeKey, debouncedSearch, filters, sort]);
+    requestGenerationRef.current += 1;
+    selectionRequestRef.current += 1;
+    selectionReadRef.current?.controller.abort();
+    selectionReadRef.current = null;
+    queryKeyRef.current = currentQueryKey;
+    for (const request of inFlightRef.current.values()) request.controller.abort();
+    inFlightRef.current.clear();
+    focusOffsetRef.current = 0;
+    foregroundRequestKeyRef.current = null;
+    const mayRetainInitialSnapshot = snapshotQueryKeyRef.current === currentQueryKey;
+    snapshotQueryKeyRef.current = "";
+    if (!mayRetainInitialSnapshot) {
+      pageCacheRef.current = new Map();
+      setRows([]);
+      setCacheVersion((version) => version + 1);
+    }
+    void fetchPreviewData(0, { force: true });
+  }, [currentQueryKey]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -375,7 +448,7 @@ export default function ExcelPreviewOverlay({
           e.preventDefault();
           handleRedo();
         }
-      } else if (e.key === "Escape") {
+      } else if (e.key === "Escape" && !e.defaultPrevented) {
         onClose();
       }
     };
@@ -385,48 +458,206 @@ export default function ExcelPreviewOverlay({
 
   // --- Data Fetching ---
 
-  const fetchPreviewData = useCallback(async (offset = 0) => {
-    if (!activeKey || !sessionId) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await previewState(sessionId, activeKey, {
-        offset,
-        limit: PAGE_SIZE,
-        search: debouncedSearch || undefined,
-        filters: filters.length > 0 ? filters : undefined,
-        sort: sort.length > 0 ? sort : undefined,
-      });
-      setRows(result.rows || []);
-      const cols = result.columns?.filter((c: string) => c !== ROW_ID_COL) || [];
-      setColumns(cols);
-      setColumnOrder(cols);
-      setColumnTypes((result.columnTypes as Record<string, ColumnDataType>) || {});
-      setTotalRows(result.totalRows || 0);
-      setRowOffset(offset);
-    } catch (e: any) {
-      setError(e.message);
-      const snapshot = localPreviews[activeKey];
-      if (!snapshot?.columns?.length) {
-        setRows([]);
-        setColumns([]);
-        setColumnOrder([]);
-        setColumnTypes({});
-        setTotalRows(0);
+  const fetchPreviewData = useCallback(async (
+    requestedOffset = 0,
+    options: { prefetch?: boolean; force?: boolean } = {},
+  ): Promise<any> => {
+    if (!activeKey || !sessionId) return null;
+    const offset = previewPageOffset(requestedOffset, PAGE_SIZE);
+    const viewRequest = options.prefetch ? latestViewRequestRef.current : ++latestViewRequestRef.current;
+    const generation = requestGenerationRef.current;
+    const requestKey = `${currentQueryKey}:${offset}`;
+
+    if (options.prefetch) {
+      if (Math.abs(offset - focusOffsetRef.current) > PAGE_SIZE) return null;
+    } else {
+      focusOffsetRef.current = offset;
+      for (const [key, request] of inFlightRef.current) {
+        const staleForeground = key === foregroundRequestKeyRef.current && key !== requestKey;
+        const outsideWindow = request.prefetch && Math.abs(request.offset - offset) > PAGE_SIZE;
+        if (staleForeground || outsideWindow) {
+          request.controller.abort();
+          inFlightRef.current.delete(key);
+        }
       }
-    } finally {
-      setLoading(false);
+      foregroundRequestKeyRef.current = requestKey;
     }
-  }, [sessionId, activeKey, debouncedSearch, filters, sort, localPreviews]);
+
+    const cached = pageCacheRef.current.get(offset);
+    if (cached && !options.force) {
+      if (!options.prefetch && viewRequest === latestViewRequestRef.current) {
+        setRows(cached.rows);
+        setRowOffset(offset);
+        foregroundRequestKeyRef.current = null;
+        const previous = offset - PAGE_SIZE;
+        const next = offset + PAGE_SIZE;
+        if (previous >= 0) void fetchPreviewData(previous, { prefetch: true });
+        if (next < totalRows) void fetchPreviewData(next, { prefetch: true });
+      }
+      return cached;
+    }
+
+    const duplicate = inFlightRef.current.get(requestKey);
+    if (duplicate) {
+      if (options.prefetch) return duplicate.promise;
+      if (pageCacheRef.current.size > 0) setBackgroundLoading(true);
+      else setLoading(true);
+      setError(null);
+      return duplicate.promise.then((result) => {
+        if (
+          generation !== requestGenerationRef.current
+          || queryKeyRef.current !== currentQueryKey
+          || viewRequest !== latestViewRequestRef.current
+        ) return result;
+        const page = pageCacheRef.current.get(offset);
+        if (page) {
+          setRows(page.rows);
+          setRowOffset(offset);
+          foregroundRequestKeyRef.current = null;
+          const resultTotal = result?.totalRows ?? totalRows;
+          const previous = offset - PAGE_SIZE;
+          const next = offset + PAGE_SIZE;
+          if (previous >= 0) void fetchPreviewData(previous, { prefetch: true });
+          if (next < resultTotal) void fetchPreviewData(next, { prefetch: true });
+        }
+        return result;
+      }).finally(() => {
+        if (generation === requestGenerationRef.current && viewRequest === latestViewRequestRef.current) {
+          setLoading(false);
+          setBackgroundLoading(false);
+        }
+      });
+    }
+
+    const controller = new AbortController();
+    const hasUsableRows = pageCacheRef.current.size > 0;
+    if (!options.prefetch) {
+      if (hasUsableRows) setBackgroundLoading(true);
+      else setLoading(true);
+      setError(null);
+    }
+
+    const promise = previewState(sessionId, activeKey, {
+      offset,
+      limit: PAGE_SIZE,
+      search: debouncedSearch || undefined,
+      filters: filters.length > 0 ? filters : undefined,
+      sort: sort.length > 0 ? sort : undefined,
+    }, controller.signal).then((result) => {
+      if (generation !== requestGenerationRef.current || queryKeyRef.current !== currentQueryKey) return null;
+      if (options.prefetch && Math.abs(offset - focusOffsetRef.current) > PAGE_SIZE) return null;
+      const safe = sanitizePreviewDto(result);
+      const page = { rows: safe.rows || [] };
+      pageCacheRef.current = storePreviewPage(pageCacheRef.current, offset, page, focusOffsetRef.current);
+      setCacheVersion((version) => version + 1);
+      const cols = safe.columns?.filter((column: string) => column !== ROW_ID_COL) || [];
+      if (cols.length > 0) {
+        setColumns(cols);
+        setColumnOrder(cols);
+      }
+      setColumnTypes((safe.columnTypes as Record<string, ColumnDataType>) || {});
+      setTotalRows(result.totalRows || 0);
+      if (!options.prefetch && viewRequest === latestViewRequestRef.current) {
+        setRows(page.rows);
+        setRowOffset(offset);
+        foregroundRequestKeyRef.current = null;
+        const previous = offset - PAGE_SIZE;
+        const next = offset + PAGE_SIZE;
+        if (previous >= 0) void fetchPreviewData(previous, { prefetch: true });
+        if (next < (result.totalRows || 0)) void fetchPreviewData(next, { prefetch: true });
+      }
+      return result;
+    }).catch((e: any) => {
+      if (e?.name === "AbortError") return null;
+      if (!options.prefetch && generation === requestGenerationRef.current && viewRequest === latestViewRequestRef.current) {
+        setError(e.message);
+        if (pageCacheRef.current.size === 0 && !localPreviews[activeKey]?.columns?.length) {
+          setColumns([]);
+          setColumnOrder([]);
+          setColumnTypes({});
+          setTotalRows(0);
+        }
+      }
+      return null;
+    }).finally(() => {
+      const current = inFlightRef.current.get(requestKey);
+      if (current?.promise === promise) inFlightRef.current.delete(requestKey);
+      if (foregroundRequestKeyRef.current === requestKey && current?.promise === promise) {
+        foregroundRequestKeyRef.current = null;
+      }
+      if (!options.prefetch && generation === requestGenerationRef.current && viewRequest === latestViewRequestRef.current) {
+        setLoading(false);
+        setBackgroundLoading(false);
+      }
+    });
+
+    inFlightRef.current.set(requestKey, { controller, promise, offset, prefetch: !!options.prefetch });
+    return promise;
+  }, [sessionId, activeKey, currentQueryKey, debouncedSearch, filters, sort, localPreviews, rowOffset, totalRows]);
 
   // --- Operations ---
 
-  const executeOperation = async (op: string, params: Record<string, unknown>, addToUndo = true) => {
+  const invalidateInFlightReads = useCallback(() => {
+    requestGenerationRef.current += 1;
+    latestViewRequestRef.current += 1;
+    selectionRequestRef.current += 1;
+    selectionReadRef.current?.controller.abort();
+    selectionReadRef.current = null;
+    for (const request of inFlightRef.current.values()) request.controller.abort();
+    inFlightRef.current.clear();
+    foregroundRequestKeyRef.current = null;
+  }, []);
+
+  const currentView = useCallback(() => ({
+    offset: rowOffset,
+    limit: PAGE_SIZE,
+    search: debouncedSearch || undefined,
+    filters: filters.length > 0 ? filters : undefined,
+    sort: sort.length > 0 ? sort : undefined,
+  }), [rowOffset, debouncedSearch, filters, sort]);
+
+  const consumeMutationView = useCallback(async (result: any) => {
+    pageCacheRef.current = new Map();
+    setCacheVersion((version) => version + 1);
+    if (result?.rows || result?.columns) {
+      const safe = sanitizePreviewDto(result);
+      const offset = result.offset ?? rowOffset;
+      const page = { rows: safe.rows || [] };
+      focusOffsetRef.current = offset;
+      pageCacheRef.current = storePreviewPage(new Map(), offset, page, offset);
+      setRows(page.rows);
+      applyPreviewGridState(
+        result,
+        { setRows, setColumns, setColumnOrder, setColumnTypes, setTotalRows, setRowOffset },
+        offset,
+      );
+      setCacheVersion((version) => version + 1);
+      const resultTotal = result.totalRows ?? page.rows.length;
+      const previous = offset - PAGE_SIZE;
+      const next = offset + PAGE_SIZE;
+      if (previous >= 0) void fetchPreviewData(previous, { prefetch: true });
+      if (next < resultTotal) void fetchPreviewData(next, { prefetch: true });
+      return;
+    }
+    await fetchPreviewData(rowOffset, { force: true });
+  }, [fetchPreviewData, rowOffset]);
+
+  const executeOperation = async (op: PreviewOperationRequest["op"], params: Record<string, unknown>, addToUndo = true) => {
     if (!activeKey || !sessionId) return;
+    for (const key of ["column", "oldName", "newName", "name", "field"]) {
+      if (isReservedProvenanceColumn(params[key])) {
+        setError("Reserved provenance columns cannot be used in preview operations.");
+        return;
+      }
+    }
+    if (Array.isArray(params.order)) {
+      params = { ...params, order: params.order.filter((column) => !isReservedProvenanceColumn(column)) };
+    }
     setLoading(true);
     setError(null);
     try {
-      const result = await previewOperation(sessionId, activeKey, op, params);
+      invalidateInFlightReads();
+      const result = await previewOperation(sessionId, activeKey, op, params, currentView());
       setHasUnsavedChanges(true);
 
       if (addToUndo) {
@@ -434,15 +665,7 @@ export default function ExcelPreviewOverlay({
         setRedoStack([]);
       }
 
-      if (result?.rows || result?.columns) {
-        applyPreviewGridState(
-          result,
-          { setRows, setColumns, setColumnOrder, setColumnTypes, setTotalRows, setRowOffset },
-          rowOffset,
-        );
-      }
-
-      await fetchPreviewData(rowOffset);
+      await consumeMutationView(result);
       return result;
     } catch (e: any) {
       setError(e.message);
@@ -455,8 +678,9 @@ export default function ExcelPreviewOverlay({
   // --- Cell Editing ---
 
   const handleCellEdit = useCallback(async (rowIndex: number, column: string, value: string) => {
-    const pageIndex = rowIndex - rowOffset;
-    const row = rows[pageIndex];
+    const pageOffset = previewPageOffset(rowIndex, PAGE_SIZE);
+    const pageIndex = rowIndex - pageOffset;
+    const row = readPreviewRow(pageCacheRef.current, rowIndex, PAGE_SIZE);
     const rowId = row?.[ROW_ID_COL];
     if (rowId == null) {
       setError("Cannot edit: Row ID not found");
@@ -466,16 +690,21 @@ export default function ExcelPreviewOverlay({
     const oldValue = row[column];
 
     // Optimistic update
-    const newRows = [...rows];
+    const currentPage = pageCacheRef.current.get(pageOffset)?.rows || [];
+    const newRows = [...currentPage];
     newRows[pageIndex] = { ...row, [column]: value };
-    setRows(newRows);
+    pageCacheRef.current = storePreviewPage(pageCacheRef.current, pageOffset, { rows: newRows }, rowOffset);
+    setCacheVersion((version) => version + 1);
+    if (pageOffset === rowOffset) setRows(newRows);
 
     try {
       await executeOperation("cell_edit", { rowId, column, value }, true);
     } catch {
-      const rollbackRows = [...rows];
+      const rollbackRows = [...currentPage];
       rollbackRows[pageIndex] = { ...row, [column]: oldValue };
-      setRows(rollbackRows);
+      pageCacheRef.current = storePreviewPage(pageCacheRef.current, pageOffset, { rows: rollbackRows }, rowOffset);
+      setCacheVersion((version) => version + 1);
+      if (pageOffset === rowOffset) setRows(rollbackRows);
     }
   }, [rows, rowOffset, executeOperation]);
 
@@ -524,34 +753,62 @@ export default function ExcelPreviewOverlay({
     async (sel: GridSelection) => {
       if (!rowSelectionMode) return;
       setGridSelection(sel);
-      const next = new Map<number, number>();
-      for (const rowIndex of sel.rows) {
-        const pageIndex = rowIndex - rowOffset;
-        const row = rows[pageIndex];
-        const rowId = row?.[ROW_ID_COL];
-        if (rowId != null) {
-          next.set(rowIndex, rowId as number);
-        } else if (sessionId && activeKey) {
-          const page = Math.floor(rowIndex / PAGE_SIZE) * PAGE_SIZE;
-          try {
-            const result = await previewState(sessionId, activeKey, {
-              offset: page,
-              limit: PAGE_SIZE,
-              search: debouncedSearch || undefined,
-              filters: filters.length > 0 ? filters : undefined,
-              sort: sort.length > 0 ? sort : undefined,
-            });
-            const offRow = result.rows?.[rowIndex - page];
-            const offId = offRow?.[ROW_ID_COL];
-            if (offId != null) next.set(rowIndex, offId as number);
-          } catch {
-            // keep row without id; delete will surface error
-          }
-        }
+      const requestId = ++selectionRequestRef.current;
+      selectionReadRef.current?.controller.abort();
+      const controller = new AbortController();
+      selectionReadRef.current = { id: requestId, controller };
+      const generation = requestGenerationRef.current;
+      const selectedIndices = [...sel.rows];
+      const { resolved, unresolved } = preserveResolvedRowIds(
+        selectedRowIds,
+        selectedIndices,
+        (rowIndex: number) => readPreviewRow(pageCacheRef.current, rowIndex, PAGE_SIZE)?.[ROW_ID_COL] as number | undefined,
+      );
+      setSelectedRowIds(new Map(resolved));
+
+      const missingByPage = new Map<number, number[]>();
+      for (const rowIndex of unresolved) {
+        const page = previewPageOffset(rowIndex, PAGE_SIZE);
+        const indices = missingByPage.get(page) || [];
+        indices.push(rowIndex);
+        missingByPage.set(page, indices);
       }
-      setSelectedRowIds(next);
+
+      try {
+        // Selection reads are sequential and page-deduped, so they remain bounded
+        // without weakening the viewport's strict previous/current/next window.
+        for (const [page, indices] of missingByPage) {
+          const result = await previewState(sessionId, activeKey, {
+            offset: page,
+            limit: PAGE_SIZE,
+            search: debouncedSearch || undefined,
+            filters: filters.length > 0 ? filters : undefined,
+            sort: sort.length > 0 ? sort : undefined,
+          }, controller.signal);
+          if (
+            requestId !== selectionRequestRef.current
+            || generation !== requestGenerationRef.current
+            || controller.signal.aborted
+          ) return;
+          const safe = sanitizePreviewDto(result);
+          for (const rowIndex of indices) {
+            const rowId = safe.rows?.[rowIndex - page]?.[ROW_ID_COL];
+            if (rowId != null) resolved.set(rowIndex, rowId as number);
+          }
+          setSelectedRowIds(new Map(resolved));
+        }
+        if (resolved.size !== selectedIndices.length) {
+          setError(`Could not resolve ${selectedIndices.length - resolved.size} selected row ID(s). Reselect those rows before deleting.`);
+        }
+      } catch (e: any) {
+        if (e?.name !== "AbortError" && requestId === selectionRequestRef.current) {
+          setError("Could not resolve all selected row IDs. Check the connection and reselect before deleting.");
+        }
+      } finally {
+        if (selectionReadRef.current?.id === requestId) selectionReadRef.current = null;
+      }
     },
-    [rowSelectionMode, rowOffset, rows, sessionId, activeKey, debouncedSearch, filters, sort],
+    [rowSelectionMode, sessionId, activeKey, selectedRowIds, debouncedSearch, filters, sort],
   );
 
   const handleDeleteSelectedRows = async () => {
@@ -559,20 +816,21 @@ export default function ExcelPreviewOverlay({
     if (!confirm(`Delete ${selectedRowCount} selected row(s)? This cannot be undone.`)) return;
 
     const rowIds = Array.from(selectedRowIds.values());
-    if (rowIds.length === 0) {
-      setError("Cannot delete: Row IDs not found");
+    if (selectedRowIds.size !== selectedRowCount || rowIds.length !== selectedRowCount) {
+      setError(`Cannot delete: resolved ${rowIds.length} of ${selectedRowCount} selected row IDs. Reselect unresolved rows and try again.`);
       return;
     }
 
     setLoading(true);
     try {
-      await previewOperation(sessionId, activeKey, "rows_delete", { rowIds });
+      invalidateInFlightReads();
+      const result = await previewOperation(sessionId, activeKey, "rows_delete", { rowIds }, currentView());
       setGridSelection(EMPTY_GRID_SELECTION);
       setSelectedRowIds(new Map());
       setHasUnsavedChanges(true);
       setUndoStack((prev) => [...prev, { op: "rows_delete", params: { rowIds } }]);
       setRedoStack([]);
-      await fetchPreviewData(rowOffset);
+      await consumeMutationView(result);
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -581,6 +839,9 @@ export default function ExcelPreviewOverlay({
   };
 
   const clearRowSelection = () => {
+    selectionRequestRef.current += 1;
+    selectionReadRef.current?.controller.abort();
+    selectionReadRef.current = null;
     setGridSelection(EMPTY_GRID_SELECTION);
     setSelectedRowIds(new Map());
     setRowSelectionMode(false);
@@ -593,10 +854,11 @@ export default function ExcelPreviewOverlay({
     const lastOp = undoStack[undoStack.length - 1];
     setLoading(true);
     try {
-      await previewUndo(sessionId, activeKey);
+      invalidateInFlightReads();
+      const result = await previewUndo(sessionId, activeKey, currentView());
       setUndoStack((prev) => prev.slice(0, -1));
       setRedoStack((prev) => [...prev, lastOp]);
-      await fetchPreviewData(rowOffset);
+      await consumeMutationView(result);
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -609,10 +871,11 @@ export default function ExcelPreviewOverlay({
     const nextOp = redoStack[redoStack.length - 1];
     setLoading(true);
     try {
-      await previewRedo(sessionId, activeKey);
+      invalidateInFlightReads();
+      const result = await previewRedo(sessionId, activeKey, currentView());
       setRedoStack((prev) => prev.slice(0, -1));
       setUndoStack((prev) => [...prev, nextOp]);
-      await fetchPreviewData(rowOffset);
+      await consumeMutationView(result);
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -630,6 +893,10 @@ export default function ExcelPreviewOverlay({
   // --- Filter ---
 
   const handleApplyColumnFilter = (column: string, filter: PreviewFilter | null) => {
+    if (isReservedProvenanceColumn(column)) {
+      setFilterPopover(null);
+      return;
+    }
     setFilters((prev) => {
       const rest = prev.filter((f) => f.column !== column);
       if (!filter) return rest;
@@ -654,15 +921,21 @@ export default function ExcelPreviewOverlay({
 
   const handlePivot = async (config: PivotConfig) => {
     if (!activeKey || !sessionId) return;
+    const safeConfig: PivotConfig = {
+      rowFields: config.rowFields.filter((field) => !isReservedProvenanceColumn(field)),
+      columnFields: config.columnFields.filter((field) => !isReservedProvenanceColumn(field)),
+      valueFields: config.valueFields.filter((item) => !isReservedProvenanceColumn(item.field)),
+    };
     setLoading(true);
     setError(null);
     try {
-      const result = await previewOperation(sessionId, activeKey, "pivot", config as unknown as Record<string, unknown>);
+      invalidateInFlightReads();
+      const result = await previewOperation(sessionId, activeKey, "pivot", safeConfig as unknown as Record<string, unknown>, currentView());
       setShowPivotDialog(false);
 
       if (result.newTableKey) {
         const refresh = await previewRefreshInventory(sessionId);
-        if (refresh.previews) setLocalPreviews(refresh.previews);
+        if (refresh.previews) setLocalPreviews(sanitizePreviewMap(refresh.previews));
         if (refresh.inventory) setLocalInventory(refresh.inventory);
         const newKey = result.newTableKey as string;
         setFilters([]);
@@ -670,26 +943,11 @@ export default function ExcelPreviewOverlay({
         setSearch("");
         setDebouncedSearch("");
         setActiveKey(newKey);
-        const state = await previewState(sessionId, newKey, { offset: 0, limit: PAGE_SIZE });
-        applyPreviewGridState(
-          state,
-          { setRows, setColumns, setColumnOrder, setColumnTypes, setTotalRows, setRowOffset },
-          0,
-        );
         setHasUnsavedChanges(true);
         return;
       }
 
-      if (result.columns) {
-        setColumns(result.columns.filter((c: string) => c !== ROW_ID_COL));
-        setColumnOrder(result.columns.filter((c: string) => c !== ROW_ID_COL));
-      }
-      if (result.rows) {
-        setRows(result.rows);
-      }
-      if (result.totalRows !== undefined) {
-        setTotalRows(result.totalRows);
-      }
+      await consumeMutationView(result);
       setHasUnsavedChanges(true);
     } catch (e: any) {
       setError(e.message);
@@ -707,6 +965,7 @@ export default function ExcelPreviewOverlay({
     const doApply = async () => {
       setLoading(true);
       try {
+        invalidateInFlightReads();
         const result = await previewApply(sessionId, activeKey, {
           kind: target.kind,
           id: target.id,
@@ -756,7 +1015,7 @@ export default function ExcelPreviewOverlay({
   const getCellContent = useCallback(
     ([col, row]: Item) => {
       const colName = columnOrder[col];
-      const dataRow = rows[row - rowOffset];
+      const dataRow = readPreviewRow(pageCacheRef.current, row, PAGE_SIZE);
       const val = dataRow?.[colName];
       return {
         kind: GridCellKind.Text,
@@ -766,7 +1025,7 @@ export default function ExcelPreviewOverlay({
         readonly: false,
       };
     },
-    [columnOrder, rows, rowOffset],
+    [columnOrder],
   );
 
   const onCellEdited = useCallback(
@@ -844,9 +1103,9 @@ export default function ExcelPreviewOverlay({
         transition={{ duration: 0.2 }}
         className="fixed inset-0 z-[9999] flex flex-col bg-white dark:bg-neutral-950"
       >
-        {/* Top Bar */}
-        <div className="flex items-center justify-between px-4 py-2 border-b border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950 shrink-0">
-          <div className="flex items-center gap-3">
+        {/* Identity header and responsive action row */}
+        <div className="flex shrink-0 flex-col border-b border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950">
+          <header className="flex h-16 min-w-0 items-center gap-3 px-4">
             <button
               type="button"
               onClick={onClose}
@@ -856,9 +1115,9 @@ export default function ExcelPreviewOverlay({
               Back
             </button>
             <div className="h-5 w-px bg-neutral-200 dark:bg-neutral-700" />
-            <div className="flex items-center gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               <Table2 className="w-4 h-4 text-red-500" />
-              <h2 className="text-sm font-bold text-neutral-900 dark:text-white">{title}</h2>
+              <h2 className="truncate text-sm font-bold text-neutral-900 dark:text-white">{title}</h2>
             </div>
             {activeMeta && (
               <div className="flex items-center gap-2 ml-2">
@@ -875,18 +1134,21 @@ export default function ExcelPreviewOverlay({
                 Unsaved changes
               </span>
             )}
-          </div>
+            <button type="button" onClick={onClose} className="ml-auto inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-neutral-200 text-neutral-500 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 dark:border-neutral-700" aria-label="Close preview" title="Close preview">
+              <X className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </header>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-neutral-200 bg-neutral-50/70 px-4 py-3 dark:border-neutral-800 dark:bg-neutral-900/60">
             {/* Search */}
-            <div className="relative">
+            <div className="relative min-w-0 flex-[1_1_16rem]">
               <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-neutral-400" />
               <input
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search..."
-                className="pl-8 pr-3 py-1.5 text-xs rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white w-48 focus:outline-none focus:ring-2 focus:ring-red-500/20"
+                className="h-9 w-full min-w-0 rounded-lg border border-neutral-200 bg-white pl-8 pr-3 text-xs text-neutral-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-white"
               />
             </div>
 
@@ -966,13 +1228,6 @@ export default function ExcelPreviewOverlay({
               onClick={() => {}}
             />
 
-            <button
-              type="button"
-              onClick={onClose}
-              className="p-2 rounded-lg hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 transition-colors"
-            >
-              <X className="w-5 h-5" />
-            </button>
           </div>
         </div>
 
@@ -1044,7 +1299,7 @@ export default function ExcelPreviewOverlay({
 
         {/* Grid Area */}
         <div className="flex-1 min-h-0 p-4 relative bg-neutral-50 dark:bg-neutral-900">
-          {loading && (
+          {loading && pageCacheRef.current.size === 0 && (
             <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/60 dark:bg-neutral-950/60">
               <div className="flex items-center gap-2 text-sm text-neutral-500">
                 <div className="w-5 h-5 border-2 border-neutral-300 border-t-red-500 rounded-full animate-spin" />
@@ -1069,8 +1324,8 @@ export default function ExcelPreviewOverlay({
                 onHeaderContextMenu={onHeaderContextMenu}
                 onVisibleRegionChanged={(region) => {
                   const page = Math.floor(region.y / PAGE_SIZE) * PAGE_SIZE;
-                  if (page !== rowOffset && page < totalRows && !loading) {
-                    fetchPreviewData(page);
+                  if (page !== rowOffset && page < totalRows) {
+                    void fetchPreviewData(page);
                   }
                 }}
                 rowMarkers={rowSelectionMode ? "checkbox" : "number"}
@@ -1149,6 +1404,9 @@ export default function ExcelPreviewOverlay({
             </span>
           </div>
           <div className="flex items-center gap-2">
+            {backgroundLoading && (
+              <span className="text-neutral-400" role="status">Loading rows in background...</span>
+            )}
             <span className={undoStack.length > 0 ? "text-amber-600" : ""}>
               {undoStack.length} changes to undo
             </span>
@@ -1281,23 +1539,23 @@ function ColumnFilterPopover({
   }, [search]);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
     setLoading(true);
     setLoadError(null);
     previewColumnValues(sessionId, tableKey, column, {
       search: debouncedSearch || undefined,
-      filters: filters.length > 0 ? (filters as unknown as Record<string, unknown>[]) : undefined,
+      filters: filters.length > 0 ? filters : undefined,
       limit: 500,
-    })
+    }, controller.signal)
       .then((result) => {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         setValues(result.values);
         setHasBlanks(result.hasBlanks);
         setTotalDistinct(result.totalDistinct);
         setLoadError(null);
       })
       .catch((err) => {
-        if (!cancelled) {
+        if (err?.name !== "AbortError" && !controller.signal.aborted) {
           setValues([]);
           setHasBlanks(false);
           setTotalDistinct(0);
@@ -1305,9 +1563,9 @@ function ColumnFilterPopover({
         }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       });
-    return () => { cancelled = true; };
+    return () => controller.abort();
   }, [sessionId, tableKey, column, debouncedSearch, filters]);
 
   // Initialize checkbox state once when values first load (no search)
@@ -1476,212 +1734,57 @@ function ColumnFilterPopover({
   );
 }
 
-interface FormulaSuggestion {
-  insert: string;
-  ghost: string;
-  cursorOffset: number;
-}
-
-/** Return Tab-completion suggestion at cursor for column refs or function names. */
-function getFormulaSuggestion(
-  expr: string,
-  cursor: number,
-  columns: string[],
-  functions: string[],
-  suggestionIndex = 0,
-): FormulaSuggestion | null {
-  const before = expr.slice(0, cursor);
-  const bracket = before.match(/\[([^\]]*)$/);
-  if (bracket) {
-    const partial = bracket[1];
-    const matches = columns.filter((c) =>
-      c.toLowerCase().startsWith(partial.toLowerCase()),
-    );
-    if (matches.length === 0) return null;
-    const match = matches[suggestionIndex % matches.length];
-    const suffix = match.slice(partial.length);
-    return {
-      insert: `[${match}]`,
-      ghost: suffix + "]",
-      cursorOffset: `[${match}]`.length - partial.length - 1,
-    };
-  }
-  const word = before.match(/([A-Za-z_]\w*)$/);
-  if (word) {
-    const partial = word[1];
-    const matches = functions.filter((f) =>
-      f.startsWith(partial.toUpperCase()),
-    );
-    if (matches.length === 0) return null;
-    const match = matches[suggestionIndex % matches.length];
-    const suffix = match.slice(partial.length);
-    return {
-      insert: match,
-      ghost: suffix,
-      cursorOffset: match.length - partial.length,
-    };
-  }
-  return null;
-}
-
-function FormulaInput({
-  value,
-  onChange,
-  columns,
-  placeholder,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  columns: string[];
-  placeholder?: string;
-}) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [cursor, setCursor] = useState(0);
-  const [suggestionIndex, setSuggestionIndex] = useState(0);
-  const [dismissed, setDismissed] = useState(false);
-
-  const suggestion = dismissed
-    ? null
-    : getFormulaSuggestion(value, cursor, columns, ALLOWED_CALC_FUNCTIONS, suggestionIndex);
-
-  const applySuggestion = () => {
-    if (!suggestion || !textareaRef.current) return;
-    const before = value.slice(0, cursor);
-    const after = value.slice(cursor);
-    const bracket = before.match(/\[([^\]]*)$/);
-    const word = before.match(/([A-Za-z_]\w*)$/);
-    let newValue: string;
-    let newCursor: number;
-    if (bracket) {
-      const prefix = before.slice(0, before.length - bracket[0].length);
-      newValue = prefix + suggestion.insert + after;
-      newCursor = prefix.length + suggestion.insert.length;
-    } else if (word) {
-      const prefix = before.slice(0, before.length - word[1].length);
-      newValue = prefix + suggestion.insert + after;
-      newCursor = prefix.length + suggestion.insert.length;
-    } else {
-      return;
-    }
-    onChange(newValue);
-    setCursor(newCursor);
-    setDismissed(false);
-    setSuggestionIndex(0);
-    requestAnimationFrame(() => {
-      if (textareaRef.current) {
-        textareaRef.current.selectionStart = newCursor;
-        textareaRef.current.selectionEnd = newCursor;
-        textareaRef.current.focus();
-      }
-    });
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Tab" && suggestion) {
-      e.preventDefault();
-      applySuggestion();
-    } else if (e.key === "Escape") {
-      setDismissed(true);
-    } else if (e.key === "ArrowDown" && suggestion) {
-      e.preventDefault();
-      setSuggestionIndex((i) => i + 1);
-      setDismissed(false);
-    } else if (e.key === "ArrowUp" && suggestion) {
-      e.preventDefault();
-      setSuggestionIndex((i) => Math.max(0, i - 1));
-      setDismissed(false);
-    } else {
-      setDismissed(false);
-      setSuggestionIndex(0);
-    }
-  };
-
-  const textBeforeCursor = value.slice(0, cursor);
-  const ghostText = suggestion?.ghost || "";
-
-  return (
-    <div className="relative">
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 px-3 py-2 text-sm font-mono whitespace-pre-wrap break-words overflow-hidden rounded-lg border border-transparent"
-      >
-        <span className="invisible">{textBeforeCursor}</span>
-        <span className="text-neutral-400">{ghostText}</span>
-      </div>
-      <textarea
-        ref={textareaRef}
-        value={value}
-        onChange={(e) => {
-          onChange(e.target.value);
-          setCursor(e.target.selectionStart);
-          setDismissed(false);
-          setSuggestionIndex(0);
-        }}
-        onSelect={(e) => setCursor(e.currentTarget.selectionStart)}
-        onKeyDown={handleKeyDown}
-        onClick={(e) => setCursor(e.currentTarget.selectionStart)}
-        placeholder={placeholder}
-        rows={3}
-        className="relative w-full px-3 py-2 text-sm rounded-lg border border-neutral-200 dark:border-neutral-700 bg-transparent dark:bg-neutral-800 font-mono focus:outline-none focus:ring-2 focus:ring-red-500/20"
-        style={{ color: "inherit", caretColor: "auto" }}
-      />
-    </div>
-  );
-}
-
-function CalcColumnDialog({ columns, onClose, onApply }: { columns: string[]; onClose: () => void; onApply: (c: CalcColumnConfig) => void }) {
+function CalcColumnDialog({ columns, onClose, onApply }: { columns: string[]; onClose: () => void; onApply: (c: CalcColumnConfig) => Promise<void> }) {
   const [name, setName] = useState("");
   const [expression, setExpression] = useState("");
   const [dataType, setDataType] = useState<CalcColumnConfig["dataType"]>("TEXT");
-  const [dataTypeTouched, setDataTypeTouched] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const canSubmit = name.trim().length > 0 && expression.trim().length > 0 && !submitting;
 
-  useEffect(() => {
-    if (!dataTypeTouched && /\/|\*|\+|-/.test(expression)) {
-      setDataType("DOUBLE");
+  const submit = async () => {
+    if (!canSubmit) return;
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      await onApply({ name: name.trim(), expression: expression.trim(), dataType });
+    } catch (error: any) {
+      setSubmitError(error?.message || "Could not add the calculated column.");
+    } finally {
+      setSubmitting(false);
     }
-  }, [expression, dataTypeTouched]);
-
-  const sampleExpressions = [
-    { label: "UPPER(column)", expr: "UPPER([Column Name])" },
-    { label: "column1 + column2", expr: "[Column1] + [Column2]" },
-    { label: "ROUND(column, 2)", expr: "ROUND([Column], 2)" },
-    { label: "LENGTH(column)", expr: "LENGTH([Column])" },
-  ];
+  };
 
   return (
-    <Dialog title="Add Calculated Column" onClose={onClose}>
-      <div className="space-y-4">
-        <div>
-          <label className="text-xs font-semibold text-neutral-600 dark:text-neutral-400 mb-1 block">Column Name</label>
+    <Dialog title="Add Calculated Column" onClose={onClose} wide>
+      <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_220px]">
+        <div className="space-y-3">
+          <label className="block text-xs font-semibold text-neutral-600 dark:text-neutral-400">
+            New column name
           <input
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="New Column"
-            className="w-full px-3 py-2 text-sm rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800"
+              className="mt-1 h-9 w-full rounded-lg border border-neutral-200 bg-white px-3 text-sm outline-none focus:border-red-400 focus:ring-2 focus:ring-red-100 dark:border-neutral-700 dark:bg-neutral-950"
           />
-        </div>
-        <div>
-          <label className="text-xs font-semibold text-neutral-600 dark:text-neutral-400 mb-1 block">Expression</label>
-          <FormulaInput
+          </label>
+          <label className="block text-xs font-semibold text-neutral-600 dark:text-neutral-400">
+            Expression
+            <textarea
             value={expression}
-            onChange={setExpression}
-            columns={columns}
+              onChange={(event) => setExpression(event.target.value)}
+              rows={7}
             placeholder="e.g., UPPER([Name]) or [Price] * [Quantity]"
-          />
-          <p className="text-[10px] text-neutral-500 mt-1">
-            Use [Column Name] to reference columns. Tab to autocomplete. Supports: UPPER, LOWER, ROUND, ABS, +, -, *, /
-          </p>
-        </div>
-        <div>
-          <label className="text-xs font-semibold text-neutral-600 dark:text-neutral-400 mb-1 block">Data Type</label>
+              className="mt-1 w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 font-mono text-xs outline-none focus:border-red-400 focus:ring-2 focus:ring-red-100 dark:border-neutral-700 dark:bg-neutral-950"
+            />
+          </label>
+          <label className="block text-xs font-semibold text-neutral-600 dark:text-neutral-400">
+            Result type
           <select
             value={dataType}
-            onChange={(e) => {
-              setDataTypeTouched(true);
-              setDataType(e.target.value as CalcColumnConfig["dataType"]);
-            }}
-            className="w-full px-3 py-2 text-sm rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800"
+              onChange={(e) => setDataType(e.target.value as CalcColumnConfig["dataType"])}
+              className="mt-1 h-9 w-full rounded-lg border border-neutral-200 bg-white px-3 text-sm outline-none focus:border-red-400 dark:border-neutral-700 dark:bg-neutral-950"
           >
             <option value="TEXT">Text</option>
             <option value="INTEGER">Integer</option>
@@ -1689,37 +1792,37 @@ function CalcColumnDialog({ columns, onClose, onApply }: { columns: string[]; on
             <option value="DATE">Date</option>
             <option value="BOOLEAN">Boolean</option>
           </select>
-          {/\/\s*\[|\]\s*\//.test(expression) && dataType === "INTEGER" && (
-            <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1">
-              Division usually needs Decimal type.
-            </p>
-          )}
+          </label>
+          {submitError && <p role="alert" className="text-xs text-red-600 dark:text-red-400">{submitError}</p>}
         </div>
-        <div className="bg-neutral-50 dark:bg-neutral-900 p-3 rounded-lg">
-          <p className="text-[10px] font-semibold text-neutral-600 dark:text-neutral-400 mb-2">Quick Templates:</p>
-          <div className="flex flex-wrap gap-2">
-            {sampleExpressions.map((s, i) => (
+        <div className="rounded-lg border border-neutral-200 p-3 dark:border-neutral-700">
+          <p className="text-xs font-semibold text-neutral-500">Columns</p>
+          <div className="mt-2 max-h-64 space-y-1 overflow-y-auto">
+            {columns.map((column) => (
               <button
-                key={i}
-                onClick={() => setExpression(s.expr)}
-                className="text-[10px] px-2 py-1 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded hover:bg-neutral-50"
+                type="button"
+                key={column}
+                onClick={() => setExpression((current) => `${current}${current ? " " : ""}[${column}]`)}
+                className="w-full truncate rounded px-2 py-1.5 text-left text-xs hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                title={`Insert [${column}]`}
               >
-                {s.label}
+                {column}
               </button>
             ))}
           </div>
         </div>
-        <div className="flex justify-end gap-2 pt-2">
-          <button onClick={onClose} className="px-4 py-2 text-xs font-semibold text-neutral-600 hover:bg-neutral-100 rounded-lg">Cancel</button>
+      </div>
+        <div className="-mx-4 -mb-4 mt-4 flex justify-end gap-2 border-t border-neutral-200 px-4 py-3 dark:border-neutral-700">
+          <button type="button" onClick={onClose} disabled={submitting} className="rounded-lg border border-neutral-200 px-3 py-2 text-xs font-semibold dark:border-neutral-700">Cancel</button>
           <button
-            onClick={() => { onApply({ name, expression, dataType }); }}
-            disabled={!name || !expression}
-            className="px-4 py-2 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg disabled:opacity-50"
+            type="button"
+            onClick={submit}
+            disabled={!canSubmit}
+            className="rounded-lg bg-red-600 px-3 py-2 text-xs font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Add Column
+            {submitting ? "Adding..." : "Add Column"}
           </button>
         </div>
-      </div>
     </Dialog>
   );
 }
@@ -2061,17 +2164,56 @@ function ApplyDialog({ options, onClose, onApply }: { options: Array<{ kind: App
   );
 }
 
-function Dialog({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
+function Dialog({ title, children, onClose, wide = false }: { title: string; children: React.ReactNode; onClose: () => void; wide?: boolean }) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    restoreFocusRef.current = document.activeElement as HTMLElement | null;
+    closeRef.current?.focus();
+    return () => restoreFocusRef.current?.focus();
+  }, []);
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+      return;
+    }
+    if (event.key !== "Tab" || !panelRef.current) return;
+    const focusable = Array.from(panelRef.current.querySelectorAll(
+      'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    )) as HTMLElement[];
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50">
+    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={onClose}>
       <motion.div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
-        className="bg-white dark:bg-neutral-900 rounded-xl shadow-xl border border-neutral-200 dark:border-neutral-700 w-full max-w-lg mx-4"
+        onMouseDown={(event) => event.stopPropagation()}
+        onKeyDown={handleKeyDown}
+        className={`max-h-[90vh] overflow-y-auto bg-white dark:bg-neutral-900 rounded-xl shadow-xl border border-neutral-200 dark:border-neutral-700 w-full ${wide ? "max-w-3xl" : "max-w-lg"}`}
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-200 dark:border-neutral-700">
           <h3 className="text-sm font-bold">{title}</h3>
-          <button onClick={onClose} className="p-1 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded">
+          <button ref={closeRef} type="button" onClick={onClose} aria-label={`Close ${title}`} className="p-1 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500">
             <X className="w-4 h-4" />
           </button>
         </div>

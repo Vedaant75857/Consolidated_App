@@ -10,7 +10,6 @@ import Merging from "./components/module-1/Merging";
 import DataQualityAssessment from "./components/module-1/DataQualityAssessment";
 import ErrorBoundary from "./components/common/ErrorBoundary";
 import LoadingOverlay from "./components/module-1/LoadingOverlay";
-import StatusLog, { type LogEntry } from "./components/module-1/StatusLog";
 import ExcelPreviewOverlay from "./components/module-1/ExcelPreviewOverlay";
 import MergeOutputsPanel from "./components/module-1/MergeOutputsPanel";
 import { getConfig } from "./runtimeConfig";
@@ -23,6 +22,13 @@ import {
   hydrateApiKeyFromUrl,
   setSessionApiKey,
 } from "./apiKeySession";
+import {
+  isReservedProvenanceColumn,
+  sanitizePreviewDto,
+  sanitizePreviewMap,
+  sanitizeReservedColumns,
+  sanitizeReservedRows,
+} from "./utils/reservedColumns";
 
 const LEGACY_API_KEY = "datastitcher_apiKey";
 
@@ -59,8 +65,6 @@ export default function App() {
   const [singleTableMode, setSingleTableMode] = useState(false);
   const [lastFailedAction, setLastFailedAction] = useState<(() => void) | null>(null);
   const [sessionId, setSessionId] = useState<string>("");
-  const [statusLog, setStatusLog] = useState<LogEntry[]>([]);
-  const logIdRef = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
   const dqaCancelRef = useRef<(() => void) | null>(null);
   const prevStepRef = useRef(step);
@@ -73,10 +77,6 @@ export default function App() {
       dqaCancelRef.current();
       dqaCancelRef.current = null;
     }
-  }, []);
-
-  const addLog = useCallback((stepName: string, type: LogEntry["type"], message: string) => {
-    setStatusLog((prev) => [...prev, { id: ++logIdRef.current, timestamp: new Date(), step: stepName, type, message }]);
   }, []);
 
   // Persist apiKey to sessionStorage so it survives page refreshes
@@ -196,16 +196,15 @@ export default function App() {
       setGroupInsights(data.insights || {});
       setGroupReports(data.groupReports || []);
       setCrossGroupOverview(data.crossGroupOverview || null);
-      addLog("Group Insights", "success", `Generated insights for ${Object.keys(data.insights || {}).length} group(s)`);
     } catch (err: any) {
       if (err.name === "AbortError") return;
       console.error("Group insights error:", err);
-      addLog("Group Insights", "error", err.message);
+      setError(err.message);
     } finally {
       setGroupInsightsLoading(false);
       if (insightsAbortRef.current === controller) insightsAbortRef.current = null;
     }
-  }, [addLog]);
+  }, []);
 
   const fetchGroupPreviewForHeaderNorm = useCallback(async (groupIds: string[]) => {
     if (!sessionId || groupIds.length === 0) return;
@@ -221,7 +220,11 @@ export default function App() {
       setGroupPreviewData((prev) => {
         const next = { ...prev };
         for (const p of previews) {
-          next[p.group_id] = { columns: p.columns || [], rows: p.rows || [], total_rows: p.total_rows || 0 };
+          next[p.group_id] = {
+            columns: sanitizeReservedColumns(p.columns),
+            rows: sanitizeReservedRows(p.rows),
+            total_rows: p.total_rows || 0,
+          };
         }
         return next;
       });
@@ -264,7 +267,6 @@ export default function App() {
         setDedupResults({});
         setStandardizeConfigs({});
         setConcatConfigs({});
-        setRemovedColumns({});
       }
       if (fromStep < 6) {
         setMergeBaseGroupId("");
@@ -428,7 +430,7 @@ export default function App() {
   const applyStatePatch = useCallback((patch: any) => {
     if (!patch || typeof patch !== "object") return;
     if (patch.inventory) setInventory(patch.inventory);
-    if (patch.previews) setPreviews(patch.previews);
+    if (patch.previews) setPreviews(sanitizePreviewMap(patch.previews));
     if (patch.filesPayload) {
       // no direct UI state for filesPayload; kept in backend as source-of-truth
     }
@@ -557,7 +559,6 @@ export default function App() {
     setUploadProgress(0);
     setLoadingMessage("Uploading your data…");
     setError(null);
-    addLog("Upload", "info", "Uploading and extracting data...");
 
     const formData = new FormData();
     formData.append("file", file);
@@ -640,18 +641,11 @@ export default function App() {
 
       setSessionId(data.sessionId);
       setInventory(data.inventory);
-      setPreviews(data.previews || {});
+      setPreviews(sanitizePreviewMap(data.previews || {}));
       setUploadWarnings(data.warnings || []);
-      addLog("Upload", "success", `Extracted ${data.inventory.length} tables from archive`);
-      if (data.warnings?.length > 0) {
-        for (const w of data.warnings) {
-          addLog("Upload", "error", `Failed to parse "${w.file}": ${w.message}`);
-        }
-      }
       setStep(2);
     } catch (err: any) {
       setError(err.message);
-      addLog("Upload", "error", err.message);
       setLastFailedAction(() => doUpload);
     } finally {
       setLoading(false);
@@ -699,13 +693,12 @@ export default function App() {
       if (!res.ok) {
         const message = await parseFetchError(res);
         setPreviewErrors((prev) => ({ ...prev, [tableKey]: message }));
-        addLog("Data Preview", "error", `Preview failed for "${tableKey}": ${message}`);
         return false;
       }
       const data = await res.json();
       if ((previewMutationVersionRef.current[tableKey] || 0) !== requestVersion) return false;
       if (data.preview) {
-        setPreviews((prev) => ({ ...prev, [tableKey]: data.preview }));
+        setPreviews((prev) => ({ ...prev, [tableKey]: sanitizePreviewDto(data.preview) }));
         setPreviewErrors((prev) => {
           const next = { ...prev };
           delete next[tableKey];
@@ -717,7 +710,6 @@ export default function App() {
     } catch (err: any) {
       const message = err?.message || "Failed to load preview";
       setPreviewErrors((prev) => ({ ...prev, [tableKey]: message }));
-      addLog("Data Preview", "error", `Preview failed for "${tableKey}": ${message}`);
       return false;
     }
   };
@@ -735,11 +727,9 @@ export default function App() {
       if (!res.ok) throw new Error((await res.json()).error || "Failed to delete table");
       const data = await res.json();
       setInventory(data.inventory);
-      setPreviews(data.previews || {});
-      addLog("Data Preview", "success", `Deleted table "${tableKey}"`);
+      setPreviews(sanitizePreviewMap(data.previews || {}));
     } catch (err: any) {
       setError(err.message);
-      addLog("Data Preview", "error", err.message);
     } finally {
       setLoading(false);
     }
@@ -774,11 +764,9 @@ export default function App() {
       }
       const data = await res.json();
       setInventory(data.inventory);
-      setPreviews(data.previews || {});
-      addLog("Data Preview", "success", `Deleted ${data.deletedCount ?? tableKeys.length} table(s)`);
+      setPreviews(sanitizePreviewMap(data.previews || {}));
     } catch (err: any) {
       setError(err.message);
-      addLog("Data Preview", "error", err.message);
     } finally {
       setLoading(false);
       setLoadingMessage("");
@@ -806,14 +794,12 @@ export default function App() {
       });
       if (!res.ok) throw new Error((await res.json()).error || "Failed to delete rows");
       const data = await res.json();
-      if (data.preview) setPreviews((prev) => ({ ...prev, [tableKey]: data.preview }));
+      if (data.preview) setPreviews((prev) => ({ ...prev, [tableKey]: sanitizePreviewDto(data.preview) }));
       if (data.inventoryRow) {
         setInventory((prev) => prev.map((inv) => inv.table_key === tableKey ? data.inventoryRow : inv));
       }
-      addLog("Data Preview", "success", `Deleted ${data.deletedCount || rowIds.length} row(s) from "${tableKey}"`);
     } catch (err: any) {
       setError(err.message);
-      addLog("Data Preview", "error", err.message);
     } finally {
       setLoading(false);
     }
@@ -847,14 +833,12 @@ export default function App() {
       const data = await res.json();
       setInventory(data.inventory);
       if (data.preview) {
-        setPreviews((prev) => ({ ...prev, [tableKey]: data.preview }));
+        setPreviews((prev) => ({ ...prev, [tableKey]: sanitizePreviewDto(data.preview) }));
       } else if (data.previews) {
-        setPreviews(data.previews);
+        setPreviews(sanitizePreviewMap(data.previews));
       }
-      addLog("Data Preview", "success", `Header row set to row ${headerRowIndex} for "${tableKey}"`);
     } catch (err: any) {
       setError(err.message);
-      addLog("Data Preview", "error", err.message);
       throw err;
     } finally {
       setLoading(false);
@@ -880,15 +864,13 @@ export default function App() {
       });
       if (!res.ok) throw new Error((await res.json()).error || "Failed to clean table");
       const data = await res.json();
-      setPreviews((prev) => ({ ...prev, [tableKey]: data.preview }));
+      setPreviews((prev) => ({ ...prev, [tableKey]: sanitizePreviewDto(data.preview) }));
       if (data.inventoryRow) {
         setInventory((prev) => prev.map((inv) => inv.table_key === tableKey ? data.inventoryRow : inv));
       }
       setCleaningConfigs((prev) => ({ ...prev, [tableKey]: config }));
-      addLog("Data Cleaning", "success", `Cleaned table "${tableKey}"`);
     } catch (err: any) {
       setError(err.message);
-      addLog("Data Cleaning", "error", err.message);
     } finally {
       setLoading(false);
     }
@@ -918,10 +900,8 @@ export default function App() {
         setGroupSchema((prev) => prev.map((gs) => gs.group_id === groupId ? { ...gs, ...data.groupRow } : gs));
       }
       setCleaningConfigs((prev) => ({ ...prev, [groupId]: config }));
-      addLog("Data Cleaning", "success", `Cleaned group "${groupNameMap[groupId] || groupId}"`);
     } catch (err: any) {
       setError(err.message);
-      addLog("Data Cleaning", "error", err.message);
     } finally {
       setLoading(false);
     }
@@ -957,7 +937,6 @@ export default function App() {
       return await res.json();
     } catch (err: any) {
       setError(err.message);
-      addLog("Deduplication", "error", err.message);
       return null;
     }
   };
@@ -989,12 +968,9 @@ export default function App() {
       if (data.rows_after != null) {
         setGroupSchema((prev) => prev.map((gs) => gs.group_id === groupId ? { ...gs, rows: data.rows_after } : gs));
       }
-      const strategyLabel = strategy === "first" ? "first row" : strategy === "spend" ? (keep === "max" ? "higher spend" : "lower spend") : (keep === "max" ? "later date" : "earlier date");
-      addLog("Deduplication", "success", `Deduplicated "${groupNameMap[groupId] || groupId}" (${strategyLabel}): removed ${data.duplicates_removed} duplicate(s)`);
       return data;
     } catch (err: any) {
       setError(err.message);
-      addLog("Deduplication", "error", err.message);
       return null;
     } finally {
       setLoading(false);
@@ -1027,7 +1003,6 @@ export default function App() {
       return data.results || [];
     } catch (err: any) {
       setError(err.message);
-      addLog("Column Standardization", "error", err.message);
       return [];
     }
   };
@@ -1048,11 +1023,8 @@ export default function App() {
         setGroupSchema((prev) => prev.map((gs) => gs.group_id === groupId ? { ...gs, ...data.groupRow } : gs));
       }
       setStandardizeConfigs((prev) => ({ ...prev, [groupId]: actions }));
-      const appliedCols = (data.applied || []).map((a: any) => a.column).join(", ");
-      addLog("Column Standardization", "success", `Standardized columns for "${groupNameMap[groupId] || groupId}": ${appliedCols}`);
     } catch (err: any) {
       setError(err.message);
-      addLog("Column Standardization", "error", err.message);
     } finally {
       setLoading(false);
     }
@@ -1082,11 +1054,9 @@ export default function App() {
         setGroupSchema((prev) => prev.map((gs) => gs.group_id === groupId ? { ...gs, ...data.groupRow } : gs));
       }
       setConcatConfigs((prev) => ({ ...prev, [groupId]: data.concatColumns || [] }));
-      addLog("Concatenation", "success", `Created column "${data.column_name}" in "${groupNameMap[groupId] || groupId}"`);
       return data;
     } catch (err: any) {
       setError(err.message);
-      addLog("Concatenation", "error", err.message);
       return null;
     } finally {
       setLoading(false);
@@ -1117,11 +1087,9 @@ export default function App() {
         setGroupSchema((prev) => prev.map((gs) => gs.group_id === groupId ? { ...gs, ...data.groupRow } : gs));
       }
       setConcatConfigs((prev) => ({ ...prev, [groupId]: data.concatColumns || [] }));
-      addLog("Concatenation", "success", `Deleted column "${columnName}" from "${groupNameMap[groupId] || groupId}"`);
       return data;
     } catch (err: any) {
       setError(err.message);
-      addLog("Concatenation", "error", err.message);
       return null;
     } finally {
       setLoading(false);
@@ -1136,20 +1104,10 @@ export default function App() {
     return doDeleteConcatColumn(groupId, columnName);
   };
 
-  const openRawDataPreview = useCallback(async () => {
+  const openRawDataPreview = useCallback(() => {
     if (!sessionId || inventory.length === 0) return;
-    const missing = inventory.filter((inv) => !previews[inv.table_key]);
-    if (missing.length > 0) {
-      const results = await Promise.all(missing.map((inv) => fetchPreview(inv.table_key)));
-      if (results.every((ok) => !ok)) {
-        const synced = await syncSessionFromBackend();
-        if (synced) {
-          await Promise.all(missing.map((inv) => fetchPreview(inv.table_key)));
-        }
-      }
-    }
     setShowDataPreview(true);
-  }, [sessionId, inventory, previews, fetchPreview, syncSessionFromBackend]);
+  }, [sessionId, inventory]);
 
   const fetchResultsPreviews = async () => {
     if (!sessionId) return;
@@ -1193,12 +1151,13 @@ export default function App() {
           for (const gid of groupIds) {
             if (data[gid]) {
               const displayName = groupNameMap[gid] || gid;
-              newPreviews[gid] = { columns: data[gid].columns, rows: data[gid].rows };
+              const safePreview = sanitizePreviewDto(data[gid]);
+              newPreviews[gid] = { columns: safePreview.columns, rows: safePreview.rows };
               newInv.push({
                 table_key: gid,
                 label: displayName,
                 rows: data[gid].total_rows || data[gid].rows.length,
-                cols: data[gid].columns.length,
+                cols: safePreview.columns.length,
               });
             }
           }
@@ -1225,27 +1184,28 @@ export default function App() {
     setAiLoading(true);
     setLoadingMessage("AI is mapping your column headers to the standard procurement schema...");
     setError(null);
-    addLog("Header Normalisation", "info", "Profiling columns and running AI mapping...");
     try {
       if (controller.signal.aborted) throw new DOMException("Request cancelled.", "AbortError");
       const exec = await runOperation("header_norm_run", {}, { autoPrepare: true, persist: true });
       const data = exec?.result || {};
-      setHeaderNormDecisions(data.tables || []);
+      const safeTables = (data.tables || []).map((table: any) => ({
+        ...table,
+        decisions: (table.decisions || []).filter(
+          (decision: any) => !isReservedProvenanceColumn(decision?.source_col),
+        ),
+      }));
+      setHeaderNormDecisions(safeTables);
       setHeaderNormStandardFields(data.standardFields || []);
       // Cascade-reset downstream step (cleaning + dedup)
       setCleaningConfigs({});
       setDedupResults({});
       setStandardizeConfigs({});
       setConcatConfigs({});
-      setRemovedColumns({});
-      const totalCols = (data.tables || []).reduce((s: number, t: any) => s + (t.decisions?.length || 0), 0);
-      addLog("Header Normalisation", "success", `Mapped ${totalCols} columns across ${data.tables?.length || 0} table(s)`);
-      const normGroupIds = (data.tables || []).map((t: any) => t.tableKey);
+      const normGroupIds = safeTables.map((t: any) => t.tableKey);
       if (normGroupIds.length > 0) fetchGroupPreviewForHeaderNorm(normGroupIds);
     } catch (err: any) {
       const message = err?.name === "AbortError" ? "Request cancelled." : err.message;
       setError(message);
-      addLog("Header Normalisation", "error", message);
       setLastFailedAction(() => doHeaderNormRun);
     } finally {
       abortControllerRef.current = null;
@@ -1268,23 +1228,25 @@ export default function App() {
     setLoading(true);
     setLoadingMessage("Applying header mappings...");
     setError(null);
-    addLog("Header Normalisation", "info", "Applying approved header mappings...");
     try {
-      const exec = await runOperation("header_norm_apply", { decisions }, { autoPrepare: true, persist: true });
-      const data = exec?.result || {};
-      const applied = data.appliedTables || [];
-      const totalMapped = applied.reduce((s: number, t: any) => s + (t.mapped || 0), 0);
-      addLog("Header Normalisation", "success", `Applied mappings to ${applied.length} table(s), ${totalMapped} columns renamed`);
-      // Cascade-reset downstream step (cleaning + dedup configs reference old column names)
+      await runOperation("header_norm_apply", { decisions }, { autoPrepare: true, persist: true });
+    } catch (err: any) {
+      setError(err.message);
+      setLoading(false);
+      setLoadingMessage("");
+      return;
+    }
+
+    // The server has committed at this point. Advance first, then perform only
+    // best-effort local cleanup so a client issue cannot misreport Apply as failed.
+    setStep(5);
+    try {
       setCleaningConfigs({});
       setDedupResults({});
       setStandardizeConfigs({});
       setConcatConfigs({});
-      setRemovedColumns({});
-      setStep(5);
-    } catch (err: any) {
-      setError(err.message);
-      addLog("Header Normalisation", "error", err.message);
+    } catch (localError) {
+      console.error("Header normalization applied, but local cleanup failed:", localError);
     } finally {
       setLoading(false);
       setLoadingMessage("");
@@ -1311,7 +1273,6 @@ export default function App() {
     setAiLoading(true);
     setLoadingMessage("AI is analyzing file structures to group related tables...");
     setError(null);
-    addLog("Append Plan", "info", "AI analyzing file structures to group related tables...");
     try {
       if (controller.signal.aborted) throw new DOMException("Request cancelled.", "AbortError");
       const exec = await runOperation("append_plan", {}, { autoPrepare: true, persist: true });
@@ -1334,7 +1295,6 @@ export default function App() {
         finalGroups = [...finalGroups, ...autoGroups];
         finalUnassigned = [];
         syncGroupsToServer(finalGroups, finalUnassigned);
-        addLog("Append Plan", "info", `Auto-created ${autoGroups.length} group(s) for unassigned tables`);
       }
 
       setAppendGroups(finalGroups);
@@ -1350,7 +1310,6 @@ export default function App() {
       setDedupResults({});
       setStandardizeConfigs({});
       setConcatConfigs({});
-      setRemovedColumns({});
       setMergeBaseGroupId("");
       setMergeSourceGroupId("");
       setMergeResult(null);
@@ -1358,12 +1317,10 @@ export default function App() {
       setGroupInsights({});
       setGroupReports([]);
       setCrossGroupOverview(null);
-      addLog("Append Plan", "success", `Created ${finalGroups.length} group(s), ${finalUnassigned.length} unassigned`);
       setStep(3);
     } catch (err: any) {
       const message = err?.name === "AbortError" ? "Request cancelled. Please try again." : err.message;
       setError(message);
-      addLog("Append Plan", "error", message);
       setLastFailedAction(() => doGenerateAppendPlan);
     } finally {
       abortControllerRef.current = null;
@@ -1541,17 +1498,14 @@ export default function App() {
     setAiLoading(true);
     setLoadingMessage("AI is aligning column headers across your groups...");
     setError(null);
-    addLog("Append Mapping", "info", "AI aligning column headers across groups...");
     try {
       if (controller.signal.aborted) throw new DOMException("Request cancelled.", "AbortError");
       const exec = await runOperation("append_mapping", { appendGroups }, { autoPrepare: true, persist: true });
       const data = exec?.result || {};
       setAppendGroupMappings(data.appendGroupMappings);
-      addLog("Append Mapping", "success", `Mappings generated for ${(data.appendGroupMappings || []).length} group(s)`);
     } catch (err: any) {
       const message = err?.name === "AbortError" ? "Request cancelled. Please try again." : err.message;
       setError(message);
-      addLog("Append Mapping", "error", message);
       setLastFailedAction(() => doGenerateAppendMapping);
     } finally {
       abortControllerRef.current = null;
@@ -1574,7 +1528,6 @@ export default function App() {
     setLoading(true);
     setLoadingMessage("Stacking your data into unified tables...");
     setError(null);
-    addLog("Append Execute", "info", "Stacking data into unified tables...");
     try {
       const unassignedTables = unassigned.map(u => u.table_key);
       const exec = await runOperation(
@@ -1593,11 +1546,8 @@ export default function App() {
       setDedupResults({});
       setStandardizeConfigs({});
       setConcatConfigs({});
-      setRemovedColumns({});
-      addLog("Append Execute", "success", `Appended into ${(data.groupSchema || []).length} group(s)`);
     } catch (err: any) {
       setError(err.message);
-      addLog("Append Execute", "error", err.message);
       setLastFailedAction(() => doExecuteAppend);
     } finally {
       setLoading(false);
@@ -1643,12 +1593,10 @@ export default function App() {
         setGroupSchema((prev) => prev.filter((g: any) => g.group_id !== data.removed_group_id));
         setAppendGroups((prev) => prev.filter((g: any) => g.group_id !== data.removed_group_id));
       }
-      addLog("Merge", "success", `Deleted merge output v${version}`);
     } catch (err: any) {
       setError(err.message);
-      addLog("Merge", "error", err.message);
     }
-  }, [sessionId, addLog]);
+  }, [sessionId]);
 
   const AI_STEPS = new Set([3, 4, 6, 8]);
 
@@ -1802,6 +1750,9 @@ export default function App() {
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={toggleTheme}
+                type="button"
+                aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+                aria-pressed={theme === "dark"}
                 className="p-2.5 rounded-xl bg-white/80 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700 shadow-sm backdrop-blur-sm text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white transition-colors"
                 title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
               >
@@ -1957,7 +1908,6 @@ export default function App() {
                         setAiLoading={setAiLoading}
                         setLoadingMessage={setLoadingMessage}
                         setError={setError}
-                        addLog={addLog}
                         mergeBaseGroupId={mergeBaseGroupId}
                         setMergeBaseGroupId={setMergeBaseGroupId}
                         mergeBaseRecommendation={mergeBaseRecommendation}
@@ -1999,7 +1949,6 @@ export default function App() {
                       apiKey={apiKey}
                       mergeOutputs={mergeOutputs}
                       singleTableName={singleTableMode && inventory.length > 0 ? inventory[0].table_key : undefined}
-                      addLog={addLog}
                       setAiLoading={setAiLoading}
                       setLoadingMessage={setLoadingMessage}
                       setStep={setStep}
@@ -2014,7 +1963,6 @@ export default function App() {
 
           </div>
         </div>
-        <StatusLog entries={statusLog} onClear={() => setStatusLog([])} />
         <LoadingOverlay isLoading={aiLoading || !!loadingMessage} message={loadingMessage} detail={loadingDetail} onCancel={aiLoading ? cancelAiRequest : undefined} progress={uploadProgress} />
 
         {mergeOutputs.length > 0 && !outputsPanelOpen && step >= 6 && (

@@ -25,8 +25,10 @@ from shared.db import (
     table_row_count,
     drop_table,
     column_stats,
+    filter_data_columns,
     PREVIEW_POOL,
     pick_best_rows,
+    public_projection,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,7 +54,19 @@ SYSTEM_COLUMNS_TO_EXCLUDE = {
     "record_id", "recordid", "RECORD_ID", "RECORDID",
     "source_table", "source table", "__source_table", "_source_table",
     "__source", "_source",
+    "__row_id",
 }
+
+
+def _create_public_copy(conn: DuckDBConnection, target: str, source: str) -> None:
+    columns = read_table_columns(conn, source)
+    if not columns:
+        raise ValueError(f"Table {source} has no public columns")
+    conn.execute(
+        f"CREATE TABLE {quote_id(target)} AS SELECT "
+        f"{public_projection(columns)}, CAST(ROW_NUMBER() OVER () AS BIGINT) "
+        f"AS {quote_id('__row_id')} FROM {quote_id(source)}"
+    )
 
 
 def _strip_file_ext(name: str) -> str:
@@ -879,14 +893,15 @@ def finalize_merge(
 
     drop_table(conn, versioned_table)
     if current_table != base_sql:
-        conn.execute(f"ALTER TABLE {quote_id(current_table)} RENAME TO {quote_id(versioned_table)}")
+        _create_public_copy(conn, versioned_table, current_table)
+        drop_table(conn, current_table, commit=False)
     else:
-        conn.execute(f"CREATE TABLE {quote_id(versioned_table)} AS SELECT * FROM {bt}")
+        _create_public_copy(conn, versioned_table, base_sql)
     conn.commit()
 
     # Keep final_merged as a copy of the latest version for downstream modules
     drop_table(conn, "final_merged")
-    conn.execute(f"CREATE TABLE final_merged AS SELECT * FROM {quote_id(versioned_table)}")
+    _create_public_copy(conn, "final_merged", versioned_table)
     conn.commit()
 
     # Register the versioned table so DQA and other steps can discover it
@@ -902,7 +917,7 @@ def finalize_merge(
     set_meta(conn, "mergeApprovedSources", approved_merges)
 
     final_rows = table_row_count(conn, "final_merged")
-    final_cols = read_table_columns(conn, "final_merged")
+    final_cols = filter_data_columns(read_table_columns(conn, "final_merged"))
     preview = pick_best_rows(read_table(conn, "final_merged", PREVIEW_POOL), 50)
     col_stats = column_stats(conn, "final_merged")
 
@@ -964,11 +979,11 @@ def skip_merge(conn: DuckDBConnection, session_id: str, base_group_id: str) -> d
 
     drop_table(conn, versioned_table)
     bt = quote_id(base_sql)
-    conn.execute(f"CREATE TABLE {quote_id(versioned_table)} AS SELECT * FROM {bt}")
+    _create_public_copy(conn, versioned_table, base_sql)
     conn.commit()
 
     drop_table(conn, "final_merged")
-    conn.execute(f"CREATE TABLE final_merged AS SELECT * FROM {quote_id(versioned_table)}")
+    _create_public_copy(conn, "final_merged", versioned_table)
     conn.commit()
 
     # Flush WAL to disk so other connections see the tables immediately
@@ -981,7 +996,7 @@ def skip_merge(conn: DuckDBConnection, session_id: str, base_group_id: str) -> d
     set_meta(conn, "mergeApprovedSources", [])
 
     rows = table_row_count(conn, "final_merged")
-    cols = read_table_columns(conn, "final_merged")
+    cols = filter_data_columns(read_table_columns(conn, "final_merged"))
     preview = pick_best_rows(read_table(conn, "final_merged", PREVIEW_POOL), 50)
     col_stats = column_stats(conn, "final_merged")
 
@@ -1056,15 +1071,12 @@ def persist_merge_output(
     versioned_table = f"final_merged_v{version}"
 
     drop_table(conn, versioned_table)
-    conn.execute(
-        f"ALTER TABLE {quote_id(result_table)} RENAME TO {quote_id(versioned_table)}"
-    )
+    _create_public_copy(conn, versioned_table, result_table)
+    drop_table(conn, result_table, commit=False)
     conn.commit()
 
     drop_table(conn, "final_merged")
-    conn.execute(
-        f"CREATE TABLE final_merged AS SELECT * FROM {quote_id(versioned_table)}"
-    )
+    _create_public_copy(conn, "final_merged", versioned_table)
     conn.commit()
 
     # Flush WAL to disk so other connections see the tables immediately
@@ -1074,7 +1086,7 @@ def persist_merge_output(
         pass
 
     rows = table_row_count(conn, versioned_table)
-    cols_list = read_table_columns(conn, versioned_table)
+    cols_list = filter_data_columns(read_table_columns(conn, versioned_table))
     preview = pick_best_rows(read_table(conn, versioned_table, PREVIEW_POOL), 50)
     col_stats = column_stats(conn, versioned_table)
 
@@ -1176,9 +1188,7 @@ def delete_merge_output(
         latest_table = latest.get("table_name", "")
         if latest_table and table_exists(conn, latest_table):
             drop_table(conn, "final_merged")
-            conn.execute(
-                f"CREATE TABLE final_merged AS SELECT * FROM {quote_id(latest_table)}"
-            )
+            _create_public_copy(conn, "final_merged", latest_table)
             conn.commit()
         else:
             if table_exists(conn, "final_merged"):

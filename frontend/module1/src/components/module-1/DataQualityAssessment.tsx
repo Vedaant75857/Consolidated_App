@@ -142,11 +142,6 @@ interface DataQualityAssessmentProps {
   apiKey: string;
   mergeOutputs: MergeOutput[];
   singleTableName?: string;
-  addLog: (
-    step: string,
-    type: "info" | "success" | "error",
-    message: string,
-  ) => void;
   setAiLoading: (v: boolean) => void;
   setLoadingMessage: (v: string) => void;
   setStep: (s: number) => void;
@@ -432,7 +427,6 @@ export default function DataQualityAssessment({
   apiKey,
   mergeOutputs,
   singleTableName,
-  addLog,
   setAiLoading,
   setLoadingMessage,
   setStep,
@@ -522,9 +516,8 @@ export default function DataQualityAssessment({
       setAiLoading(false);
       setLoadingMessage("");
       setRunningAssessment(false);
-      addLog("Data Quality", "success", "Assessment complete.");
     }
-  }, [runningAssessment, allPanelsSettled, setAiLoading, setLoadingMessage, addLog]);
+  }, [runningAssessment, allPanelsSettled, setAiLoading, setLoadingMessage]);
 
   const MAX_PANEL_RETRIES = 3;
   const RETRY_BASE_MS = 2000;
@@ -535,8 +528,11 @@ export default function DataQualityAssessment({
   ): Promise<T> {
     try {
       return await fn();
-    } catch (err) {
-      if (attempt < MAX_PANEL_RETRIES - 1) {
+    } catch (err: any) {
+      const deterministicClientError =
+        Number(err?.status) >= 400 &&
+        Number(err?.status) < 500;
+      if (!deterministicClientError && attempt < MAX_PANEL_RETRIES - 1) {
         await new Promise((r) => setTimeout(r, RETRY_BASE_MS * 2 ** attempt));
         return withRetry(fn, attempt + 1);
       }
@@ -740,7 +736,6 @@ export default function DataQualityAssessment({
       completedPanelsRef.current = 0;
       setTableMissing(false);
       setTableMissingRetry(0);
-      addLog("Data Quality", "info", "Running data quality assessment…");
       setAiLoading(true);
       setRunningAssessment(true);
       runningRef.current = true;
@@ -773,7 +768,6 @@ export default function DataQualityAssessment({
       runPaymentPanel,
       runCurrencyPanel,
       runCountryPanel,
-      addLog,
       setAiLoading,
       setLoadingMessage,
       sessionId,
@@ -854,8 +848,7 @@ export default function DataQualityAssessment({
     setCountryState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
     setSupplierState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
     setFillRateState((s) => (s.loading ? { loading: false, error: "Cancelled", data: null } : s));
-    addLog("Data Quality", "info", "Assessment cancelled by user.");
-  }, [setAiLoading, setLoadingMessage, addLog]);
+  }, [setAiLoading, setLoadingMessage]);
 
   useEffect(() => {
     if (cancelRef) cancelRef.current = cancelAssessment;

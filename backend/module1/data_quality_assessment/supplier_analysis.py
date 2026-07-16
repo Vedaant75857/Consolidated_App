@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from shared.db import DuckDBConnection, quote_id, read_table_columns
+from shared.db import DuckDBConnection, filter_data_columns, quote_id, read_table_columns
 
 from .ai_prompts import generate_supplier_insight
 from .column_resolver import find_supplier_columns, resolve_column
@@ -39,7 +39,7 @@ def run_supplier_analysis_sql(
         Includes a ``_supplierNames`` key (list) used by the AI phase
         but stripped before returning to the client.
     """
-    available = set(read_table_columns(conn, table_name))
+    available = set(filter_data_columns(read_table_columns(conn, table_name)))
     available_supplier_cols = find_supplier_columns(available)
 
     if vendor_column and vendor_column in available:

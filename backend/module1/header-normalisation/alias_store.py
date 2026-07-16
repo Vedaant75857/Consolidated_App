@@ -85,6 +85,11 @@ _ALIAS_STORE_LOCK = threading.Lock()
 _STD_FIELD_SET = set(STD_FIELD_NAMES)
 
 
+def _is_reserved_alias(value: Any) -> bool:
+    import re
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold()) == "sourcetable"
+
+
 # ---------------------------------------------------------------------------
 # Load / save helpers
 # ---------------------------------------------------------------------------
@@ -121,7 +126,7 @@ def alias_add(canonical_field: str, raw_alias: str) -> bool:
     Thread-safe. Handles deduplication and the 75-alias cap.
     Returns True if a new alias was actually added.
     """
-    if not raw_alias or not canonical_field:
+    if not raw_alias or not canonical_field or _is_reserved_alias(raw_alias):
         return False
     if canonical_field not in _STD_FIELD_SET:
         return False
@@ -195,6 +200,8 @@ def merge_into_lookup(target: dict) -> int:
             if canonical_field not in _STD_FIELD_SET:
                 continue
             for raw_a in learned_list:
+                if _is_reserved_alias(raw_a):
+                    continue
                 nk = _norm(raw_a)
                 if nk and nk not in target:
                     target[nk] = canonical_field
@@ -212,6 +219,8 @@ def merge_learned_aliases() -> int:
             _RAW_ALIASES[canonical_field] = []
         current_normed = {_norm(a) for a in _RAW_ALIASES[canonical_field]}
         for raw_a in learned_list:
+            if _is_reserved_alias(raw_a):
+                continue
             nk = _norm(raw_a)
             if not nk:
                 continue

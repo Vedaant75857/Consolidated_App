@@ -37,6 +37,8 @@ from shared.db import (
     drop_table,
     PREVIEW_POOL,
     pick_best_rows,
+    is_reserved_provenance_column,
+    filter_data_columns,
 )
 from data_loading.service import build_inventory_from_db, build_files_payload_from_db
 
@@ -279,12 +281,26 @@ def apply_header_norm(
     *decisions* maps ``table_key`` -> list of column decisions, each with:
       - source_col, action ("AUTO"|"REVIEW"|"DROP"|"KEEP"), mapped_to (str|None)
     """
-    applied: list[dict[str, Any]] = []
+    if not isinstance(decisions, dict) or not decisions:
+        raise ValueError("decisions must be a non-empty object keyed by table key")
+
+    plans: list[dict[str, Any]] = []
+    pending_aliases: list[tuple[str, str]] = []
+    valid_actions = {"AUTO", "REVIEW", "DROP", "KEEP"}
 
     for table_key, col_decisions in decisions.items():
+        if not isinstance(table_key, str) or not table_key.strip():
+            raise ValueError("Each decision group must have a non-blank table key")
+        if not isinstance(col_decisions, list):
+            raise ValueError(f"Decisions for {table_key} must be a list")
         sql_name = _resolve_tbl(conn, table_key)
         if not sql_name or not table_exists(conn, sql_name):
-            continue
+            raise ValueError(f"Table not found for key: {table_key}")
+
+        existing_columns = filter_data_columns(read_table_columns(conn, sql_name))
+        existing_set = set(existing_columns)
+        seen_sources: set[str] = set()
+        seen_outputs: set[str] = set()
 
         select_parts: list[str] = []
         mapped_count = 0
@@ -292,8 +308,22 @@ def apply_header_norm(
         kept_count = 0
 
         for cd in col_decisions:
-            src = cd["source_col"]
-            action = cd.get("action", "KEEP")
+            if not isinstance(cd, dict):
+                raise ValueError(f"Each decision for {table_key} must be an object")
+            src = str(cd.get("source_col") or "").strip()
+            if not src:
+                raise ValueError(f"source_col must be non-blank for {table_key}")
+            # Backward compatibility: stale legacy internal/missing decisions
+            # are ignored rather than reaching DuckDB's binder.
+            if is_reserved_provenance_column(src) or src not in existing_set:
+                continue
+            if src in seen_sources:
+                raise ValueError(f"Duplicate source_col '{src}' for {table_key}")
+            seen_sources.add(src)
+
+            action = str(cd.get("action", "KEEP")).upper()
+            if action not in valid_actions:
+                raise ValueError(f"Invalid action '{action}' for column '{src}'")
             if action == "REVIEW":
                 action = "AUTO"
             mapped_to = cd.get("mapped_to")
@@ -305,33 +335,41 @@ def apply_header_norm(
                 continue
 
             if action == "KEEP":
+                output_name = src
+                if filter_data_columns([output_name]) != [output_name]:
+                    raise ValueError(f"Reserved output column '{output_name}' is not allowed")
                 select_parts.append(quote_id(src))
                 kept_count += 1
-            elif mapped_to and mapped_to.strip():
-                select_parts.append(f'{quote_id(src)} AS {quote_id(mapped_to)}')
+            elif isinstance(mapped_to, str) and mapped_to.strip():
+                output_name = mapped_to.strip()
+                if filter_data_columns([output_name]) != [output_name]:
+                    raise ValueError(f"Reserved output column '{output_name}' is not allowed")
+                select_parts.append(f'{quote_id(src)} AS {quote_id(output_name)}')
                 mapped_count += 1
-                # Only learn alias for standard field mappings, not custom names
                 if user_edited and not is_custom_name:
-                    alias_add(mapped_to, src)
+                    pending_aliases.append((output_name, src))
             else:
-                select_parts.append(quote_id(src))
-                kept_count += 1
+                raise ValueError(f"mapped_to is required for action {action} on '{src}'")
 
+            output_key = output_name.casefold()
+            if output_key in seen_outputs:
+                raise ValueError(f"Duplicate output column '{output_name}' for {table_key}")
+            seen_outputs.add(output_key)
+
+        missing_sources = [c for c in existing_columns if c not in seen_sources]
+        if missing_sources:
+            raise ValueError(
+                f"Incomplete decisions for {table_key}; missing: {', '.join(missing_sources)}"
+            )
         if not select_parts:
-            continue
+            raise ValueError(f"At least one column must be retained for {table_key}")
 
         hn_sql = safe_table_name("hn", table_key)
-        drop_table(conn, hn_sql)
-
-        select_clause = ", ".join(select_parts)
-        conn.execute(
-            f'CREATE TABLE {quote_id(hn_sql)} AS SELECT {select_clause} FROM {quote_id(sql_name)}'
-        )
-        conn.commit()
-
-        register_table(conn, table_key, hn_sql)
-
-        applied.append({
+        plans.append({
+            "table_key": table_key,
+            "sql_name": sql_name,
+            "hn_sql": hn_sql,
+            "select_clause": ", ".join(select_parts),
             "tableKey": table_key,
             "hnSqlName": hn_sql,
             "mapped": mapped_count,
@@ -339,11 +377,47 @@ def apply_header_norm(
             "kept": kept_count,
         })
 
-    _rebuild_meta(conn)
+    # No database or alias-store mutation occurs until every table validates.
+    try:
+        conn.execute("BEGIN TRANSACTION")
+        for index, plan in enumerate(plans):
+            temp_sql = f"__hn_apply_{index}"
+            conn.execute(f"DROP TABLE IF EXISTS {quote_id(temp_sql)}")
+            conn.execute(
+                f"CREATE TABLE {quote_id(temp_sql)} AS SELECT {plan['select_clause']}, "
+                f"CAST(ROW_NUMBER() OVER () AS BIGINT) AS {quote_id('__row_id')} "
+                f"FROM {quote_id(plan['sql_name'])}"
+            )
+            conn.execute(f"DROP TABLE IF EXISTS {quote_id(plan['hn_sql'])}")
+            conn.execute(
+                f"ALTER TABLE {quote_id(temp_sql)} RENAME TO {quote_id(plan['hn_sql'])}"
+            )
+            register_table(conn, plan["table_key"], plan["hn_sql"], commit=False)
 
-    set_meta(conn, "headerNormApplied", True)
+        set_meta(conn, "inv", build_inventory_from_db(conn), commit=False)
+        set_meta(conn, "filesPayload", build_files_payload_from_db(conn), commit=False)
+        set_meta(conn, "headerNormApplied", True, commit=False)
+        conn.execute("COMMIT")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
 
-    return {"appliedTables": applied}
+    # Filesystem-backed learning is intentionally deferred until DB commit.
+    for canonical, raw in pending_aliases:
+        try:
+            alias_add(canonical, raw)
+        except Exception:
+            pass
+
+    return {
+        "appliedTables": [
+            {key: plan[key] for key in ("tableKey", "hnSqlName", "mapped", "dropped", "kept")}
+            for plan in plans
+        ]
+    }
 
 
 def _resolve_tbl(conn: DuckDBConnection, table_key: str) -> str | None:

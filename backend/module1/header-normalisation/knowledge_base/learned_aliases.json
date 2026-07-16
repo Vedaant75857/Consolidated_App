@@ -76,7 +76,6 @@
     "BUSINESSUNIT"
   ],
   "Data Source System": [
-    "_source_table",
     "WOMANOWNEDENTERPRISE",
     "VETERANOWNEDENTERPRISE",
     "DVOENTERPRISE",
@@ -251,7 +250,8 @@
   "Vendor Address": [
     "LONG ADDRESS",
     "ADDRESS LINE 1 - ADD1",
-    "STREET_ADDRESS"
+    "STREET_ADDRESS",
+    "ADDRESS"
   ],
   "Company Country": [
     "COUNTRY"

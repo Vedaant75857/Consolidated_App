@@ -100,6 +100,23 @@ def _resolve_table_under_lock(
     return conn, lock, table_name
 
 
+def _dqa_error_response(exc: Exception, route: str):
+    """Return stable DQA errors without exposing SQL or binder diagnostics."""
+    if isinstance(exc, ValueError):
+        return jsonify({"error": str(exc), "code": "DQA_VALIDATION_ERROR"}), 400
+    if "binder" in type(exc).__name__.casefold():
+        logger.warning("%s rejected a deterministic query: %s", route, type(exc).__name__)
+        return jsonify({
+            "error": "The selected table schema is not valid for this analysis.",
+            "code": "DQA_QUERY_VALIDATION_ERROR",
+        }), 400
+    logger.exception("%s failed", route)
+    return jsonify({
+        "error": "Data quality analysis failed.",
+        "code": "DQA_INTERNAL_ERROR",
+    }), 500
+
+
 # ── Column suggestion (AI-assisted) ───────────────────────────────────────
 
 @data_quality_bp.route("/dqa/suggest-columns", methods=["POST"])
@@ -285,11 +302,8 @@ def dqa_fill_rate():
         return jsonify(result)
     except TableMissingError as exc:
         return jsonify({"error": str(exc), "code": "TABLE_MISSING"}), 404
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
     except Exception as exc:
-        logger.exception("DQA fill rate failed")
-        return jsonify({"error": str(exc)}), 500
+        return _dqa_error_response(exc, "DQA fill rate")
 
 
 # ── Consolidated (all panels, 2 AI calls) ─────────────────────────────────
@@ -342,8 +356,5 @@ def dqa_all():
         return jsonify(all_sql)
     except TableMissingError as exc:
         return jsonify({"error": str(exc), "code": "TABLE_MISSING"}), 404
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
     except Exception as exc:
-        logger.exception("DQA all failed")
-        return jsonify({"error": str(exc)}), 500
+        return _dqa_error_response(exc, "DQA all")

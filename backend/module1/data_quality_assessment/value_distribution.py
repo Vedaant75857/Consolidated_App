@@ -9,7 +9,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from shared.db import DuckDBConnection, quote_id, read_table_columns, table_row_count
+from shared.db import (
+    DuckDBConnection,
+    filter_data_columns,
+    quote_id,
+    read_table_columns,
+    table_row_count,
+)
 
 from .fill_rate_analysis import _effective_non_null_condition
 from .metrics import _safe_pct
@@ -73,7 +79,7 @@ def compute_value_distribution_table(
     Returns:
         Dict with ``exists``, ``columns`` metadata, and ``rows``.
     """
-    available = set(read_table_columns(conn, table_name))
+    available = set(filter_data_columns(read_table_columns(conn, table_name)))
     valid_columns = [c for c in columns if c in available]
 
     if not valid_columns:

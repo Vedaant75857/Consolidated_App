@@ -38,7 +38,7 @@ export default function MekkoChart({ data, title }: Props) {
 
     const width = svgRef.current.clientWidth;
     const height = 360;
-    const margin = { top: 20, right: 20, bottom: 60, left: 20 };
+    const margin = { top: 20, right: 20, bottom: 20, left: 20 };
     const chartW = width - margin.left - margin.right;
     const chartH = height - margin.top - margin.bottom;
 
@@ -46,7 +46,6 @@ export default function MekkoChart({ data, title }: Props) {
 
     const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
 
-    const textColor = theme === "dark" ? "#9CA3AF" : "#6B7280";
     const tooltip = d3.select(tooltipRef.current);
 
     let xOffset = 0;
@@ -60,6 +59,13 @@ export default function MekkoChart({ data, title }: Props) {
       sortedSegs.forEach((seg) => {
         const segH = seg.share * chartH;
         yOffset -= segH;
+        const segmentX = xOffset;
+        const segmentY = yOffset;
+        const tooltipHtml = `<div style="font-weight:600">${col.label}</div>
+                 <div>${seg.label}</div>
+                 <div>$${seg.value.toLocaleString("en-US", { maximumFractionDigits: 0 })}</div>
+                 <div>${(seg.share * 100).toFixed(1)}% of column</div>`;
+        const showTooltip = () => tooltip.style("opacity", 1).html(tooltipHtml);
 
         g.append("rect")
           .attr("x", xOffset)
@@ -69,17 +75,14 @@ export default function MekkoChart({ data, title }: Props) {
           .attr("fill", colorScale(seg.label))
           .attr("stroke", theme === "dark" ? "#1A1A1A" : "#fff")
           .attr("stroke-width", 1)
+          .attr("tabindex", 0)
+          .attr("role", "img")
+          .attr(
+            "aria-label",
+            `${col.label}, ${seg.label}, $${seg.value.toLocaleString("en-US", { maximumFractionDigits: 0 })}, ${(seg.share * 100).toFixed(1)}% of column`,
+          )
           .style("cursor", "pointer")
-          .on("mouseover", (event) => {
-            tooltip
-              .style("opacity", 1)
-              .html(
-                `<div style="font-weight:600">${col.label}</div>
-                 <div>${seg.label}</div>
-                 <div>$${seg.value.toLocaleString("en-US", { maximumFractionDigits: 0 })}</div>
-                 <div>${(seg.share * 100).toFixed(1)}% of column</div>`
-              );
-          })
+          .on("mouseover", showTooltip)
           .on("mousemove", (event) => {
             tooltip
               .style("left", event.offsetX + 12 + "px")
@@ -87,28 +90,14 @@ export default function MekkoChart({ data, title }: Props) {
           })
           .on("mouseout", () => {
             tooltip.style("opacity", 0);
-          });
-
-        if (segH > 16 && colW > 40) {
-          g.append("text")
-            .attr("x", xOffset + colW / 2)
-            .attr("y", yOffset + segH / 2 + 4)
-            .attr("text-anchor", "middle")
-            .attr("fill", "#fff")
-            .attr("font-size", 9)
-            .attr("pointer-events", "none")
-            .text(seg.label.length > 12 ? seg.label.slice(0, 11) + "…" : seg.label);
-        }
+          })
+          .on("focus", () => {
+            showTooltip()
+              .style("left", `${margin.left + segmentX + colW / 2}px`)
+              .style("top", `${margin.top + segmentY + segH / 2}px`);
+          })
+          .on("blur", () => tooltip.style("opacity", 0));
       });
-
-      g.append("text")
-        .attr("x", xOffset + colW / 2)
-        .attr("y", chartH + 14)
-        .attr("text-anchor", "middle")
-        .attr("fill", textColor)
-        .attr("font-size", 10)
-        .attr("transform", `rotate(-30, ${xOffset + colW / 2}, ${chartH + 14})`)
-        .text(col.label.length > 16 ? col.label.slice(0, 15) + "…" : col.label);
 
       xOffset += colW;
     });

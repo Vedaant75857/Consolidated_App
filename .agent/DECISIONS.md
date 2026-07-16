@@ -1,4 +1,3 @@
-# Durable Decisions
 
 ## 2026-07-14 - Portable Bundle Dependency Exclusion Boundary
 

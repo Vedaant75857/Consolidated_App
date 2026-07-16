@@ -1,7 +1,8 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   AlertTriangle,
+  ArrowRight,
   BarChart3,
   CalendarDays,
   ChevronDown,
@@ -21,6 +22,8 @@ import {
   type SpendBifurcationResult,
   type ColumnFillRateResult,
 } from "../../api/client";
+import type { StandardField } from "../../types";
+import { buildMappedHeadersBySource, normalizeSourceColumn } from "./mappingIndicators";
 
 function fmtSpend(val: number | null | undefined): string {
   if (val == null) return "N/A";
@@ -48,12 +51,16 @@ function renderBold(text: string): React.ReactNode {
 interface ExecutiveSummaryProps {
   sessionId: string;
   apiKey: string;
+  confirmedMapping: Record<string, string | null>;
+  standardFields: StandardField[];
   onLoaded?: () => void;
 }
 
 export default function ExecutiveSummary({
   sessionId,
   apiKey,
+  confirmedMapping,
+  standardFields,
   onLoaded,
 }: ExecutiveSummaryProps) {
   const [result, setResult] = useState<ExecutiveSummaryResult | null>(null);
@@ -174,6 +181,8 @@ export default function ExecutiveSummary({
         <>
           <ColumnFillRatePanel
             data={result.columnFillRate}
+            confirmedMapping={confirmedMapping}
+            standardFields={standardFields}
             expanded={fillRateOpen}
             onToggle={() => setFillRateOpen((p) => !p)}
           />
@@ -318,13 +327,22 @@ function DateFallbackNotice({ message }: { message: string }) {
 
 function ColumnFillRatePanel({
   data,
+  confirmedMapping,
+  standardFields,
   expanded,
   onToggle,
 }: {
   data: ColumnFillRateResult;
+  confirmedMapping: Record<string, string | null>;
+  standardFields: StandardField[];
   expanded: boolean;
   onToggle: () => void;
 }) {
+  const mappedHeadersBySource = useMemo(
+    () => buildMappedHeadersBySource(confirmedMapping, standardFields),
+    [confirmedMapping, standardFields],
+  );
+
   return (
     <SurfaceCard noPadding>
       <PanelHeader
@@ -352,13 +370,35 @@ function ColumnFillRatePanel({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                    {data.columns.map((col) => (
+                    {data.columns.map((col) => {
+                      const destinations = mappedHeadersBySource.get(
+                        normalizeSourceColumn(col.sourceColumn),
+                      );
+                      return (
                       <tr
                         key={`${col.sourceColumn}-${col.order}`}
                         className="hover:bg-neutral-50/50 dark:hover:bg-neutral-800/30 transition-colors"
                       >
                         <td className="px-6 py-2.5 font-medium text-neutral-800 dark:text-neutral-200">
-                          {col.columnName}
+                          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                            <span className="max-w-full break-words" title={col.columnName}>
+                              {col.columnName}
+                            </span>
+                            {destinations && destinations.length > 0 && (
+                              <>
+                                <ArrowRight
+                                  className="h-3.5 w-3.5 shrink-0 text-neutral-400"
+                                  aria-hidden="true"
+                                />
+                                <span
+                                  className="max-w-full break-words text-red-600 dark:text-red-400"
+                                  title={destinations.join(", ")}
+                                >
+                                  {destinations.join(", ")}
+                                </span>
+                              </>
+                            )}
+                          </div>
                         </td>
                         <td className="px-4 py-2.5 text-right tabular-nums">
                           <FillRateBadge value={col.fillRate} />
@@ -371,7 +411,8 @@ function ColumnFillRatePanel({
                           )}
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

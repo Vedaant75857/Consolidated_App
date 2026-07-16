@@ -79,17 +79,17 @@ def test_merge_identified_columns_falls_back_to_rule_based():
     assert "Notes" not in merged
 
 
-def test_merge_identified_columns_uses_ai_only_when_provided():
-    """Non-empty AI list is used without adding rule-based extras."""
+def test_merge_identified_columns_augments_ai_results_with_rule_based_matches():
+    """AI-selected columns lead, while resolver matches retain panel coverage."""
     available = {"Local Currency Code", "PO Local Currency Code", "Notes"}
     merged = merge_identified_columns(
         ["Local Currency Code"], available, find_currency_columns,
     )
-    assert merged == ["Local Currency Code"]
+    assert merged == ["Local Currency Code", "PO Local Currency Code"]
 
 
-def test_currency_analysis_sql_uses_identified_columns():
-    """Currency panel SQL returns distributionTable for AI-identified columns."""
+def test_currency_analysis_sql_augments_ai_identified_columns():
+    """Currency SQL preserves AI ordering and includes resolver matches."""
     session_id = uuid.uuid4().hex
     conn = get_session_db(session_id)
     table_name = "test_currency_panel"
@@ -107,6 +107,8 @@ def test_currency_analysis_sql_uses_identified_columns():
 
     table = result["distributionTable"]
     assert table["exists"] is True
-    assert len(table["columns"]) == 1
+    assert len(table["columns"]) == 2
     assert table["columns"][0]["name"] == "Local Currency Code"
-    assert len(table["rows"]) == 2
+    assert table["columns"][1]["name"] == "PO Local Currency Code"
+    assert len(table["rows"]) == 3
+    assert {row["value"] for row in table["rows"]} == {"USD", "EUR", "GBP"}

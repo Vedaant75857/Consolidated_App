@@ -1,92 +1,166 @@
 # Agent Changelog
 
-## 2026-07-14 - Portable startup and clean bundle automation
+## 2026-07-15 - Module 2 stale Module 1 component cleanup
 
-- Mode: execution; visible agents: `backend_implementer`, `test_engineer`, and
+- Mode: execution. Visible project-local agents: `frontend_cleanup`,
+  `frontend_cleanup_review`, `module2_cleanup_tests`, `frontend_cleanup_final`,
+  and `module2_final_validation`.
+- Rehomed Module 2's active DataLoading, DataInventory, and required
+  VirtualPreviewTable into `components/module-2`; updated App imports.
+- Deleted eleven orphaned Module 1-era Module 2 UI/API files, removed the stale
+  Merging test assertion, and deleted the now-empty `components/module-1` tree.
+- Validation: no old-path/helper references; Module 2 feedback contracts 2/2 and
+  production build passed. Existing Vite large-chunk advisory remains.
+
+## 2026-07-15 - Pivot parity and merge-export boundary execution
+
+- Mode: execution. Visible project-local agents: `frontend_implementer`,
+  `backend_implementer`, `test_engineer`, `frontend_reviewer`, and
   `backend_reviewer`.
-- Replaced the embeddable runtime with full official CPython 3.13.0 x64 including
-  pip, venv, ensurepip, SSL, headers, libraries, and tools; removed the verified
-  old-runtime backup after validation.
-- Updated `setup.ps1` to prefer portable Python for root `.venv` creation.
-- Added `start.bat` with portable PATH precedence, executable guards, conditional
-  setup-once behavior, npm lifecycle suppression, and exit-code propagation.
-- Added `bundle.bat` with an explicit eleven-input staging allowlist, recursive
-  application exclusions, atomic final ZIP replacement, and failure cleanup.
-- Validation passed: clean requirements install, `pip check`, native imports,
-  Node/npm plus five `npm ls --depth=0` checks, all startup guard/exit cases,
-  alternate-CWD execution, ZIP allowlist/exclusions, and preflight failure safety.
-- Generated `share/ProcIP_Suite.zip` (63,345,054 bytes; 4,432 entries). No
-  backend/frontend application logic, API contract, or lockfile changed.
-- Remaining risks: future ranged Python dependency resolution can drift; a real
-  seven-process launch and synthetic post-compression failure were not repeated.
+- Module 3 Pivot now mirrors the Module 1 drag-only, always-two-column UI, filters
+  identity fields from field selection/state/submission, and shows mapped Column
+  Fill Rate destinations in accessible red. Module 3 stable-key and no-Apply
+  contracts remain unchanged.
+- Module 1 merge CSV/XLSX/ZIP/version/step/analyzer export routes share a filtered
+  public-column list. New regression coverage verifies `__row_id` and provenance
+  remain absent from files and the analyzer transfer payload.
+- Validation: Module 1 export test 1 passed; combined provenance/export tests 23
+  passed; Module 3 contracts 11/11; Module 3 build passed; diff checks passed.
+- Remaining risk: no browser drag/drop/restored-state/light-dark smoke or live
+  cross-process transfer was available. Existing Vite large-chunk advisory remains.
 
-## 2026-07-14 - Portable runtime package-alignment review
+## 2026-07-15 - Module 3 Pivot parity and mapped-name color plan
 
-- Mode: review; no application or automation files changed.
-- Confirmed portable Node 24.18.0/npm 11.16.0 is accepted by all five lockfile v3
-  dependency trees; `npm ls --depth=0` passed in the root and four frontends.
-- Confirmed the existing CPython 3.13.0 x64 `.venv` passes `pip check` and native
-  dependencies have CPython 3.13 Windows x64 wheels.
-- Confirmed corrected `bin/python-portable` still contains the minimal embedded
-  Python 3.13.13 without pip or `venv`; it must be replaced with full CPython
-  3.13.x x64.
-- Retained the known Module 1 React 19/glide-data-grid peer exception handled by
-  `--legacy-peer-deps` in `setup.ps1`.
-- Remaining risk: bounded Python requirements do not guarantee byte-for-byte
-  reproducible package versions on future clean installs.
+- Mode: plan. Visible project-local agents: `frontend_architect` and
+  `product_planner`.
+- Read-only comparison confirmed that Module 3's Pivot dialog is a custom variant:
+  it exposes its identity `Record ID` and adds per-field quick-add controls that
+  Module 1 does not have. The plan restores Module 1's drag-only presentation,
+  keeps Module 3's stable-key/safety contracts, and makes Column Fill Rate mapped
+  destinations red. No application files or API contracts changed.
 
-## 2026-07-14 - Current application documentation reset
+## 2026-07-15 - Merge output transfer diagnosis
 
-- Mode: execution; no visible subagents were created because no project-local documentation specialist exists and the scope was limited to two documentation files.
-- Replaced the migration-heavy `.agent/STATE.md` with a concise current operational snapshot covering application structure, startup, ports, contracts, validation baseline, risks, and the optional deployment phase.
-- Rewrote the root `README.md` with prerequisites, automatic dependency setup behavior, local URLs, commands, repository layout, environment guidance, architecture boundaries, and current development caveats.
-- Validation: Markdown structure, documented paths, npm commands, ports, API proxy targets, health endpoints, and diff whitespace were checked against current repository configuration.
+- Mode: debug. Visible project-local agent: `debug_triage_agent`.
+- Read-only diagnosis confirmed that Module 1 merge exports query public data but
+  serialize physical `__row_id`, causing the exact displayed KeyError before any
+  request reaches Module 3. No application files were changed and no tests ran.
 
-## 2026-07-14 - Automatic dependency bootstrap before development startup
+## 2026-07-15 - Validation, runtime smoke, and TypeScript hardening
 
-- Mode: execution; no visible subagents were created because this was a small root-orchestration change.
-- Added root `setup` and `predev` npm lifecycle scripts so `npm run dev` completes dependency setup before launching the seven applications.
-- Extended `setup.ps1` to reconcile root npm dependencies, all four frontend dependency trees, the root Python 3.13 environment, pip, and backend/dev requirements; native installer failures now stop startup.
-- Preserved Module 1's existing `--legacy-peer-deps` installation workaround for its React 19 / glide-data-grid peer-range mismatch.
-- Validation: PowerShell parsing, package-script inspection, and `npm run setup` passed end to end; all npm trees were current and all declared Python requirements were satisfied.
-- Remaining risk: dependency setup requires registry access when packages are missing; existing npm audit findings and Module 1's peer-range mismatch remain dependency-maintenance follow-ups.
+- Mode: execution. Visible project-local agents: `test_engineer`,
+  `performance_reviewer`, `frontend_implementer`, and `frontend_reviewer`.
+- Fixed the documented Module 1/2 TypeScript blockers in the two Error Boundaries
+  and Module 1 DataCleaning without changing emitted behavior or adding packages;
+  focused review found no findings.
+- Fresh validation passed: frontend contracts 32/32; focused backend 175/175;
+  all four production builds; Module 1/2 lint/type checks; Module 3 type check;
+  `pip check`; and diff checks. Full Module 1 backend is now 102/102 after two
+  stale value-distribution expectations were corrected to assert the documented
+  AI-first plus fallback-column union and exact three-row result shape.
+- Portable `start.bat` opened all seven listeners, all localhost HTTP probes
+  returned 200, and process cleanup left no listener residue. Bundle atomic
+  replacement/cleanup was statically verified; no safe failure-injection hook
+  exists, so the user archive was not mutated for that test.
+- Hardened only the four frontend lockfiles with non-forced patch/minor audit
+  resolutions. Clean installs, all four Vite builds, and audits now pass with
+  zero vulnerabilities; lockfile review found no manifest changes or integrity
+  gaps.
+- Measured a generated 100k-row Module 1 preview: first page 46.75ms, warm p95
+  30.96ms; global search warm p95 206.44ms; and legacy row-ID first-read 85.78ms.
+  The page cache is bounded to three 200-row pages. Browser-level performance and
+  interaction smoke remains unavailable because the repository has no browser
+  harness or browser executable.
+- Remaining risks: globally cast text search remains the primary preview hotspot;
+  split lock/query/serialization metrics are not exposed; and browser interaction
+  validation still requires a browser harness or manual run.
 
-## 2026-07-14 - Folder consolidation Phase 4
+## 2026-07-15 - Module 1 preview/DQA recovery and Module 3 panel arrow
 
-- Mode: execution.
-- Reconciled tracked inventories and Flask route maps against the checkpoint/baseline; only approved generated artifacts and obsolete wrappers/docs were removed.
-- Retained backend baselines: Module 1 `52 passed, 2` known failures; Module 2 `1 passed`; Module 3 `72 passed`; `pip check` passed.
-- All four frontend builds passed and Module 3 frontend contract tests passed `7/7`.
-- Root `npm run dev` opened all seven expected ports; four frontend pages and three backend health endpoints returned 200; spawned processes were stopped and ports closed.
-- Disposable functional smokes passed upload, preview, close/reopen session restoration, and download/export for Modules 1, 2, and 3.
-- Executable contract checks passed API-key fragment hydration/storage/stripping, Home/landing navigation, and transfers M1→M2, M1→M3, and M2→M3.
-- Moved the Module 1 non-secret environment template to `backend/module1/.env.example` and the byte-identical Module 3 sample CSV to `backend/module3/test-data/`; removed redundant legacy README/ignore files.
-- After all parity gates passed and tracked/nonignored-file guards succeeded, removed `landing-page`, `DataConsolidationAppV7`, `ProcIP_Module2-main`, `SummarizationModule`, and the empty disposable `.sessions_test` directory.
-- Final integrity checks found no active old-layout references, tracked generated/runtime artifacts, secrets, dependency drift, or open suite listeners; staged and unstaged diff checks passed.
-- Remaining non-blocking risks: no real browser click/new-tab run, no real cross-process socket transfer, no separate alias-store write smoke, deployment origins remain environment-specific, and existing npm/bundle/peer warnings remain.
+- Mode: execution. Visible project-local agents: `frontend_implementer`,
+  `backend_implementer`, `contract_sync_agent`, `test_engineer`,
+  `frontend_reviewer`, `backend_reviewer`, `api_contract_reviewer`, and
+  `performance_reviewer`.
+- Implemented active-plan Phases 1-4 and 6. Phase 5 automated validation is
+  complete; browser interaction/responsive smoke and measured performance targets
+  remain pending.
+- Made every Module 1 DQA panel honor the shared public-column boundary, added
+  type-safe predicates and sanitized errors, and stopped deterministic 4xx
+  retries. Added typed/public preview-to-fill/all regressions.
+- Reworked Module 1 preview for immediate opening, bounded three-page caching,
+  dedupe/prefetch, cancellation/latest-wins, bounded in-flight reads, mutation
+  view consumption, stable cross-page selection IDs, and nonblocking background
+  loading. Added concrete preview DTOs and synchronized optional view contracts.
+- Added bounded backend preview validation, deterministic identity tie-breaking,
+  revision-aware metadata/count caches, precise invalidation, immutable survivor
+  IDs, protected identity/reserved boundaries, upfront identity on normal
+  materialization paths, schema-safe post-mutation views, and generic 500
+  sanitization.
+- Replaced Module 3's labeled inventory control with an accessible panel-edge
+  chevron rail and rebuilt Module 1 preview chrome as a 64px identity strip plus
+  responsive 36px action row.
+- Final independent validation: Module 1 frontend contracts 12/12, Module 3
+  contracts 10/10, focused Module 1 backend 86/86, both production builds, Python
+  compilation, and diff/whitespace checks passed. Module 1 type-check reports only
+  the 10 known unrelated `ErrorBoundary.tsx`/`DataCleaning.tsx` diagnostics.
+- Remaining risks: legacy/uncommon intermediate tables may use lazy row-ID
+  fallback; browser throttling, breakpoint/zoom interaction, and baseline-vs-after
+  p95/lock/query/payload/cache measurements were not run. Existing large-chunk
+  advisories remain non-failing.
 
-## 2026-07-14 - Folder consolidation Phases 2 and 3
+## 2026-07-15 - Module 3 mapping indicators, Mekko labels, and preview collapse
 
-- Mode: execution.
-- Moved the four independent Vite applications to `frontend/landing`, `frontend/module1`, `frontend/module2`, and `frontend/module3`; retained app-local manifests, lockfiles, configs, sources, assets, and tests.
-- Preserved all eight ignored frontend environment files without staging values; corrected browser navigation to frontend origins and aligned Home links with landing port `3010`.
-- Removed the tracked Module 1 `dist/index.html` and Module 3 `tsconfig.tsbuildinfo`; added `*.tsbuildinfo` to the root ignore rules.
-- Rewired root `package.json` and `setup.ps1`; added consolidated `README.md`, `ENVIRONMENT.md`, and a relocated Module 2 README.
-- Retired obsolete Module 1/Module 3 wrapper manifests and the stale legacy Module 2 README after replacement validation.
-- Contract review confirmed unchanged endpoint, method, request/response, DTO, and Vite proxy behavior; backend ports remain `3001`, `5000`, and `3005`.
-- Deterministic installs completed from retained lockfiles; Module 1 required the existing `--legacy-peer-deps` workaround. All four lockfiles remained byte-identical.
-- Validation: all four frontend builds passed after final fixes; Module 3 frontend contract tests passed `7/7`; generated-artifact/ignore/inventory checks and staged/unstaged `git diff --check` passed.
-- Remaining risks: Phase 4 browser/integration smoke and legacy generated-directory cleanup; deployment-specific frontend origins; pre-existing npm audit, bundle-size, and React peer-range warnings.
+- Mode: execution. Visible project-local agents: `frontend_implementer`,
+  `test_engineer`, and `frontend_reviewer`.
+- Threaded confirmed mapping and standard-field metadata into Spend Quality fill
+  rates and added a shared locale-independent reverse mapping helper supporting
+  ordered duplicate destinations and exact original display headers.
+- Removed visible segment and bottom-axis text from the shared Mekko chart while
+  retaining hover tooltips and adding focus/keyboard tooltip and ARIA parity.
+- Added an accessible Show/Hide tables inventory toggle to Raw Data Preview;
+  collapse preserves working state, releases the fixed sidebar width, and
+  remeasures the column virtualizer.
+- Extended Module 3 contract/helper coverage, including locale-independent
+  `INVOICE DATE` matching. Final validation: `npm test` 10/10, `npm run build`
+  passed, and `git diff --check -- frontend/module3` passed.
+- No backend files, endpoints, or DTOs changed, so contract synchronization was
+  not required. Remaining risks are the missing real-browser interaction/layout
+  smoke and the existing Vite large-chunk advisory.
 
-## 2026-07-14 - Folder consolidation Phases 0 and 1
+## 2026-07-15 - Module 1 header normalization and provenance execution
 
-- Mode: execution.
-- Created migration branch `chore/consolidate-backend-frontend` from `d0922dc`; existing worktree changes were limited to living-context files.
-- Confirmed no suite listeners were active; inventoried 288 tracked files across seven apps, ignored environment filenames, assets, ports, route maps, and session locations.
-- Recorded pre-move parity: Module 1 `52 passed, 2` known failures; Module 2 `1 passed`; Module 3 `72 passed`; all four frontend builds passed; Module 3 frontend tests `7 passed`; `pip check` passed.
-- Moved 157 tracked backend files to `backend/module1`, `backend/module2`, and `backend/module3`; inventory parity is exact.
-- Repaired file-relative dotenv paths, module-isolated session resolution, Module 2 FX fallback, Module 1 alias-bundle resolution, configurable/validated cross-backend base URLs, and Module 1 root-level pytest collection.
-- Contract review found no endpoint, method, request, response, or frontend-client changes.
-- Post-move validation: route counts `75/23/37`; all health checks 200; backend suites retained baseline; `pip check` and `git diff --check` passed.
-- Review failures fixed: Module 2 `.env` filename preservation, dotenv-before-database initialization, shared session-root isolation, whitespace-only session settings, and rejection of URL query/fragment components.
-- Remaining risks: no live-socket or real cross-backend HTTP transfer smoke; legacy parents retain ignored caches/logs; root scripts/docs await Phase 3; frontend relocation awaits Phase 2.
+- Mode: execution. Visible project-local agents: `frontend_implementer`,
+  `backend_implementer`, `contract_sync_agent`, `test_engineer`,
+  `frontend_reviewer`, and `backend_reviewer`.
+- Removed five orphan frontend reset calls and separated response-known Apply
+  success from best-effort local cleanup so Step 4 advances without a misleading
+  API failure.
+- Added exact shared backend/frontend reserved provenance predicates and applied
+  defensive projections/sanitization to append, preview/playground, Header
+  Normalization, stats, merge, export, and transfer paths.
+- Stopped creating provenance columns; added transactional all-output append
+  staging/swaps with retained audit contribution metadata and rollback coverage.
+- Added locked, transactional, idempotent legacy cleanup that preserves
+  `__row_id`, refreshes restore metadata, and removes only-reserved artifact ghosts.
+- Hardened Header Apply with complete prevalidation, one transaction, deferred
+  alias learning, legacy stale-decision tolerance, and Excel route filtering.
+- Added the accessible bulk KEEP checkbox with deep baseline restoration; completed
+  native-control/theme styling and related labels/theme-toggle state.
+- Added `test_provenance_boundary.py`; final focused suite passed 19 tests, adjacent
+  preview/stats/data-loading coverage passed 40 tests, and full Module 1 backend
+  validation reported 71 passed plus the same 2 known value-distribution failures.
+  Module 1 production build passed; lint showed only known errors in unchanged
+  `ErrorBoundary.tsx` and `DataCleaning.tsx`.
+- Remaining risks: real-browser native-control/fullscreen/focus/contrast/theme and
+  checkbox smoke was not available; cross-process cleanup relies on DuckDB file
+  locking pending a production session-ownership design. Existing Rollup annotation
+  and large-chunk warnings remain.
+
+## 2026-07-15 - Module 2 legacy component cleanup review
+
+- Read-only reachability review confirmed that ten legacy Module 1-named Module 2
+  components/services are not mounted by the application. `Merging.tsx` remains
+  referenced solely by `frontend/module2/test/feedback.contract.test.mjs`.
+- No application files were changed and no validation commands were run; a future
+  cleanup must update/remove that stale test, preserve the existing `Merging.tsx`
+  worktree edits deliberately, then run the focused test, lint, and production build.

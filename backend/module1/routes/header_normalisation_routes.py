@@ -9,7 +9,17 @@ import sys
 
 from flask import Blueprint, jsonify, request, send_file
 
-from shared.db import get_session_db, lookup_sql_name, read_table, read_table_columns, table_exists, table_row_count, PREVIEW_POOL, pick_best_rows
+from shared.db import (
+    PREVIEW_POOL,
+    get_session_db,
+    is_reserved_provenance_column,
+    lookup_sql_name,
+    pick_best_rows,
+    read_table,
+    read_table_columns,
+    table_exists,
+    table_row_count,
+)
 from routes.insights_routes import execute_operation_kernel, _session_lock
 
 
@@ -255,7 +265,7 @@ def header_norm_download_summary():
                     continue
                 src = str(cd.get("source_col", ""))
                 mapped = str(cd.get("mapped_to") or cd.get("suggested_std_field") or "")
-                if not src:
+                if not src or is_reserved_provenance_column(src):
                     continue
                 rows_for_sheet.append((src, mapped if mapped else src))
 
@@ -324,7 +334,7 @@ def header_norm_upload_excel():
             col_decisions = []
             for ci in range(max_col):
                 src = headers_row[ci]
-                if not src:
+                if not src or is_reserved_provenance_column(src):
                     continue
                 action = actions_row[ci] if ci < len(actions_row) else "KEEP"
                 if action not in ("AUTO", "REVIEW", "KEEP", "DROP"):

@@ -1,3 +1,12 @@
+import type {
+  PreviewColumnValuesResponse,
+  PreviewFilter,
+  PreviewOperationRequest,
+  PreviewOperationResult,
+  PreviewStateResponse,
+  PreviewView,
+} from "../../../types/excelPreview";
+
 const BASE = "/api";
 const DEFAULT_TIMEOUT_MS = 120_000;
 
@@ -42,6 +51,10 @@ async function jsonPost<T = any>(
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const callerSignal = options?.signal;
+  const abortFromCaller = () => controller.abort(callerSignal?.reason);
+  if (callerSignal?.aborted) abortFromCaller();
+  else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
 
   try {
     const res = await fetch(`${BASE}${path}`, {
@@ -66,16 +79,19 @@ async function jsonPost<T = any>(
       }
       const err = new Error(message);
       (err as any).code = code;
+      (err as any).status = res.status;
       throw err;
     }
     return res.json();
   } catch (err: any) {
     if (err?.name === "AbortError") {
+      if (callerSignal?.aborted) throw err;
       throw new Error(`Request to ${path} timed out after ${timeoutMs / 1000}s`);
     }
     throw err;
   } finally {
     clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", abortFromCaller);
   }
 }
 
@@ -151,16 +167,6 @@ export async function saveAppendGroups(sessionId: string, appendGroups: any[], u
 
 export async function headerNormGroupPreview(sessionId: string, groupIds: string[], limit = 50): Promise<any> {
   return jsonPost("/header-norm-group-preview", { sessionId, groupIds, limit });
-}
-
-export async function headerNormDownloadExcel(sessionId: string, tables: any[]): Promise<Blob> {
-  const res = await fetch(`${BASE}/header-norm-download-excel`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId, tables }),
-  });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Download failed");
-  return res.blob();
 }
 
 export async function headerNormUploadExcel(formData: FormData): Promise<any> {
@@ -394,10 +400,11 @@ export async function postDqaFillRate(
 export async function previewOperation(
   sessionId: string,
   tableKey: string,
-  op: string,
+  op: PreviewOperationRequest["op"],
   params: Record<string, unknown> = {},
-): Promise<any> {
-  return jsonPost("/preview/operation", { sessionId, tableKey, op, params });
+  view?: PreviewView,
+): Promise<PreviewOperationResult> {
+  return jsonPost<PreviewOperationResult>("/preview/operation", { sessionId, tableKey, op, params, view });
 }
 
 export async function previewApply(
@@ -411,15 +418,10 @@ export async function previewApply(
 export async function previewState(
   sessionId: string,
   tableKey: string,
-  options: {
-    offset?: number;
-    limit?: number;
-    search?: string;
-    filters?: Record<string, unknown>[];
-    sort?: Record<string, unknown>[];
-  } = {},
-): Promise<any> {
-  return jsonPost("/preview/state", { sessionId, tableKey, ...options });
+  options: PreviewView = {},
+  signal?: AbortSignal,
+): Promise<PreviewStateResponse> {
+  return jsonPost<PreviewStateResponse>("/preview/state", { sessionId, tableKey, ...options }, { signal });
 }
 
 export async function previewColumnValues(
@@ -428,19 +430,24 @@ export async function previewColumnValues(
   column: string,
   options: {
     search?: string;
-    filters?: Record<string, unknown>[];
+    filters?: PreviewFilter[];
     limit?: number;
   } = {},
-): Promise<{ values: string[]; hasBlanks: boolean; totalDistinct: number }> {
-  return jsonPost("/preview/column-values", { sessionId, tableKey, column, ...options });
+  signal?: AbortSignal,
+): Promise<PreviewColumnValuesResponse> {
+  return jsonPost<PreviewColumnValuesResponse>(
+    "/preview/column-values",
+    { sessionId, tableKey, column, ...options },
+    { signal },
+  );
 }
 
-export async function previewUndo(sessionId: string, tableKey: string): Promise<any> {
-  return jsonPost("/preview/undo", { sessionId, tableKey });
+export async function previewUndo(sessionId: string, tableKey: string, view?: PreviewView): Promise<PreviewOperationResult> {
+  return jsonPost<PreviewOperationResult>("/preview/undo", { sessionId, tableKey, view });
 }
 
-export async function previewRedo(sessionId: string, tableKey: string): Promise<any> {
-  return jsonPost("/preview/redo", { sessionId, tableKey });
+export async function previewRedo(sessionId: string, tableKey: string, view?: PreviewView): Promise<PreviewOperationResult> {
+  return jsonPost<PreviewOperationResult>("/preview/redo", { sessionId, tableKey, view });
 }
 
 export async function previewRefreshInventory(sessionId: string): Promise<any> {

@@ -1,6 +1,53 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
 
+:root {
+  color-scheme: light;
+  background: #fafafa;
+}
+
+:root.dark {
+  color-scheme: dark;
+  background: #171717;
+}
+
+select,
+input,
+textarea {
+  color: #171717;
+  background-color: #ffffff;
+}
+
+select option,
+select optgroup {
+  color: #171717;
+  background-color: #ffffff;
+}
+
+.dark select,
+.dark input,
+.dark textarea,
+.dark select option,
+.dark select optgroup {
+  color: #f5f5f5;
+  background-color: #171717;
+}
+
+select:disabled,
+input:disabled,
+textarea:disabled {
+  color: #737373;
+  background-color: #f5f5f5;
+  opacity: 1;
+}
+
+.dark select:disabled,
+.dark input:disabled,
+.dark textarea:disabled {
+  color: #a3a3a3;
+  background-color: #262626;
+}
+
 /* Loading overlay animations */
 @keyframes breathing-glow {
   0%, 100% { box-shadow: 0 0 15px 0 rgba(220,38,38,0.12), 0 8px 32px -4px rgba(220,38,38,0.08); }

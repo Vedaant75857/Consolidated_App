@@ -16,7 +16,8 @@ import {
   GripVertical,
   Loader2,
   MoreHorizontal,
-  MousePointer2,
+  ChevronLeft,
+  ChevronRight,
   Pencil,
   Plus,
   RefreshCw,
@@ -67,6 +68,8 @@ const AGGREGATIONS: PreviewPivotValueField["aggregation"][] = [
   "count_distinct",
 ];
 const NUMBER_ONLY_AGGREGATIONS = new Set<PreviewPivotValueField["aggregation"]>(["sum", "avg"]);
+const MAX_PIVOT_ROW_FIELDS = 5;
+const MAX_PIVOT_VALUE_FIELDS = 5;
 
 type PivotZoneId = "rows" | "columns" | "values";
 
@@ -146,6 +149,16 @@ function isNumericDataType(dataType?: string | null) {
 
 function defaultAggregationForColumn(column: PreviewColumn): PreviewPivotValueField["aggregation"] {
   return isNumericDataType(column.dataType) ? "sum" : "count";
+}
+
+function pivotFieldName(value: string) {
+  return value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
+
+function isPivotDataColumn(column: PreviewColumn) {
+  const key = pivotFieldName(column.key);
+  const displayName = pivotFieldName(column.displayName);
+  return key !== "record_id" && key !== "__row_id" && displayName !== "record_id" && displayName !== "__row_id";
 }
 
 function aggregationLabel(aggregation: PreviewPivotValueField["aggregation"]) {
@@ -270,6 +283,7 @@ export default function ExcelPreviewOverlay({
   const [columnMenu, setColumnMenu] = useState<ColumnMenuState | null>(null);
   const [showCalcDialog, setShowCalcDialog] = useState(false);
   const [showPivotDialog, setShowPivotDialog] = useState(false);
+  const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const requestIdRef = useRef(0);
   const operationRequestIdRef = useRef(0);
   const activeTableKeyRef = useRef(activeTableKey);
@@ -711,6 +725,11 @@ export default function ExcelPreviewOverlay({
     setColumnMenu(null);
   };
 
+  const toggleSidebar = () => {
+    setSidebarExpanded((expanded) => !expanded);
+    window.requestAnimationFrame(() => columnVirtualizer.measure());
+  };
+
   return (
     <motion.div
       className="fixed inset-0 z-[100] flex flex-col bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100"
@@ -767,8 +786,12 @@ export default function ExcelPreviewOverlay({
         </button>
       </header>
 
-      <div className="flex min-h-0 flex-1">
-        <aside className="w-72 shrink-0 overflow-y-auto border-r border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-900/70">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <aside
+          id="preview-table-inventory"
+          hidden={!sidebarExpanded}
+          className="w-72 shrink-0 overflow-y-auto bg-neutral-50 p-3 dark:bg-neutral-900/70"
+        >
           <div className="space-y-1" role="tablist" aria-label="Preview tables">
             {inventory.map((item) => {
               const active = item.table_key === activeTableKey;
@@ -795,6 +818,24 @@ export default function ExcelPreviewOverlay({
             })}
           </div>
         </aside>
+
+        <div className="relative z-20 flex w-10 shrink-0 items-center justify-center border-x border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900/70">
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            aria-label={sidebarExpanded ? "Collapse table inventory" : "Expand table inventory"}
+            aria-expanded={sidebarExpanded}
+            aria-controls="preview-table-inventory"
+            title={sidebarExpanded ? "Collapse table inventory" : "Expand table inventory"}
+            className="inline-flex h-11 w-10 items-center justify-center rounded-r-lg text-neutral-600 transition-colors hover:bg-white hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-inset dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-red-400"
+          >
+            {sidebarExpanded ? (
+              <ChevronLeft className="h-5 w-5" aria-hidden="true" />
+            ) : (
+              <ChevronRight className="h-5 w-5" aria-hidden="true" />
+            )}
+          </button>
+        </div>
 
         <section className="flex min-w-0 flex-1 flex-col">
           <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-neutral-200 bg-white px-4 py-3 dark:border-neutral-800 dark:bg-neutral-950">
@@ -1240,6 +1281,7 @@ export default function ExcelPreviewOverlay({
       {showPivotDialog && (
         <PivotDialog
           columns={columns}
+          error={error}
           onClose={() => setShowPivotDialog(false)}
           onCreate={async (params) => {
             const result = await runOperation("pivot", params);
@@ -1789,27 +1831,65 @@ function CalculatedColumnDialog({
 
 function PivotDialog({
   columns,
+  error,
   onClose,
   onCreate,
 }: {
   columns: PreviewColumn[];
+  error: string | null;
   onClose: () => void;
   onCreate: (params: {
     rowFields: string[];
     columnFields: string[];
     valueFields: PreviewPivotValueField[];
-  }) => void;
+  }) => Promise<void>;
 }) {
   const [rowFields, setRowFields] = useState<string[]>([]);
   const [columnFields, setColumnFields] = useState<string[]>([]);
   const [valueFields, setValueFields] = useState<PreviewPivotValueField[]>([]);
   const [dragOverZone, setDragOverZone] = useState<PivotZoneId | null>(null);
-  const columnMap = useMemo(() => new Map(columns.map((column) => [column.key, column])), [columns]);
-  const canSubmit = valueFields.length > 0 && (rowFields.length > 0 || columnFields.length === 0);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitAttempted, setSubmitAttempted] = useState(false);
+  const submitInFlightRef = useRef(false);
+  const pivotColumns = useMemo(() => columns.filter(isPivotDataColumn), [columns]);
+  const columnMap = useMemo(() => new Map(pivotColumns.map((column) => [column.key, column])), [pivotColumns]);
+  const validColumnKeys = useMemo(() => new Set(pivotColumns.map((column) => column.key)), [pivotColumns]);
+  const validRowFields = rowFields.filter((columnKey) => validColumnKeys.has(columnKey));
+  const validColumnFields = columnFields.filter((columnKey) => validColumnKeys.has(columnKey));
+  const validValueFields = valueFields.filter((field) => validColumnKeys.has(field.columnKey));
+  const canSubmit = validValueFields.length > 0 && (validRowFields.length > 0 || validColumnFields.length === 0);
+
+  useEffect(() => {
+    setRowFields((current) => current.filter((columnKey) => validColumnKeys.has(columnKey)));
+    setColumnFields((current) => current.filter((columnKey) => validColumnKeys.has(columnKey)));
+    setValueFields((current) => current.filter((field) => validColumnKeys.has(field.columnKey)));
+  }, [validColumnKeys]);
+
+  const submit = async () => {
+    if (!canSubmit || submitting || submitInFlightRef.current) return;
+    submitInFlightRef.current = true;
+    setSubmitting(true);
+    setSubmitAttempted(true);
+    try {
+      await onCreate({
+        rowFields: validRowFields,
+        columnFields: validColumnFields,
+        valueFields: validValueFields,
+      });
+    } finally {
+      submitInFlightRef.current = false;
+      setSubmitting(false);
+    }
+  };
 
   const addToZone = (column: PreviewColumn, zone: PivotZoneId) => {
+    if (!validColumnKeys.has(column.key)) return;
     if (zone === "rows") {
-      setRowFields((current) => current.includes(column.key) ? current : [...current, column.key]);
+      setRowFields((current) =>
+        current.includes(column.key) || current.length >= MAX_PIVOT_ROW_FIELDS
+          ? current
+          : [...current, column.key],
+      );
       return;
     }
     if (zone === "columns") {
@@ -1817,7 +1897,7 @@ function PivotDialog({
       return;
     }
     setValueFields((current) =>
-      current.some((field) => field.columnKey === column.key)
+      current.some((field) => field.columnKey === column.key) || current.length >= MAX_PIVOT_VALUE_FIELDS
         ? current
         : [...current, { columnKey: column.key, aggregation: defaultAggregationForColumn(column) }],
     );
@@ -1863,66 +1943,42 @@ function PivotDialog({
   };
 
   return (
-    <Modal title="Create pivot table" onClose={onClose}>
-      <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]">
-        <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
-          <div className="mb-3 flex items-center justify-between gap-2">
-            <p className="text-[10px] font-bold uppercase text-neutral-500">Available Fields</p>
-            <span className="text-[10px] text-neutral-400">{columns.length} fields</span>
-          </div>
-          <div className="max-h-[28rem] space-y-2 overflow-y-auto pr-1">
-            {columns.map((column) => (
+    <Modal title="Create Pivot Table (Drag & Drop)" onClose={onClose}>
+      <div className="space-y-4 p-4">
+        <p className="text-xs text-neutral-500">
+          Drag fields from Available Fields to Row Fields, Column Fields, or Values areas.
+        </p>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-700 dark:bg-neutral-900">
+            <p className="mb-3 text-[10px] font-bold uppercase text-neutral-500">Available Fields</p>
+            <div className="max-h-[300px] space-y-1 overflow-y-auto">
+            {pivotColumns.map((column) => (
               <div
                 key={column.key}
                 draggable
                 onDragStart={(event) => handleDragStart(event, column.key)}
-                className="rounded-lg border border-neutral-200 bg-white p-2 text-xs shadow-sm transition hover:border-red-200 hover:shadow dark:border-neutral-800 dark:bg-neutral-900"
+                className="flex cursor-grab items-center gap-2 rounded border border-neutral-200 bg-white px-3 py-2 text-xs transition-shadow hover:shadow-sm active:cursor-grabbing dark:border-neutral-700 dark:bg-neutral-800"
               >
-                <div className="flex min-w-0 items-center gap-2">
-                  <GripVertical className="h-4 w-4 shrink-0 cursor-grab text-neutral-400" aria-hidden="true" />
-                  <span className="min-w-0 flex-1 truncate font-semibold text-neutral-800 dark:text-neutral-100" title={column.displayName}>
+                  <GripVertical className="h-4 w-4 shrink-0 text-neutral-400" aria-hidden="true" />
+                  <span className="min-w-0 flex-1 truncate font-medium text-neutral-800 dark:text-neutral-100" title={column.displayName}>
                     {column.displayName}
                   </span>
-                  <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-semibold leading-none ${typeBadgeClass(column.dataType)}`}>
+                  <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-semibold leading-none ${typeBadgeClass(column.dataType)}`}>
                     {typeBadgeLabel(column.dataType)}
                   </span>
-                </div>
-                <div className="mt-2 grid grid-cols-3 gap-1">
-                  <button
-                    type="button"
-                    onClick={() => addToZone(column, "rows")}
-                    className="rounded border border-neutral-200 px-1.5 py-1 text-[10px] font-semibold text-neutral-600 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 dark:border-neutral-800 dark:text-neutral-300"
-                  >
-                    Rows
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => addToZone(column, "columns")}
-                    className="rounded border border-neutral-200 px-1.5 py-1 text-[10px] font-semibold text-neutral-600 hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-700 dark:border-neutral-800 dark:text-neutral-300"
-                  >
-                    Columns
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => addToZone(column, "values")}
-                    className="rounded border border-neutral-200 px-1.5 py-1 text-[10px] font-semibold text-neutral-600 hover:border-amber-200 hover:bg-amber-50 hover:text-amber-700 dark:border-neutral-800 dark:text-neutral-300"
-                  >
-                    Values
-                  </button>
-                </div>
               </div>
             ))}
+            </div>
+            <p className="mt-2 text-[10px] text-neutral-400">Drag fields to the areas on the right →</p>
           </div>
-        </div>
 
-        <div className="space-y-3">
+          <div className="space-y-3">
           <PivotZone
             title="Row Fields"
             zone="rows"
             tone="blue"
-            icon={<GripVertical className="h-4 w-4" />}
             columnMap={columnMap}
-            selected={rowFields}
+            selected={validRowFields}
             dragOverZone={dragOverZone}
             onDragOver={handleDragOver}
             onDragLeave={() => setDragOverZone(null)}
@@ -1933,9 +1989,8 @@ function PivotDialog({
             title="Column Fields"
             zone="columns"
             tone="emerald"
-            icon={<Columns3 className="h-4 w-4" />}
             columnMap={columnMap}
-            selected={columnFields}
+            selected={validColumnFields}
             dragOverZone={dragOverZone}
             onDragOver={handleDragOver}
             onDragLeave={() => setDragOverZone(null)}
@@ -1946,10 +2001,9 @@ function PivotDialog({
             title="Values"
             zone="values"
             tone="amber"
-            icon={<MousePointer2 className="h-4 w-4" />}
             columnMap={columnMap}
-            selected={valueFields.map((field) => field.columnKey)}
-            valueFields={valueFields}
+            selected={validValueFields.map((field) => field.columnKey)}
+            valueFields={validValueFields}
             dragOverZone={dragOverZone}
             onDragOver={handleDragOver}
             onDragLeave={() => setDragOverZone(null)}
@@ -1958,18 +2012,22 @@ function PivotDialog({
             onAggregationChange={updateValueAggregation}
           />
         </div>
+        </div>
       </div>
       <div className="flex justify-end gap-2 border-t border-neutral-200 px-4 py-3 dark:border-neutral-800">
+        {submitAttempted && error && (
+          <p role="alert" className="mr-auto self-center text-xs text-red-600 dark:text-red-400">{error}</p>
+        )}
         <button type="button" onClick={onClose} className="rounded-lg border border-neutral-200 px-3 py-2 text-xs font-semibold dark:border-neutral-800">
           Cancel
         </button>
         <button
           type="button"
-          disabled={!canSubmit}
-          onClick={() => onCreate({ rowFields, columnFields, valueFields })}
+          disabled={!canSubmit || submitting}
+          onClick={submit}
           className="rounded-lg bg-red-600 px-3 py-2 text-xs font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Create pivot
+          {submitting ? "Creating..." : "Create pivot"}
         </button>
       </div>
     </Modal>
@@ -1980,7 +2038,6 @@ function PivotZone({
   title,
   zone,
   tone,
-  icon,
   columnMap,
   selected,
   valueFields,
@@ -1994,7 +2051,6 @@ function PivotZone({
   title: string;
   zone: PivotZoneId;
   tone: "blue" | "emerald" | "amber";
-  icon: ReactNode;
   columnMap: Map<string, PreviewColumn>;
   selected: string[];
   valueFields?: PreviewPivotValueField[];
@@ -2006,14 +2062,24 @@ function PivotZone({
   onAggregationChange?: (column: PreviewColumn, aggregation: PreviewPivotValueField["aggregation"]) => void;
 }) {
   const toneClass = {
-    blue: "text-blue-700 bg-blue-50 border-blue-200 dark:text-blue-300 dark:bg-blue-950/30 dark:border-blue-900",
-    emerald: "text-emerald-700 bg-emerald-50 border-emerald-200 dark:text-emerald-300 dark:bg-emerald-950/30 dark:border-emerald-900",
-    amber: "text-amber-700 bg-amber-50 border-amber-200 dark:text-amber-300 dark:bg-amber-950/30 dark:border-amber-900",
+    blue: "bg-blue-100 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300",
+    emerald: "bg-green-100 text-green-700 dark:bg-green-950/50 dark:text-green-300",
+    amber: "bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300",
   }[tone];
+  const titleClass = {
+    blue: "text-blue-600",
+    emerald: "text-green-600",
+    amber: "text-amber-600",
+  }[tone];
+  const emptyCopy = zone === "rows"
+    ? "Drop fields here for rows"
+    : zone === "columns"
+      ? "Drop fields here for columns"
+      : "Drop fields here for values";
 
   return (
     <div
-      className={`min-h-[7.5rem] rounded-lg border-2 border-dashed p-3 transition ${
+      className={`min-h-[100px] rounded-lg border-2 border-dashed p-3 transition-all duration-200 ${
         dragOverZone === zone
           ? "border-red-400 bg-red-50 dark:bg-red-950/20"
           : "border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
@@ -2023,29 +2089,23 @@ function PivotZone({
       onDrop={(event) => onDrop(event, zone)}
     >
       <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-xs font-semibold text-neutral-600 dark:text-neutral-300">
-          {icon}
-          {title}
-        </div>
-        <span className="text-[10px] text-neutral-400">{selected.length} field{selected.length === 1 ? "" : "s"}</span>
+        <p className={`text-[10px] font-bold uppercase ${titleClass}`}>{title}</p>
+        {selected.length > 0 && <span className="text-[10px] text-neutral-400">{selected.length} field(s)</span>}
       </div>
-      <div className="space-y-2">
+      <div className={zone === "values" ? "flex flex-col gap-2" : "flex flex-wrap gap-1"}>
         {selected.map((columnKey) => {
           const column = columnMap.get(columnKey);
           const valueField = valueFields?.find((field) => field.columnKey === columnKey);
           if (!column) return null;
           const isNumeric = isNumericDataType(column.dataType);
           return (
-            <div key={columnKey} className={`rounded-lg border px-2 py-1.5 text-xs ${toneClass}`}>
+            <div key={columnKey} className={`flex items-center gap-2 rounded px-2 py-1 text-[10px] ${toneClass}`}>
               <div className="flex min-w-0 items-center gap-2">
-                <span className="min-w-0 flex-1 truncate font-semibold" title={column.displayName}>{column.displayName}</span>
-                <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-semibold leading-none ${typeBadgeClass(column.dataType)}`}>
-                  {typeBadgeLabel(column.dataType)}
-                </span>
+                <span className="min-w-0 flex-1 truncate font-medium" title={column.displayName}>{column.displayName}</span>
                 <button
                   type="button"
                   onClick={() => onRemove(columnKey, zone)}
-                  className="rounded p-0.5 hover:bg-white/70 dark:hover:bg-neutral-800"
+                  className="hover:opacity-75"
                   aria-label={`Remove ${column.displayName} from ${title}`}
                 >
                   <X className="h-3.5 w-3.5" />
@@ -2057,7 +2117,7 @@ function PivotZone({
                   onChange={(event) =>
                     onAggregationChange(column, event.target.value as PreviewPivotValueField["aggregation"])
                   }
-                  className="mt-2 h-8 w-full rounded border border-neutral-200 bg-white px-2 text-xs text-neutral-700 outline-none focus:border-red-400 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-200"
+                  className="ml-auto rounded border border-amber-200 bg-white px-1 py-0.5 text-[10px] text-neutral-700 outline-none focus:border-red-400 dark:border-amber-900 dark:bg-neutral-800 dark:text-neutral-200"
                   aria-label={`Aggregation for ${column.displayName}`}
                 >
                   {AGGREGATIONS.map((aggregation) => (
@@ -2076,8 +2136,8 @@ function PivotZone({
           );
         })}
         {selected.length === 0 && (
-          <p className="rounded-lg border border-dashed border-neutral-200 px-3 py-6 text-center text-[11px] text-neutral-400 dark:border-neutral-800">
-            Drop fields here or use the field buttons.
+          <p className="py-4 text-center text-[10px] text-neutral-400">
+            {emptyCopy}
           </p>
         )}
       </div>

@@ -14,7 +14,6 @@ import UnsupportedCurrencyPanel, {
   type YearlyOverrides,
   type MonthlyOverrides,
 } from "./UnsupportedCurrencyPanel";
-import type { LogEntry } from "../module-1/StatusLog";
 import { getConfig } from "../../runtimeConfig";
 import { buildApiKeyFragmentUrl } from "../../apiKeySession";
 
@@ -83,13 +82,12 @@ interface NormDashboardProps {
   apiKey: string;
   activeTab?: string;
   setActiveTab?: (tab: string) => void;
-  addLog?: (stepName: string, type: LogEntry["type"], message: string) => void;
   setLoadingMessage?: (msg: string) => void;
   setLoadingOnCancel?: (cb: (() => void) | null) => void;
   sessionId: string;
 }
 
-export default function NormDashboard({ apiKey, activeTab = "supplier_name", setActiveTab, addLog, setLoadingMessage, setLoadingOnCancel, sessionId }: NormDashboardProps) {
+export default function NormDashboard({ apiKey, activeTab = "supplier_name", setActiveTab, setLoadingMessage, setLoadingOnCancel, sessionId }: NormDashboardProps) {
   const [completedOps, setCompletedOps] = useState<Set<string>>(new Set());
   const [activeOp, setActiveOp] = useState<string | null>(null);
   const [opResults, setOpResults] = useState<Record<string, string>>({});
@@ -97,6 +95,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
   const [operationPreview, setOperationPreview] = useState<{ columns: string[]; rows: any[] }>({ columns: [], rows: [] });
   const [operationPreviewLoading, setOperationPreviewLoading] = useState(false);
   const [operationPreviewError, setOperationPreviewError] = useState<string | null>(null);
+  const [downloadStatus, setDownloadStatus] = useState<{ ok: boolean; message: string } | null>(null);
   const [dateFormat, setDateFormat] = useState("%d-%m-%Y");
   const [currencySpendColumn, setCurrencySpendColumn] = useState("");
   const [currencyCodeColumn, setCurrencyCodeColumn] = useState("");
@@ -224,10 +223,6 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
     apply();
   }, [operationPreview.columns]);
 
-  const log = useCallback((type: LogEntry["type"], message: string) => {
-    addLog?.("NORMALIZE", type, message);
-  }, [addLog]);
-
   const fetchOperationPreview = useCallback(async () => {
     setOperationPreviewLoading(true);
     setOperationPreviewError(null);
@@ -251,7 +246,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
   const handleRunOperation = useCallback(async (agentId: string) => {
     if (agentId === "currency_conversion") {
       if (!currencySpendColumn || !currencyCodeColumn) {
-        log("error", "Select both a currency column and a spend column before running Currency Conversion.");
+        setOpResults((prev) => ({ ...prev, [agentId]: "Error: Select both a currency column and a spend column before running Currency Conversion." }));
         return;
       }
       // First click with missing entries: show warning and stop. Second click: proceed.
@@ -268,7 +263,6 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
     const op = OPERATIONS.find(o => o.id === agentId);
     const opLabel = op?.label || agentId;
     setLoadingMessage?.(op?.loadingMsg || "Running " + opLabel + "…");
-    log("info", op?.loadingMsg || "Running " + opLabel + "…");
 
     const controller = new AbortController();
     normControllerRef.current = controller;
@@ -278,7 +272,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       setActiveOp(null);
       setLoadingMessage?.("");
       setLoadingOnCancel?.(null);
-      log("info", opLabel + " cancelled.");
+      setOpResults((prev) => ({ ...prev, [agentId]: opLabel + " cancelled." }));
     });
 
     const agentKwargs: any = {};
@@ -347,11 +341,9 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
         setRegionNormMetrics(data.region_norm_metrics);
       }
       await fetchOperationPreview();
-      log("success", opLabel + ": " + data.message);
     } catch (err: any) {
       if (err.name !== "AbortError") {
         setOpResults(prev => ({ ...prev, [agentId]: "Error: " + err.message }));
-        log("error", opLabel + ": " + err.message);
       }
     } finally {
       normControllerRef.current = null;
@@ -360,7 +352,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       setLoadingMessage?.("");
       setLoadingOnCancel?.(null);
     }
-  }, [apiKey, fetchOperationPreview, log, supplierCountryColumn, regionColumn, dateFormat, currencySpendColumn, currencyCodeColumn, currencyDateColumn, scopeYear, fxOverrideMode, fxOverridesYearly, fxOverridesMonthly, showFxValidation, assessResult, setLoadingMessage, setLoadingOnCancel]);
+  }, [apiKey, fetchOperationPreview, supplierCountryColumn, regionColumn, dateFormat, currencySpendColumn, currencyCodeColumn, currencyDateColumn, scopeYear, fxOverrideMode, fxOverridesYearly, fxOverridesMonthly, showFxValidation, assessResult, setLoadingMessage, setLoadingOnCancel]);
 
   const handleAssess = useCallback(async () => {
     if (!currencyCodeColumn) {
@@ -488,7 +480,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
   const downloadControllerRef = useRef<AbortController | null>(null);
 
   const handleDownload = useCallback(async () => {
-    log("info", "Downloading CSV…");
+    setDownloadStatus(null);
     setLoadingMessage?.("Preparing CSV download…");
 
     const controller = new AbortController();
@@ -498,7 +490,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       downloadControllerRef.current = null;
       setLoadingMessage?.("");
       setLoadingOnCancel?.(null);
-      log("info", "CSV download cancelled.");
+      setDownloadStatus({ ok: false, message: "CSV download cancelled." });
     });
 
     try {
@@ -514,17 +506,17 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       a.download = filename;
       a.click();
       URL.revokeObjectURL(url);
-      log("success", "Download complete.");
+      setDownloadStatus({ ok: true, message: "Download complete." });
     } catch (err: any) {
       if (err.name !== "AbortError") {
-        log("error", "Download failed: " + err.message);
+        setDownloadStatus({ ok: false, message: "Download failed: " + err.message });
       }
     } finally {
       downloadControllerRef.current = null;
       setLoadingMessage?.("");
       setLoadingOnCancel?.(null);
     }
-  }, [log, setLoadingMessage, setLoadingOnCancel]);
+  }, [setLoadingMessage, setLoadingOnCancel, sessionId]);
 
 
   // Send to Summarizer state
@@ -566,15 +558,13 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       a.click();
       document.body.removeChild(a);
       setAnalyzerSendResult({ ok: true, message: "Opened Spend Summarizer in a new tab" });
-      log("success", "Data sent to Spend Summarizer successfully.");
     } catch (err: any) {
       setAnalyzerSendResult({ ok: false, message: err.message || "Send failed" });
-      log("error", "Failed to send to Spend Summarizer: " + (err.message || "Unknown error"));
     } finally {
       setSendingToAnalyzer(false);
       setShowTransferOverlay(false);
     }
-  }, [apiKey, log]);
+  }, [apiKey, sessionId]);
 
   /* ── Transfer overlay (shows during Module 2 → Module 3 transfer) ── */
   const transferOverlayEl = (
@@ -610,6 +600,11 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                 </span>
               )}
             </div>
+            {downloadStatus && (
+              <p role={downloadStatus.ok ? "status" : "alert"} className={`text-sm ${downloadStatus.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+                {downloadStatus.message}
+              </p>
+            )}
           </div>
         </SurfaceCard>
 
@@ -694,6 +689,10 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
     const isCompleted = completedOps.has(singleOp.id);
     const isRunning = activeOp === singleOp.id;
     const showOperationPreview = isCompleted;
+    const operationResult = opResults[singleOp.id];
+    const operationResultIsError = operationResult?.startsWith("Error") ?? false;
+    const operationResultIsCancelled = /cancelled/i.test(operationResult || "");
+    const customResultActions = new Set(["currency_conversion", "supplier_country", "region"]);
     const highlightedOperationColumns = new Set(
       operationPreview.columns.filter((col) => {
         switch (singleOp.id) {
@@ -1296,16 +1295,18 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
             </div>
           )}
 
-          {opResults[singleOp.id] && singleOp.id !== "currency_conversion" && singleOp.id !== "supplier_country" && (
+          {operationResult && (
             <div className="space-y-3">
               <div className={`whitespace-pre-wrap rounded-xl p-3 text-sm ${
-                opResults[singleOp.id].startsWith("Error")
+                operationResultIsError
                   ? "bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800"
+                  : operationResultIsCancelled
+                    ? "bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800"
                   : "bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800"
-              }`}>
-                {opResults[singleOp.id]}
+              }`} role={operationResultIsError ? "alert" : "status"}>
+                {operationResult}
               </div>
-              {!opResults[singleOp.id].startsWith("Error") && (
+              {!operationResultIsError && !operationResultIsCancelled && !customResultActions.has(singleOp.id) && (
                 <div className="flex items-center gap-2">
                   <PrimaryButton onClick={handleDownload}>
                     <Download className="w-4 h-4 mr-2" />
@@ -1322,6 +1323,11 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                 </div>
               )}
             </div>
+          )}
+          {downloadStatus && (
+            <p role={downloadStatus.ok ? "status" : "alert"} className={`text-sm ${downloadStatus.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+              {downloadStatus.message}
+            </p>
           )}
           {showOperationPreview && (
             <div className="rounded-2xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900/60 overflow-hidden">
@@ -1407,6 +1413,11 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
               Download CSV
             </PrimaryButton>
           </div>
+          {downloadStatus && (
+            <p role={downloadStatus.ok ? "status" : "alert"} className={`text-sm ${downloadStatus.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+              {downloadStatus.message}
+            </p>
+          )}
         </div>
       </SurfaceCard>
     </div>

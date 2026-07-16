@@ -9,7 +9,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from shared.db import DuckDBConnection, quote_id, read_table_columns, table_row_count
+from shared.db import (
+    DuckDBConnection,
+    filter_data_columns,
+    quote_id,
+    read_table_columns,
+    table_row_count,
+)
 
 from .column_resolver import pick_currency_code_column, pick_spend_column, resolve_column
 from .metrics import (
@@ -27,8 +33,9 @@ _SYSTEM_COLUMNS: set[str] = {"FILE_NAME", "RECORD_ID"}
 
 def _null_proxy_condition(qc: str) -> str:
     """SQL fragment: true when value is a known null-proxy (case-insensitive)."""
+    text_expr = f"CAST({qc} AS VARCHAR)"
     conditions = " OR ".join(
-        f"LOWER(TRIM({qc})) = '{v}'" for v in NULL_PROXY_VALUES
+        f"LOWER(TRIM({text_expr})) = '{v}'" for v in NULL_PROXY_VALUES
     )
     return f"({conditions})"
 
@@ -61,7 +68,7 @@ def run_fill_rate_analysis(
     Returns:
         JSON-serialisable dict with ``columns``, ``spendType``, ``spendColumn``.
     """
-    all_cols = read_table_columns(conn, table_name)
+    all_cols = filter_data_columns(read_table_columns(conn, table_name))
     logger.info("Fill rate: table=%s, total_cols=%d", table_name, len(all_cols))
     system_upper = {s.upper() for s in _SYSTEM_COLUMNS}
     columns = [c for c in all_cols if c.upper() not in system_upper]
@@ -102,12 +109,13 @@ def run_fill_rate_analysis(
         ccy_col = pick_currency_code_column(spend_col, available)
         if ccy_col:
             qcc = quote_id(ccy_col)
+            qcc_text = f"CAST({qcc} AS VARCHAR)"
             ccy_rows = conn.execute(
-                f"SELECT UPPER(TRIM({qcc})) AS code, "
+                f"SELECT UPPER(TRIM({qcc_text})) AS code, "
                 f"SUM({spend_expr}) AS ts "
                 f"FROM {tbl} "
-                f"WHERE {qcc} IS NOT NULL AND TRIM({qcc}) != '' "
-                f"GROUP BY UPPER(TRIM({qcc}))"
+                f"WHERE {qcc} IS NOT NULL AND TRIM({qcc_text}) != '' "
+                f"GROUP BY UPPER(TRIM({qcc_text}))"
             ).fetchall()
             ccy_totals = {str(r["code"]): float(r["ts"] or 0) for r in ccy_rows}
 
@@ -130,16 +138,17 @@ def run_fill_rate_analysis(
     local_coverage: dict[str, list[dict[str, Any]]] = {}
     if spend_col and not is_reporting and ccy_col and spend_expr and ccy_totals:
         qcc = quote_id(ccy_col)
+        qcc_text = f"CAST({qcc} AS VARCHAR)"
         for col in columns:
             qc = quote_id(col)
             nn_cond = _effective_non_null_condition(qc)
             ccy_rows = conn.execute(
-                f"SELECT UPPER(TRIM({qcc})) AS code, "
+                f"SELECT UPPER(TRIM({qcc_text})) AS code, "
                 f"SUM({spend_expr}) AS cs "
                 f"FROM {tbl} "
                 f"WHERE {nn_cond} "
-                f"AND {qcc} IS NOT NULL AND TRIM({qcc}) != '' "
-                f"GROUP BY UPPER(TRIM({qcc}))"
+                f"AND {qcc} IS NOT NULL AND TRIM({qcc_text}) != '' "
+                f"GROUP BY UPPER(TRIM({qcc_text}))"
             ).fetchall()
             breakdown: list[dict[str, Any]] = []
             for r in ccy_rows:
@@ -200,7 +209,7 @@ def run_spend_bifurcation(
     Returns:
         JSON-serialisable dict with ``type``, spend totals, and ``column``.
     """
-    available = set(read_table_columns(conn, table_name))
+    available = set(filter_data_columns(read_table_columns(conn, table_name)))
     spend_col, is_reporting = pick_spend_column(available)
     tbl = quote_id(table_name)
 

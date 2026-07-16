@@ -3,6 +3,7 @@ import ReactDOM from "react-dom";
 import { ArrowRight, Columns3, Loader2, SkipForward, Maximize2, Minimize2, Download, Upload, CheckSquare, Square, ChevronDown, ChevronRight, PenLine, FileSpreadsheet } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { PrimaryButton, SecondaryButton, SurfaceCard } from "../common/ui";
+import { isReservedProvenanceColumn, sanitizeReservedColumns, sanitizeReservedRows } from "../../utils/reservedColumns";
 
 interface HeaderNormalisationProps {
   sessionId: string;
@@ -36,6 +37,24 @@ function normalizeAction(action: unknown): Action {
   if (a === "REVIEW") return "AUTO";
   if (a === "AUTO" || a === "DROP" || a === "KEEP") return a;
   return "KEEP";
+}
+
+function cloneDecisions(value: Record<string, ColDecision[]>): Record<string, ColDecision[]> {
+  return Object.fromEntries(Object.entries(value).map(([key, rows]) => [
+    key,
+    rows.map((row) => ({ ...row, top_alternatives: [...row.top_alternatives] })),
+  ]));
+}
+
+export function projectAllDecisionsToKeep(value: Record<string, ColDecision[]>): Record<string, ColDecision[]> {
+  return Object.fromEntries(Object.entries(value).map(([key, rows]) => [
+    key,
+    rows.filter((row) => !isReservedProvenanceColumn(row.source_col)).map((row) => ({
+      ...row,
+      action: "KEEP" as const,
+      mapped_to: null,
+    })),
+  ]));
 }
 
 const ACTION_COLORS: Record<Action, string> = {
@@ -81,6 +100,7 @@ function NormTable({
   totalRows,
   customNameCols,
   onToggleCustomName,
+  controlsDisabled,
 }: {
   columns: string[];
   rows: any[];
@@ -90,6 +110,7 @@ function NormTable({
   totalRows: number;
   customNameCols: Set<string>;
   onToggleCustomName: (sourceCol: string, isCustom: boolean) => void;
+  controlsDisabled: boolean;
 }) {
   const decisionMap = useMemo(() => {
     const m: Record<string, ColDecision> = {};
@@ -114,6 +135,8 @@ function NormTable({
                 return (
                   <th key={`action-${col}`} className="px-1 py-1 border-b border-r border-neutral-300 dark:border-neutral-700 min-w-[140px]">
                     <select
+                      aria-label={`Action for ${col}`}
+                      disabled={controlsDisabled}
                       value={d?.action || "KEEP"}
                       onChange={(e) => {
                         const action = normalizeAction(e.target.value);
@@ -125,7 +148,7 @@ function NormTable({
                           onToggleCustomName(col, false);
                         }
                       }}
-                      className={`w-full px-1.5 py-1 rounded text-[10px] font-bold border cursor-pointer ${ACTION_COLORS[d?.action || "KEEP"]}`}
+                      className={`w-full px-1.5 py-1 rounded text-[10px] font-bold border cursor-pointer disabled:cursor-not-allowed disabled:opacity-70 ${ACTION_COLORS[d?.action || "KEEP"]}`}
                     >
                       <option value="AUTO">AUTO</option>
                       <option value="KEEP">KEEP</option>
@@ -153,6 +176,7 @@ function NormTable({
                   <th key={`target-${col}`} className="px-1 py-1 border-b border-r border-neutral-300 dark:border-neutral-700">
                     {isKeep || isDrop ? (
                       <select
+                        aria-label={`Mapped header for ${col}`}
                         value=""
                         disabled
                         className="w-full px-1.5 py-1 rounded text-[10px] font-semibold border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 opacity-50 cursor-not-allowed"
@@ -163,6 +187,8 @@ function NormTable({
                       <div className="flex items-center gap-0.5">
                         {isCustom ? (
                           <input
+                            aria-label={`Custom mapped header for ${col}`}
+                            disabled={controlsDisabled}
                             type="text"
                             value={customValue}
                             onChange={(e) => onUpdateDecision(col, { mapped_to: e.target.value || null })}
@@ -176,6 +202,8 @@ function NormTable({
                           />
                         ) : (
                           <select
+                            aria-label={`Mapped header for ${col}`}
+                            disabled={controlsDisabled}
                             value={d?.mapped_to || ""}
                             onChange={(e) => onUpdateDecision(col, { mapped_to: e.target.value || null })}
                             className="flex-1 min-w-0 px-1.5 py-1 rounded text-[10px] font-semibold border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900"
@@ -197,6 +225,8 @@ function NormTable({
                         )}
                         <button
                           type="button"
+                          aria-label={isCustom ? `Use standard field list for ${col}` : `Enter a custom name for ${col}`}
+                          disabled={controlsDisabled}
                           onClick={() => {
                             const toggling = !isCustom;
                             onToggleCustomName(col, toggling);
@@ -220,12 +250,12 @@ function NormTable({
               })}
             </tr>
             {/* Row 3: Original column headers */}
-            <tr className="bg-neutral-700 dark:bg-neutral-800">
-              <th className="sticky left-0 z-30 bg-neutral-700 dark:bg-neutral-800 px-2 py-2 text-[10px] font-bold text-white uppercase tracking-wider border-b border-r border-neutral-600 dark:border-neutral-700 whitespace-nowrap">
+            <tr className="bg-neutral-200 dark:bg-neutral-800">
+              <th className="sticky left-0 z-30 bg-neutral-200 dark:bg-neutral-800 px-2 py-2 text-[10px] font-bold text-neutral-900 dark:text-white uppercase tracking-wider border-b border-r border-neutral-300 dark:border-neutral-700 whitespace-nowrap">
                 #
               </th>
               {columns.map((col) => (
-                <th key={`header-${col}`} className="px-2 py-2 text-left text-[10px] font-bold text-white tracking-wide border-b border-r border-neutral-600 dark:border-neutral-700 whitespace-nowrap">
+                <th key={`header-${col}`} className="px-2 py-2 text-left text-[10px] font-bold text-neutral-900 dark:text-white tracking-wide border-b border-r border-neutral-300 dark:border-neutral-700 whitespace-nowrap">
                   {col}
                 </th>
               ))}
@@ -283,7 +313,9 @@ function GroupPanel({
   loading,
   customNameCols,
   onToggleCustomName,
+  controlsDisabled,
 }: {
+  key?: React.Key;
   groupId: string;
   groupName: string;
   columns: string[];
@@ -296,6 +328,7 @@ function GroupPanel({
   loading: boolean;
   customNameCols: Set<string>;
   onToggleCustomName: (groupKey: string, sourceCol: string, isCustom: boolean) => void;
+  controlsDisabled: boolean;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
@@ -357,6 +390,7 @@ function GroupPanel({
       totalRows={totalRows}
       customNameCols={customNameCols}
       onToggleCustomName={handleToggleCustom}
+      controlsDisabled={controlsDisabled}
     />
   );
 
@@ -459,12 +493,16 @@ export default function HeaderNormalisation({
   const [customNameCols, setCustomNameCols] = useState<Set<string>>(new Set());
   const [manualExcelMode, setManualExcelMode] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [keepOriginalHeaders, setKeepOriginalHeaders] = useState(false);
+  const [decisionBaseline, setDecisionBaseline] = useState<Record<string, ColDecision[]>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const next: Record<string, ColDecision[]> = {};
     for (const tbl of decisions || []) {
-      next[tbl.tableKey] = (tbl.decisions || []).map((d: any) => ({
+      next[tbl.tableKey] = (tbl.decisions || []).filter(
+        (d: any) => !isReservedProvenanceColumn(d?.source_col),
+      ).map((d: any) => ({
         source_col: String(d.source_col || ""),
         suggested_std_field: d.suggested_std_field || null,
         confidence: Number(d.confidence || 0),
@@ -475,6 +513,10 @@ export default function HeaderNormalisation({
       }));
     }
     setEdited(next);
+    setDecisionBaseline(cloneDecisions(next));
+    setKeepOriginalHeaders(false);
+    setUserEditedCols(new Set());
+    setCustomNameCols(new Set());
   }, [decisions]);
 
   useEffect(() => {
@@ -531,8 +573,8 @@ export default function HeaderNormalisation({
 
   const applyChanges = () => {
     const payload: Record<string, any[]> = {};
-    for (const [tableKey, arr] of Object.entries(edited)) {
-      payload[tableKey] = arr.map((d) => ({
+    for (const [tableKey, arr] of Object.entries(edited) as [string, ColDecision[]][]) {
+      payload[tableKey] = arr.filter((d) => !isReservedProvenanceColumn(d.source_col)).map((d) => ({
         ...d,
         action: normalizeAction(d.action),
         suggested_std_field: d.mapped_to || d.suggested_std_field || null,
@@ -541,6 +583,15 @@ export default function HeaderNormalisation({
       }));
     }
     onApply(payload);
+  };
+
+  const handleKeepOriginalHeaders = (checked: boolean) => {
+    setKeepOriginalHeaders(checked);
+    setUserEditedCols(new Set());
+    setCustomNameCols(new Set());
+    setEdited(checked
+      ? projectAllDecisionsToKeep(decisionBaseline)
+      : cloneDecisions(decisionBaseline));
   };
 
   const handleUploadExcel = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -555,39 +606,42 @@ export default function HeaderNormalisation({
       if (!res.ok) throw new Error("Upload failed");
       const data = await res.json();
       const uploadedDecisions = data.decisions || {};
-      setEdited((prev) => {
-        const next = { ...prev };
-        for (const [groupKey, colDecs] of Object.entries(uploadedDecisions) as [string, any[]][]) {
-          if (next[groupKey]) {
-            const existing = [...next[groupKey]];
-            for (const ud of colDecs) {
-              const idx = existing.findIndex((x) => x.source_col === ud.source_col);
-              if (idx >= 0) {
-                existing[idx] = {
-                  ...existing[idx],
-                  action: normalizeAction(ud.action),
-                  mapped_to: ud.mapped_to || null,
-                  suggested_std_field: ud.suggested_std_field || existing[idx].suggested_std_field,
-                  confidence: ud.confidence ?? existing[idx].confidence,
-                  reason: ud.reason || existing[idx].reason,
-                };
-              }
+      const next = { ...edited };
+      for (const [groupKey, rawColDecs] of Object.entries(uploadedDecisions) as [string, any[]][]) {
+        const colDecs = rawColDecs.filter((d) => !isReservedProvenanceColumn(d?.source_col));
+        if (next[groupKey]) {
+          const existing = [...next[groupKey]];
+          for (const ud of colDecs) {
+            const idx = existing.findIndex((x) => x.source_col === ud.source_col);
+            if (idx >= 0) {
+              existing[idx] = {
+                ...existing[idx],
+                action: normalizeAction(ud.action),
+                mapped_to: ud.mapped_to || null,
+                suggested_std_field: ud.suggested_std_field || existing[idx].suggested_std_field,
+                confidence: ud.confidence ?? existing[idx].confidence,
+                reason: ud.reason || existing[idx].reason,
+              };
             }
-            next[groupKey] = existing;
-          } else {
-            next[groupKey] = colDecs.map((d: any) => ({
-              source_col: String(d.source_col || ""),
-              suggested_std_field: d.suggested_std_field || null,
-              confidence: Number(d.confidence || 0),
-              reason: String(d.reason || ""),
-              action: normalizeAction(d.action),
-              top_alternatives: [],
-              mapped_to: d.mapped_to || null,
-            }));
           }
+          next[groupKey] = existing;
+        } else {
+          next[groupKey] = colDecs.map((d: any) => ({
+            source_col: String(d.source_col || ""),
+            suggested_std_field: d.suggested_std_field || null,
+            confidence: Number(d.confidence || 0),
+            reason: String(d.reason || ""),
+            action: normalizeAction(d.action),
+            top_alternatives: [],
+            mapped_to: d.mapped_to || null,
+          }));
         }
-        return next;
-      });
+      }
+      setEdited(next);
+      setDecisionBaseline(cloneDecisions(next));
+      setKeepOriginalHeaders(false);
+      setUserEditedCols(new Set());
+      setCustomNameCols(new Set());
     } catch (err) {
       console.error("Excel upload error:", err);
     } finally {
@@ -602,8 +656,8 @@ export default function HeaderNormalisation({
     setDownloadingSummary(true);
     try {
       const payload: Record<string, any[]> = {};
-      for (const [tableKey, arr] of Object.entries(edited)) {
-        payload[tableKey] = arr.map((d) => ({
+      for (const [tableKey, arr] of Object.entries(edited) as [string, ColDecision[]][]) {
+        payload[tableKey] = arr.filter((d) => !isReservedProvenanceColumn(d.source_col)).map((d) => ({
           source_col: d.source_col,
           action: d.action,
           mapped_to: d.mapped_to || d.suggested_std_field || null,
@@ -671,6 +725,15 @@ export default function HeaderNormalisation({
           <>
             {/* Toolbar: manual Excel workflow + summary download */}
             <div className="flex items-center gap-4 flex-wrap p-3 rounded-xl border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50">
+              <label className="inline-flex items-center gap-2 text-xs font-semibold text-neutral-700 dark:text-neutral-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={keepOriginalHeaders}
+                  onChange={(event) => handleKeepOriginalHeaders(event.target.checked)}
+                  className="h-4 w-4 rounded border-neutral-300 accent-red-600"
+                />
+                Keep Original Header names
+              </label>
               <button
                 type="button"
                 onClick={() => setManualExcelMode(!manualExcelMode)}
@@ -716,8 +779,8 @@ export default function HeaderNormalisation({
                 const preview = groupPreviewData[groupKey];
                 const schema = groupSchema.find((g: any) => g.group_id === groupKey);
                 const groupDecisions = edited[groupKey] || [];
-                const cols = preview?.columns || groupDecisions.map((d) => d.source_col);
-                const rows = preview?.rows || [];
+                const cols = sanitizeReservedColumns(preview?.columns || groupDecisions.map((d) => d.source_col));
+                const rows = sanitizeReservedRows(preview?.rows || []);
                 const total = preview?.total_rows ?? schema?.rows ?? 0;
 
                 return (
@@ -735,6 +798,7 @@ export default function HeaderNormalisation({
                     loading={loading}
                     customNameCols={getGroupCustomCols(groupKey)}
                     onToggleCustomName={toggleCustomName}
+                    controlsDisabled={keepOriginalHeaders}
                   />
                 );
               })}

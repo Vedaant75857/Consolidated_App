@@ -10,7 +10,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from shared.db import DuckDBConnection, read_table_columns, table_exists, table_row_count
+from shared.db import (
+    DuckDBConnection,
+    filter_data_columns,
+    read_table_columns,
+    table_exists,
+    table_row_count,
+)
 
 from .ai_prompts import generate_entity_insights, generate_financial_insights
 from .column_resolver_ai import suggest_columns_ai
@@ -112,7 +118,7 @@ def collect_column_samples(
     from shared.db import quote_id
 
     table_name = _validate_table(conn, table_name)
-    columns = read_table_columns(conn, table_name)
+    columns = filter_data_columns(read_table_columns(conn, table_name))
     tbl = quote_id(table_name)
     samples: dict[str, list[str]] = {}
     for col in columns:
