@@ -19,7 +19,8 @@
   ],
   "GL Account Description": [
     "CONTO_CO_GE_DESC",
-    "GLACCOUNTDESCRIPTION"
+    "GLACCOUNTDESCRIPTION",
+    "G/L ACCOUNT - ACCOUNT G/L"
   ],
   "GL Account": [
     "WBE",
@@ -191,7 +192,8 @@
   ],
   "PO Material Group Code": [
     "COMMODITYID",
-    "MATERIALGROUPID"
+    "MATERIALGROUPID",
+    "MATERIAL - MATERIAL ID"
   ],
   "PO Material Group Description": [
     "COMMODITYNAME",
@@ -266,15 +268,18 @@
   ],
   "Spend Classification Level 2": [
     "CATEGORY2",
-    "SUPPLIER_ID"
+    "SUPPLIER_ID",
+    "CATEGORY TREE NAMES - CAT L2 NAME"
   ],
   "Spend Classification Level 3": [
     "CATEGORY3",
-    "VENDOR"
+    "VENDOR",
+    "CATEGORY TREE NAMES - CAT L3 NAME"
   ],
   "Spend Classification Level 4": [
     "CATEGORY4",
-    "COMPANY_NAME"
+    "COMPANY_NAME",
+    "CATEGORY TREE NAMES - CAT L4 NAME"
   ],
   "Cost Center Description": [
     "COSTCENTERDESCRIPTION",
@@ -283,10 +288,12 @@
   ],
   "PO Material Description": [
     "MATERIAL",
-    "MATERIAL (TEXT)"
+    "MATERIAL (TEXT)",
+    "MATERIAL - MATERIAL NAME"
   ],
   "Plant Code": [
-    "COUNTRY CODE"
+    "COUNTRY CODE",
+    "PLANT ID"
   ],
   "Invoice Line Number Quantity": [
     "UNITS_PURCHASED"

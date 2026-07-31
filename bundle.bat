@@ -24,8 +24,8 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command ^
   "$share = Join-Path (Get-Location).Path 'share';" ^
   "New-Item -ItemType Directory -Path $share -Force | Out-Null;" ^
   "$stage = Join-Path $share ('.bundle-staging-' + [guid]::NewGuid().ToString('N'));" ^
-  "$archive = Join-Path $share 'ProcIP_Suite.zip';" ^
-  "$temporaryArchive = Join-Path $share ('.ProcIP_Suite-' + [guid]::NewGuid().ToString('N') + '.zip');" ^
+  "$archive = Join-Path $share 'DataScopingTool.zip';" ^
+  "$temporaryArchive = Join-Path $share ('.DataScopingTool-' + [guid]::NewGuid().ToString('N') + '.zip');" ^
   "try {" ^
   "  New-Item -ItemType Directory -Path $stage -Force | Out-Null;" ^
   "  Copy-FilteredTree 'backend' (Join-Path $stage 'backend');" ^

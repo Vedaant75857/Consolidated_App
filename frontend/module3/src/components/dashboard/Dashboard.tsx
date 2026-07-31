@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronDown, ChevronUp, ArrowRight } from "lucide-react";
+import { ChevronDown, ChevronUp, ArrowRight, Download, Loader2 } from "lucide-react";
 import type { ViewResult, ViewConfig } from "../../types";
 import ViewPanel from "./ViewPanel";
 
 interface Props {
   views: ViewResult[];
   onExportCsv: (viewId: string) => void;
+  onExportCompleteAnalysis?: () => Promise<void>;
   onRecomputeView?: (viewId: string, config: ViewConfig) => Promise<ViewResult>;
   onViewProcurementFeasibility?: () => void;
 }
@@ -60,19 +61,60 @@ function CollapsiblePanel({
 export default function Dashboard({
   views,
   onExportCsv,
+  onExportCompleteAnalysis,
   onRecomputeView,
   onViewProcurementFeasibility,
 }: Props) {
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const handleExportCompleteAnalysis = async () => {
+    if (!onExportCompleteAnalysis || exporting) return;
+    setExporting(true);
+    setExportError(null);
+    try {
+      await onExportCompleteAnalysis();
+    } catch (err: any) {
+      setExportError(err?.message || "Excel export failed.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
-          Analysis Dashboard
-        </h2>
-        <p className="text-xs text-neutral-500">
-          {views.length} view{views.length !== 1 ? "s" : ""} generated
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
+            Analysis Dashboard
+          </h2>
+          <p className="text-xs text-neutral-500">
+            {views.length} view{views.length !== 1 ? "s" : ""} generated
+          </p>
+        </div>
+        {onExportCompleteAnalysis && (
+          <button
+            type="button"
+            onClick={handleExportCompleteAnalysis}
+            disabled={exporting || views.length === 0}
+            aria-busy={exporting}
+            className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {exporting ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Download className="h-4 w-4" aria-hidden="true" />
+            )}
+            {exporting ? "Preparing Excel…" : "Export complete analysis"}
+          </button>
+        )}
       </div>
+
+      {exportError && (
+        <p role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
+          {exportError}
+        </p>
+      )}
 
       <CollapsiblePanel title="Detailed Summary" defaultExpanded={true}>
         <div className="space-y-6 p-4">

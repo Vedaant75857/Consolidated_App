@@ -37,6 +37,7 @@ import {
   generateEmail,
   cleanupSession,
   exportCsv,
+  exportCompleteAnalysis,
   deleteTable,
   setHeaderRow,
   deleteRows,
@@ -97,8 +98,11 @@ function downloadBlob(blob: Blob, filename: string) {
   const a = document.createElement("a");
   a.href = url;
   a.download = filename;
+  a.style.display = "none";
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 export default function App() {
@@ -651,6 +655,12 @@ export default function App() {
     [sessionId]
   );
 
+  const handleExportCompleteAnalysis = useCallback(async () => {
+    if (!sessionId) throw new Error("No active analysis session.");
+    const { blob, filename } = await exportCompleteAnalysis(sessionId);
+    downloadBlob(blob, filename || "spend-quality-and-views.xlsx");
+  }, [sessionId]);
+
   /* ──── Procurement views (step 6 -> 7) ──── */
 
   const handleViewProcurementFeasibility = useCallback(() => {
@@ -975,6 +985,7 @@ export default function App() {
                       <Dashboard
                         views={viewResults}
                         onExportCsv={handleExportCsv}
+                        onExportCompleteAnalysis={handleExportCompleteAnalysis}
                         onRecomputeView={handleRecomputeView}
                         onViewProcurementFeasibility={handleViewProcurementFeasibility}
                       />

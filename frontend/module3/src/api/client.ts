@@ -639,3 +639,41 @@ export async function exportCsv(sessionId: string, viewId: string) {
   if (!res.ok) throw new Error("CSV export failed");
   return res.blob();
 }
+
+export interface BinaryExportResult {
+  blob: Blob;
+  filename?: string;
+}
+
+function getDownloadFilename(contentDisposition: string | null): string | undefined {
+  if (!contentDisposition) return undefined;
+  const encoded = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded);
+    } catch {
+      return undefined;
+    }
+  }
+  return contentDisposition.match(/filename="?([^";]+)"?/i)?.[1];
+}
+
+export async function exportCompleteAnalysis(sessionId: string): Promise<BinaryExportResult> {
+  const res = await fetch(`${BASE}/export/xlsx/complete-analysis`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new ApiClientError(
+      err.error || "Excel export failed",
+      res.status,
+      typeof err.code === "string" ? err.code : undefined,
+    );
+  }
+  return {
+    blob: await res.blob(),
+    filename: getDownloadFilename(res.headers.get("Content-Disposition")),
+  };
+}

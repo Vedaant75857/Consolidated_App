@@ -101,3 +101,18 @@ The Module 3 playground overlay should present the dataset as one continuous scr
 Backend preview reads remain paginated with the existing 1000-row maximum, but pagination is an implementation detail hidden behind frontend virtualization and chunk prefetching.
 
 For large uploads, the frontend should bound cached row chunks around the current viewport, abort stale preview/filter reads on table/search/filter changes, and virtualize wide columns horizontally while keeping row identity controls sticky.
+
+## 2026-07-31 - Spend Quality Assessment XLSX Export Boundary
+
+The Spend Quality Assessment workbook export should be generated server-side at
+`POST /api/export/xlsx/spend-quality-assessment` from a lock-protected snapshot
+of the completed `_meta["executive_summary"]` result. Export must not rerun SQL or
+AI, must not require an API key, and must preserve the existing mapping-driven
+cache invalidation boundary. `openpyxl` is already an approved backend
+dependency.
+
+The initial workbook scope is the canonical Executive Summary result: narrative
+summary, fill-rate summary, spend bifurcation, monthly/date pivot, and Pareto
+cuts. The separate Not Procurable, CAPEX/OPEX, and Intercompany Step 4 tabs are
+out of scope until their interactive inputs and on-demand results have a durable
+export contract.
