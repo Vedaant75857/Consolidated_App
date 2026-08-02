@@ -19,7 +19,7 @@ from pydantic import BaseModel, ValidationError
 
 
 _DEFAULT_BASE_URL = "https://portkey.bain.dev/v1"
-_DEFAULT_MODEL = "@personal-openai/gpt-5.4"
+_DEFAULT_MODEL = "@personal-openai/gpt-5.6-luna"
 _CACHE_LOCK = threading.Lock()
 _AI_JSON_CACHE: dict[str, tuple[float, Any]] = {}
 

@@ -13,6 +13,9 @@ import uuid
 _sys.dont_write_bytecode = True
 os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
+from tls_config import configure_tls
+configure_tls()
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",

@@ -125,7 +125,7 @@ def find_column(
     )
     try:
         resp = ai_client.chat.completions.create(
-            model=model or "@personal-openai/gpt-5.4",
+            model=model or "@personal-openai/gpt-5.6-luna",
             messages=[
                 {"role": "system", "content": "Output JSON only."},
                 {"role": "user", "content": prompt},

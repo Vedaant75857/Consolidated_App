@@ -13,6 +13,9 @@ from urllib.parse import urlsplit
 _sys.dont_write_bytecode = True
 os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
+from tls_config import configure_tls
+configure_tls()
+
 from flask import Flask, current_app, request, jsonify, send_file, g
 from flask.json.provider import DefaultJSONProvider
 from flask_cors import CORS
@@ -210,7 +213,16 @@ def _suggest_columns(df: pd.DataFrame, sample_size: int = 100) -> dict:
         and not str(c).startswith("Norm_Date_")
     ]
 
+    # Prefer normalized date columns first (they are already formatted dates).
     best_date, best_date_pct = None, 0.0
+    for c in cols:
+        if str(c).startswith("Norm_Date_"):
+            pop = pct_populated(sample[c])
+            if pop >= 0.60 and pop > best_date_pct:
+                best_date_pct = pop
+                best_date = c
+
+    # Then consider original date columns
     for c in date_candidates:
         s = sample[c]
         pop = pct_populated(s)

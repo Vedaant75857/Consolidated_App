@@ -51,3 +51,20 @@ VITE_HOME_URL=https://suite.example.com
 
 The frontends continue to call same-origin `/api` routes. A production host must
 route each module frontend's `/api/*` requests to its corresponding backend.
+
+## Zscaler / TLS CA bundle
+
+If the machine is behind a Zscaler proxy, place the Zscaler root CA PEM at one of the fallback paths, or set an environment variable before starting any backend module.
+
+| Variable | Purpose |
+| --- | --- |
+| `PROCIP_CA_BUNDLE` | Primary PEM bundle path used by `configure_tls()`. |
+| `REQUESTS_CA_BUNDLE` | Fallback PEM bundle path used by `configure_tls()` when `PROCIP_CA_BUNDLE` is unset. |
+
+`configure_tls()` also sets `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` for the discovered bundle so `requests` and `httpx` (used by `portkey-ai`) both trust it. Fallback paths are checked in this order when no environment variable is set:
+
+1. `C:\Bain\Setup\Zscaler\zscaler.pem`
+2. `C:\Bain\Setup\Zscaler\zscaler 2026_05.pem`
+3. `~/zscaler.pem`
+3. `/usr/local/share/ca-certificates/zscaler.pem`
+4. `/etc/ssl/certs/zscaler.pem`

@@ -165,7 +165,11 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
 
         setCurrencyDateColumn(prev => {
           if (prev === "No date col" || (prev && cols.includes(prev))) return prev;
-          if (s.date_col && cols.includes(s.date_col)) return s.date_col;
+          if (s.date_col && cols.includes(s.date_col)) {
+            // Prefer normalized version of the suggested date column when available.
+            const normalized = cols.find(c => c.startsWith(`Norm_Date_${s.date_col}_`));
+            return normalized ?? s.date_col;
+          }
           return "No date col";
         });
 
@@ -202,9 +206,11 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
         });
         setCurrencyDateColumn(prev => {
           if (prev === "No date col" || (prev && cols.includes(prev))) return prev;
+          // Prefer normalized date columns first, then any original date column.
+          const normFallback = cols.find(c => c.startsWith("Norm_Date_"));
+          if (normFallback) return normFallback;
           const fallback = cols.find(c =>
             (c.toLowerCase().includes("date") || c.toLowerCase().includes("dob") || c.toLowerCase().includes("time"))
-            && !c.startsWith("Norm_Date_")
           );
           return fallback ?? "No date col";
         });
@@ -1259,6 +1265,11 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
                   <p className="font-semibold text-emerald-800 dark:text-emerald-300 mb-2">Conversion Summary</p>
                   <p className="text-emerald-700 dark:text-emerald-400">Rows converted: <strong>{conversionMetrics.n_converted}</strong></p>
                   <p className="text-emerald-700 dark:text-emerald-400">Rows via fallback: <strong>{conversionMetrics.n_fallback}</strong></p>
+                  {conversionMetrics.n_fallback > 0 && (
+                    <p className="text-amber-700 dark:text-amber-300 text-xs">
+                      Fallback rows used the latest available rate because the exact monthly rate could not be resolved.
+                    </p>
+                  )}
                   {(conversionMetrics.n_currency_missing + conversionMetrics.n_unsupported + conversionMetrics.n_spend_invalid + conversionMetrics.n_date_unparseable) > 0 && (
                     <div className="mt-2 space-y-0.5 text-neutral-600 dark:text-neutral-400">
                       <p className="font-medium">Rows not converted:</p>

@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from portkey_ai import Portkey
 
 _DEFAULT_BASE_URL = "https://portkey.bain.dev/v1"
-_DEFAULT_MODEL = "@personal-openai/gpt-5.4"
+_DEFAULT_MODEL = "@personal-openai/gpt-5.6-luna"
 
 
 # ─── AI Client ────────────────────────────────────────────────────────────────
@@ -39,9 +39,11 @@ MODEL_RATES = {
     'gpt-4o':                       (2.50, 10.00),
     'gpt-4o-mini':                  (0.15, 0.60),
     'gpt-5.4':                      (2.50, 15.00),
+    'gpt-5.6-luna':                 (2.50, 15.00),
     '@personal-openai/gpt-4o':      (2.50, 10.00),
     '@personal-openai/gpt-5.2':     (2.50, 15.00),
     '@personal-openai/gpt-5.4':     (2.50, 15.00),
+    '@personal-openai/gpt-5.6-luna': (2.50, 15.00),
 }
 
 

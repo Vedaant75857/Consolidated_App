@@ -631,7 +631,7 @@ function DatePivotPanel({
 const PARETO_ROW_LABELS: { key: keyof ParetoThresholdMetrics; label: string }[] = [
   { key: "totalSpend", label: "Total Spend" },
   { key: "transactionCount", label: "Number of Transactions" },
-  { key: "uniqueTransactions", label: "Unique Transactions" },
+  { key: "uniqueTransactions", label: "Unique Vendor-Description Pairs" },
   { key: "supplierCount", label: "Number of Suppliers" },
 ];
 

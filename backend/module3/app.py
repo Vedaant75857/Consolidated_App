@@ -8,6 +8,9 @@ import sys as _sys
 _sys.dont_write_bytecode = True
 os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
+from tls_config import configure_tls
+configure_tls()
+
 from dotenv import load_dotenv
 
 if not getattr(_sys, "frozen", False):
@@ -111,12 +114,12 @@ def test_key():
     try:
         from portkey_ai import Portkey
         base_url = os.getenv("PORTKEY_BASE_URL", "https://portkey.bain.dev/v1")
-        model = os.getenv("PORTKEY_MODEL", "@personal-openai/gpt-5.4")
+        model = os.getenv("PORTKEY_MODEL", "@personal-openai/gpt-5.6-luna")
         client = Portkey(api_key=api_key, base_url=base_url)
         resp = client.chat.completions.create(
             messages=[{"role": "user", "content": "Say OK"}],
             model=model,
-            max_tokens=5,
+            max_completion_tokens=5,
             timeout=15,
         )
         text = resp.choices[0].message.content if resp.choices else ""

@@ -9,6 +9,8 @@ import os
 import pandas as pd
 import numpy as np
 
+from .date_utils import _parse_date_series, _find_normalized_date_col
+
 logger = logging.getLogger(__name__)
 
 MONTH_ORDER = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -371,11 +373,8 @@ def run_conversion(
     )
 
     if conversion_mode == "monthly":
-        parsed_dates = pd.to_datetime(df[date_col], errors="coerce", dayfirst=False)
-        mask_failed = parsed_dates.isna() & df[date_col].notna()
-        if mask_failed.any():
-            retry = pd.to_datetime(df.loc[mask_failed, date_col], errors="coerce", dayfirst=True)
-            parsed_dates = parsed_dates.where(~mask_failed, retry)
+        effective_date_col = _find_normalized_date_col(df, date_col) or date_col
+        parsed_dates = _parse_date_series(df[effective_date_col])
 
         row_year = parsed_dates.dt.year
         row_month = parsed_dates.dt.strftime("%b").where(parsed_dates.notna(), other=pd.NA)
@@ -398,7 +397,8 @@ def run_conversion(
                 if pd.notna(yr) and pd.notna(mo):
                     r = FX.get((c, int(yr), mo))
                     if r is not None: return r, False
-                if c in _override_ccys: return np.nan, False
+                # Fall back to the latest available rate for missing months/years,
+                # even when the currency has partial user overrides.
                 r = LATEST_RATE.get(c)
                 return (r, True) if r is not None else (np.nan, False)
 
@@ -489,7 +489,7 @@ def run_conversion(
     status_values[valid_all & fallback_mask] = "fallback"
 
     if conversion_mode == "monthly":
-        date_parse_fail = parsed_dates.isna() & df[date_col].notna()
+        date_parse_fail = parsed_dates.isna() & df[effective_date_col].notna()
         # Mark rows where date failed to parse AND no rate was found even via fallback
         status_values[valid_spend & valid_ccy & date_parse_fail & ~valid_rate] = "date_unparseable"
 

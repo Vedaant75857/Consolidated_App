@@ -50,7 +50,7 @@ AI_VALIDATION_CONF_HIGH = 0.85
 AI_VALIDATION_CONF_LOW = 0.65
 
 PORTKEY_BASE_URL = "https://portkey.bain.dev/v1"
-PORTKEY_MODEL = "@personal-openai/gpt-5.4"
+PORTKEY_MODEL = "@personal-openai/gpt-5.6-luna"
 
 
 _VALID_STD_NAMES = set(STD_FIELD_NAMES)

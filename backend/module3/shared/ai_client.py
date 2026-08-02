@@ -12,7 +12,7 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_URL = "https://portkey.bain.dev/v1"
-_DEFAULT_MODEL = "@personal-openai/gpt-5.4"
+_DEFAULT_MODEL = "@personal-openai/gpt-5.6-luna"
 
 _cache: dict[str, tuple[float, Any]] = {}
 _CACHE_TTL = float(os.getenv("AI_CACHE_TTL_SEC", "300"))
