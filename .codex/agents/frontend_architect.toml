@@ -2,7 +2,7 @@ name = "frontend_architect"
 description = "Project-local frontend planning agent for UI, routes, components, state, forms, accessibility, and client API usage."
 
 model = "gpt-5.6-sol"
-model_reasoning_effort = "high"
+model_reasoning_effort = "medium"
 sandbox_mode = "read-only"
 
 developer_instructions = """

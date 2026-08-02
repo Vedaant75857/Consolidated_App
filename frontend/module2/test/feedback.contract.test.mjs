@@ -46,3 +46,20 @@ test("download feedback is shared across operation views with alert semantics", 
   const renderCount = [...dashboard.matchAll(/role=\{downloadStatus\.ok \? "status" : "alert"\}/g)].length;
   assert.equal(renderCount, 3, "download feedback must render in every normalization operation-view layout");
 });
+
+test("analyzer transfers preserve navigation while surfacing CSV fallback diagnostics", async () => {
+  const dashboard = await source("src/components/module-2/NormDashboard.tsx");
+
+  for (const snippet of [
+    "interface TransferResponse",
+    "transport?: string",
+    "warning?: unknown",
+    "warnings?: unknown",
+    "function isCsvTransport",
+    "CSV fallback (lossy)",
+    "Transport: {analyzerSendResult.transport}",
+    "setAnalyzerSendResult(transferSuccessMessage(data))",
+  ]) {
+    assert.ok(dashboard.includes(snippet), `missing transfer feedback contract: ${snippet}`);
+  }
+});

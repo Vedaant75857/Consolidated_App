@@ -38,7 +38,7 @@ function getApps() {
       url:
         cfg.stitcher ??
         import.meta.env.VITE_STITCHER_FE ??
-        "http://localhost:3002",
+        "/stitcher/",
       gradient: "from-red-600 to-rose-600",
       shadowColor: "shadow-red-200/40 dark:shadow-red-900/30",
       accentText: "text-red-600 dark:text-red-400",
@@ -54,7 +54,7 @@ function getApps() {
       url:
         cfg.normalizer ??
         import.meta.env.VITE_NORMALIZER_FE ??
-        "http://localhost:3003",
+        "/normalizer/",
       gradient: "from-rose-600 to-red-700",
       shadowColor: "shadow-rose-200/40 dark:shadow-rose-900/30",
       accentText: "text-rose-600 dark:text-rose-400",
@@ -70,7 +70,7 @@ function getApps() {
       url:
         cfg.summarizer ??
         import.meta.env.VITE_ANALYZER_FE ??
-        "http://localhost:3004",
+        "/summarizer/",
       gradient: "from-amber-600 to-orange-600",
       shadowColor: "shadow-amber-200/40 dark:shadow-amber-900/30",
       accentText: "text-amber-600 dark:text-amber-400",

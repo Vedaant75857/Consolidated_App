@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { SurfaceCard, PrimaryButton, FillBar, itemVariants } from "../common/ui";
 import type { MergeOutput } from "../../types";
+import { MODULE_API_BASE } from "../../apiBase";
 import MergeReport from "./MergeReport";
 import { isReservedProvenanceColumn, sanitizeReservedRow } from "../../utils/reservedColumns";
 
@@ -213,7 +214,7 @@ export default function Merging(props: MergingProps) {
     setAiLoading(true);
     setLoadingMessage("AI is recommending the best base table...");
     try {
-      const res = await fetch("/api/merge/recommend-base", {
+        const res = await fetch(`${MODULE_API_BASE}/merge/recommend-base`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, apiKey: apiKey || "" }),
@@ -287,7 +288,7 @@ export default function Merging(props: MergingProps) {
     setLoadingMessage("AI is analyzing potential join keys...");
     setShowKeySuggestions(true);
     try {
-      const res = await fetch("/api/merge/suggest-keys", {
+        const res = await fetch(`${MODULE_API_BASE}/merge/suggest-keys`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -393,7 +394,7 @@ export default function Merging(props: MergingProps) {
     setLoadingMessage("Analyzing columns & loading previews...");
     try {
       // Single round-trip: column analysis + previews in parallel on the backend
-      const res = await fetch("/api/merge/common-columns", {
+        const res = await fetch(`${MODULE_API_BASE}/merge/common-columns`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -426,8 +427,8 @@ export default function Merging(props: MergingProps) {
       setAlignedBaseColumns(aligned.baseColumns);
       setAlignedSourceColumns(aligned.sourceColumns);
 
-      setBaseColClasses(Object.fromEntries(Object.entries(data.base_column_classes || {}).filter(([column]) => !isExcludedSystemColumn(column))));
-      setSourceColClasses(Object.fromEntries(Object.entries(data.source_column_classes || {}).filter(([column]) => !isExcludedSystemColumn(column))));
+      setBaseColClasses(Object.fromEntries(Object.entries(data.base_column_classes || {}).filter(([column]) => !isExcludedSystemColumn(column))) as Record<string, { category: string; eligibility: string; color: string }>);
+      setSourceColClasses(Object.fromEntries(Object.entries(data.source_column_classes || {}).filter(([column]) => !isExcludedSystemColumn(column))) as Record<string, { category: string; eligibility: string; color: string }>);
 
       if (data.base_preview) {
         // Filter system columns from preview rows
@@ -525,7 +526,7 @@ export default function Merging(props: MergingProps) {
     setSimError(null);
     simDebounceRef.current = setTimeout(async () => {
       try {
-        const res = await fetch("/api/merge/simulate", {
+        const res = await fetch(`${MODULE_API_BASE}/merge/simulate`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -563,7 +564,7 @@ export default function Merging(props: MergingProps) {
     setMergeProgressMessage("Preparing merge...");
     setError(null);
     try {
-      const res = await fetch("/api/merge/execute", {
+        const res = await fetch(`${MODULE_API_BASE}/merge/execute`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -668,7 +669,7 @@ export default function Merging(props: MergingProps) {
     setAiLoading(true);
     setLoadingMessage("Using single table as final file...");
     try {
-      const res = await fetch("/api/merge/skip", {
+        const res = await fetch(`${MODULE_API_BASE}/merge/skip`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, baseGroupId: baseId }),

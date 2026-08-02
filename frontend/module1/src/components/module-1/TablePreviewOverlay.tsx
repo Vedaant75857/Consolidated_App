@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import { X, Loader2, Database, ArrowLeft, Columns } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { MODULE_API_BASE } from "../../apiBase";
 
 interface PreviewTarget {
   factGroupId: string;
@@ -160,7 +161,7 @@ export default function TablePreviewOverlay({ sessionId, target, onClose }: Tabl
     async function fetchGroup(groupId: string, setter: (d: GroupData) => void, setLoading: (l: boolean) => void) {
       setLoading(true);
       try {
-        const resp = await fetch("/api/group-preview", {
+        const resp = await fetch(`${MODULE_API_BASE}/group-preview`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ sessionId, groupId }),

@@ -6,16 +6,76 @@ import type { MergeOutput } from "../../types";
 import TransferOverlay from "../common/TransferOverlay";
 import { getConfig } from "../../runtimeConfig";
 import { buildApiKeyFragmentUrl } from "../../apiKeySession";
+import { MODULE_API_BASE } from "../../apiBase";
 
 /** Resolve at call time so the async config.json has loaded by the time the user clicks. */
 function getNormalizerFE(): string {
-  return getConfig().normalizer ?? import.meta.env.VITE_NORMALIZER_FE ?? "http://localhost:3003";
+  return getConfig().normalizer ?? import.meta.env.VITE_NORMALIZER_FE ?? "/normalizer/";
 }
 function getAnalyzerFE(): string {
-  return getConfig().summarizer ?? import.meta.env.VITE_ANALYZER_FE ?? "http://localhost:3004";
+  return getConfig().summarizer ?? import.meta.env.VITE_ANALYZER_FE ?? "/summarizer/";
 }
 
 type SelectionTarget = "analyzer" | "normalizer";
+
+/** Compatibility response for typed transfers and the legacy CSV fallback. */
+interface TransferResponse {
+  ok?: boolean;
+  error?: string;
+  analyzerSessionId?: string;
+  normalizerSessionId?: string;
+  transport?: string;
+  warning?: unknown;
+  warnings?: unknown;
+}
+
+interface TransferResult {
+  ok: boolean;
+  message: string;
+  transport?: string;
+  warning?: string;
+}
+
+function formatTransferWarning(data: TransferResponse): string | undefined {
+  const values: unknown[] = [];
+  const append = (value: unknown) => {
+    if (value === undefined || value === null) return;
+    if (Array.isArray(value)) values.push(...value);
+    else values.push(value);
+  };
+  append(data.warning);
+  append(data.warnings);
+  const messages = values
+    .map((value) => {
+      if (typeof value === "string") return value.trim();
+      if (value && typeof value === "object") {
+        const entry = value as { message?: unknown; code?: unknown };
+        if (typeof entry.message === "string") return entry.message.trim();
+        if (typeof entry.code === "string") return entry.code.trim();
+      }
+      return "";
+    })
+    .filter(Boolean);
+  return messages.length > 0 ? messages.join(" ") : undefined;
+}
+
+function isCsvTransport(transport?: string): boolean {
+  return typeof transport === "string" && transport.toLowerCase().includes("csv");
+}
+
+function transferSuccessMessage(destination: string, data: TransferResponse): TransferResult {
+  const transport = typeof data.transport === "string" ? data.transport : undefined;
+  const warning = formatTransferWarning(data);
+  const lossy = isCsvTransport(transport);
+  return {
+    ok: true,
+    message: `Opened ${destination} in a new tab`,
+    transport,
+    warning: lossy
+      ? `CSV fallback (lossy)${warning ? `: ${warning}` : "."}`
+      : warning,
+  };
+}
 
 interface MergeOutputsPanelProps {
   mergeOutputs: MergeOutput[];
@@ -40,7 +100,7 @@ export default function MergeOutputsPanel({
   const [selectionTarget, setSelectionTarget] = useState<SelectionTarget | null>(null);
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const [sending, setSending] = useState(false);
-  const [sendResult, setSendResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [sendResult, setSendResult] = useState<TransferResult | null>(null);
   const [transferOverlay, setTransferOverlay] = useState<{ visible: boolean; destination: string } | null>(null);
 
   const isSelecting = selectionTarget !== null;
@@ -49,7 +109,7 @@ export default function MergeOutputsPanel({
     setDownloadingVersion(version);
     try {
       const res = await fetch(
-        `/api/merge/download-csv?sessionId=${encodeURIComponent(sessionId)}&version=${version}`
+        `${MODULE_API_BASE}/merge/download-csv?sessionId=${encodeURIComponent(sessionId)}&version=${version}`
       );
       if (!res.ok) throw new Error("Download failed");
       const blob = await res.blob();
@@ -75,7 +135,7 @@ export default function MergeOutputsPanel({
     setDownloadingAll(true);
     try {
       const res = await fetch(
-        `/api/merge/download-all-csv?sessionId=${encodeURIComponent(sessionId)}`
+        `${MODULE_API_BASE}/merge/download-all-csv?sessionId=${encodeURIComponent(sessionId)}`
       );
       if (!res.ok) throw new Error("Download failed");
       const blob = await res.blob();
@@ -117,12 +177,12 @@ export default function MergeOutputsPanel({
     setTransferOverlay({ visible: true, destination: "Spend Summarizer" });
 
     try {
-      const res = await fetch("/api/merge/transfer-to-analyzer", {
+      const res = await fetch(`${MODULE_API_BASE}/merge/transfer-to-analyzer`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, version: selectedVersion }),
       });
-      const data = await res.json();
+      const data: TransferResponse = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error || "Transfer failed");
 
       const analyzerSessionId: string = data.analyzerSessionId;
@@ -142,7 +202,7 @@ export default function MergeOutputsPanel({
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      setSendResult({ ok: true, message: "Opened Spend Summarizer in a new tab" });
+      setSendResult(transferSuccessMessage("Spend Summarizer", data));
       setSelectionTarget(null);
       setSelectedVersion(null);
     } catch (err: any) {
@@ -160,12 +220,12 @@ export default function MergeOutputsPanel({
     setTransferOverlay({ visible: true, destination: "Data Normalizer" });
 
     try {
-      const res = await fetch("/api/merge/transfer-to-normalizer", {
+      const res = await fetch(`${MODULE_API_BASE}/merge/transfer-to-normalizer`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, version: selectedVersion }),
       });
-      const data = await res.json();
+      const data: TransferResponse = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error || "Transfer failed");
 
       const normalizerSessionId: string = data.normalizerSessionId || "";
@@ -179,7 +239,7 @@ export default function MergeOutputsPanel({
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      setSendResult({ ok: true, message: "Opened Data Normalizer in a new tab" });
+      setSendResult(transferSuccessMessage("Data Normalizer", data));
       setSelectionTarget(null);
       setSelectedVersion(null);
     } catch (err: any) {
@@ -316,13 +376,22 @@ export default function MergeOutputsPanel({
 
       {/* Send result feedback */}
       {sendResult && (
-        <div className={`px-5 py-2.5 flex items-center gap-2 border-b text-xs font-medium ${
-          sendResult.ok
-            ? "bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200/80 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-300"
-            : "bg-red-50 dark:bg-red-950/30 border-red-200/80 dark:border-red-800/60 text-red-700 dark:text-red-300"
+        <div className={`px-5 py-2.5 flex items-start gap-2 border-b text-xs font-medium ${
+          !sendResult.ok
+            ? "bg-red-50 dark:bg-red-950/30 border-red-200/80 dark:border-red-800/60 text-red-700 dark:text-red-300"
+            : sendResult.warning
+              ? "bg-amber-50 dark:bg-amber-950/30 border-amber-200/80 dark:border-amber-800/60 text-amber-800 dark:text-amber-300"
+              : "bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200/80 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-300"
         }`}>
-          {sendResult.ok ? <CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> : <AlertCircle className="w-3.5 h-3.5 shrink-0" />}
-          <span className="truncate">{sendResult.message}</span>
+          {sendResult.ok && !sendResult.warning ? <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5" /> : <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />}
+          <span className="min-w-0 flex-1">
+            <span className="block">{sendResult.message}</span>
+            {sendResult.transport && (
+              <span className="block mt-0.5 text-[10px] font-normal opacity-90">
+                Transport: {sendResult.transport}{sendResult.warning ? ` — ${sendResult.warning}` : ""}
+              </span>
+            )}
+          </span>
           {!sendResult.ok && (
             <button
               onClick={handleFallbackDownload}

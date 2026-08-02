@@ -1,8 +1,8 @@
 name = "contract_sync_agent"
 description = "Project-local contract synchronization agent that aligns frontend API clients, backend routes, validation, shared types, schemas, and tests."
 
-model = "gpt-5.6-terra"
-model_reasoning_effort = "medium"
+model = "gpt-5.6-luna"
+model_reasoning_effort = "high"
 sandbox_mode = "workspace-write"
 
 developer_instructions = """

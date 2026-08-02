@@ -1,5 +1,6 @@
 import React, { useState, useRef, useCallback } from "react";
 import VirtualPreviewTable from "./VirtualPreviewTable";
+import { MODULE_API_BASE } from "../../apiBase";
 import {
   Upload,
   Loader2,
@@ -122,7 +123,7 @@ function HeaderRowEditor({
   const fetchRaw = async () => {
     setLoadingRaw(true);
     try {
-      const res = await fetch("/api/get-raw-preview", {
+      const res = await fetch(`${MODULE_API_BASE}/get-raw-preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, tableKey }),

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X, ArrowLeft, Table2, Search, ArrowUpDown, Calculator, RotateCcw, RotateCw, Download, Check, ChevronDown, Grid3x3, Plus, Trash2, Edit3, MoreHorizontal, Type, MousePointer2 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import DataEditor, { CompactSelection, GridCellKind, type GridColumn, type GridSelection, type Item } from "@glideapps/glide-data-grid";
+import DataEditor, { CompactSelection, GridCellKind, type GridCell, type EditableGridCell, type GridColumn, type GridSelection, type Item } from "@glideapps/glide-data-grid";
 import "@glideapps/glide-data-grid/dist/index.css";
 import type {
   PreviewFilter,
@@ -69,6 +69,13 @@ interface ToolbarButtonProps {
   shortcut?: string;
   variant?: "default" | "danger";
 }
+
+type PreviewSnapshot = {
+  columns?: string[];
+  rows?: Record<string, unknown>[];
+  columnTypes?: Record<string, ColumnDataType>;
+  totalRows?: number;
+};
 
 // --- Constants ---
 
@@ -353,7 +360,7 @@ export default function ExcelPreviewOverlay({
     selectionRequestRef.current += 1;
     selectionReadRef.current?.controller.abort();
     selectionReadRef.current = null;
-    const snapshot = sanitizePreviewDto(localPreviews[activeKey] || {});
+    const snapshot = sanitizePreviewDto<PreviewSnapshot>(localPreviews[activeKey] || {});
     if (snapshot?.columns?.length) {
       const cols = snapshot.columns.filter((c: string) => c !== ROW_ID_COL);
       setColumns(cols);
@@ -1013,7 +1020,7 @@ export default function ExcelPreviewOverlay({
   }, [columnOrder, sort, columnTypes, filters]);
 
   const getCellContent = useCallback(
-    ([col, row]: Item) => {
+    ([col, row]: Item): GridCell => {
       const colName = columnOrder[col];
       const dataRow = readPreviewRow(pageCacheRef.current, row, PAGE_SIZE);
       const val = dataRow?.[colName];
@@ -1029,9 +1036,9 @@ export default function ExcelPreviewOverlay({
   );
 
   const onCellEdited = useCallback(
-    ([col, row]: Item, newValue: { data?: string }) => {
+    ([col, row]: Item, newValue: EditableGridCell) => {
       const colName = columnOrder[col];
-      handleCellEdit(row, colName, newValue.data ?? "");
+      handleCellEdit(row, colName, newValue.kind === GridCellKind.Text ? newValue.data : "");
     },
     [columnOrder, handleCellEdit],
   );

@@ -1,7 +1,7 @@
 name = "backend_implementer"
 description = "Project-local backend implementation agent for APIs, services, validation, auth, database access, jobs, integrations, and backend tests."
 
-model = "gpt-5.6-terra"
+model = "gpt-5.6-luna"
 model_reasoning_effort = "high"
 sandbox_mode = "workspace-write"
 

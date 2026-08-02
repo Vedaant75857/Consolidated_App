@@ -1,4 +1,3 @@
-
 ## 2026-07-14 - Portable Bundle Dependency Exclusion Boundary
 
 The portable sharing archive must be built from an explicit staging allowlist, not
@@ -116,3 +115,89 @@ summary, fill-rate summary, spend bifurcation, monthly/date pivot, and Pareto
 cuts. The separate Not Procurable, CAPEX/OPEX, and Intercompany Step 4 tabs are
 out of scope until their interactive inputs and on-demand results have a durable
 export contract.
+
+## 2026-08-01 - One-Process Namespaced Backend Host
+
+The earlier decision to keep the three Flask applications in independent Python
+processes is superseded for local-suite operation. Keep the existing
+`backend/module1`, `backend/module2`, and `backend/module3` folders and their
+domain ownership, but compose their applications in one host process with
+module-specific API namespaces: `/api/module1/*`, `/api/module2/*`, and
+`/api/module3/*`.
+
+The host file is a deliberately thin composition/launcher layer. It may mount
+applications, provide host health/readiness, and own process lifecycle, but must
+not become a large merged `app.py` containing module routes, business logic,
+services, or data access.
+
+Do not merge the incompatible module endpoints under one bare `/api/*` route
+surface. Per-module frontend proxy rewrites preserve current relative client
+calls and DTOs. Module session/runtime/upload boundaries remain isolated, and
+existing cross-module transfers use the unified host URL plus the destination
+namespace. The three frontend dev servers are outside this decision.
+
+## 2026-08-01 - Unified Frontend Suite Boundary
+
+The frontend consolidation target is one small suite host with one React root
+and lazy route features, not a giant merged React application. Keep the current
+landing and three module folders as owned feature areas. The suite host owns
+routing, shell navigation, runtime/API-base configuration, and asset delivery;
+module Apps retain their state, providers, components, and workflows.
+
+All browser API calls must use explicit module bases (`/api/module1`,
+`/api/module2`, `/api/module3`) when served from the shared origin. Endpoint
+suffixes and DTOs remain unchanged. In built mode, the thin unified Python host
+may serve suite static assets and SPA fallback so the complete local suite can
+run as one process; during HMR development, one Vite process remains intentional.
+
+## 2026-08-01 - Interim Suite Theme Policy
+
+The unified suite mounts each module's existing theme provider inside its lazy
+route wrapper. Modules 1 and 2 intentionally continue to share
+`datastitcher_theme`; Module 3 keeps its existing independent theme key. This is
+an interim compatibility policy, not CSS isolation: module global styles must be
+scoped before frontend cutover.
+
+## 2026-08-01 - Repository TLS Trust Boundary
+
+Do not commit Bain/Zscaler certificates or disable TLS verification. The unified
+Python process may discover an existing standard Windows Bain PEM path and may
+accept an explicit `PROCIP_CA_BUNDLE` override, mapping it to Python's standard
+CA environment variables. External tools such as Claude Code, AWS CLI, pip,
+and npm must be configured separately because application code cannot control
+their trust stores or install-time connections.
+
+## 2026-08-01 - Shared Ingestion Ownership and Fidelity Boundary
+
+The unified backend owns one package-qualified ingestion core at
+`backend/ingestion/`. Use Module 1's dispatch, progress, raw-preview,
+DuckDB-native loading and batched-transaction patterns as the operational base,
+but do not preserve its current all-`VARCHAR` storage policy.
+
+Ingestion uses an immutable raw representation plus a typed working
+representation, ordered schema/stable column identity, source/workbook
+provenance, and structured issues. Ambiguous or unsupported values remain exact
+text with visible diagnostics rather than being guessed, replaced, dropped or
+coerced to null. Dates require workbook date-system and number-format provenance;
+formulas and merged ranges have explicit non-recalculation/non-expansion policies.
+
+Module routes, public DTOs, session databases, registries and downstream append,
+merge, normalization, mapping and playground logic remain module-owned behind
+thin ingestion adapters. Module 3 retains its stable `COL_n` metadata contract.
+Cross-module data movement should use a versioned typed artifact and schema/
+provenance manifest; CSV remains a temporary, explicitly lossy fallback.
+
+## 2026-08-01 - Ingestion cutover authorization
+
+Module ingestion cutover is fail-closed and ordered: Module 1, then Module 2,
+then Module 3. A feature flag is necessary but not sufficient. Evidence must be
+bound to the exact payload, session/operation where applicable, ingestion
+contract version, compatibility postconditions, and verified predecessor state.
+Evidence from one upload cannot authorize a different upload, and environment
+booleans alone cannot stand in for predecessor parity.
+
+Transfer parity requires verification of actual Arrow/Parquet bytes plus the
+manifest contract version and encoding. Metadata-only checksums or current CSV
+handoffs cannot authorize typed cutover. Until destination routes accept and
+verify typed payloads and route/workflow parity passes, all three module adapters
+remain legacy by default.

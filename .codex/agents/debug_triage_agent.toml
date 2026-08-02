@@ -1,8 +1,8 @@
 name = "debug_triage_agent"
 description = "Project-local debugging triage agent that identifies whether a bug likely comes from frontend, backend, API contract, environment, config, logic, or tests."
 
-model = "gpt-5.6-luna"
-model_reasoning_effort = "high"
+model = "gpt-5.6-terra"
+model_reasoning_effort = "medium"
 sandbox_mode = "read-only"
 
 developer_instructions = """

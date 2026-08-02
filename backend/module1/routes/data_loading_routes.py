@@ -23,12 +23,12 @@ from shared.db import (
 from shared.utils import json_safe
 
 from data_loading.file_loader import (
-    load_zip_to_session,
     array_to_objects,
     get_raw_array_from_table,
     rebuild_table_from_raw_table,
     bulk_clean_table,
 )
+from ingestion_adapter import load_zip_to_session
 from data_loading.service import (
     build_inventory_from_db,
     build_files_payload_from_db,

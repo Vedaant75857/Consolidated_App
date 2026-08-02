@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { Loader2, Sparkles, ArrowRight, Check, ChevronDown, ChevronRight, Copy, BarChart3, Hash, Trash2, RotateCcw } from "lucide-react";
 import { motion } from "motion/react";
 import { PrimaryButton, SecondaryButton } from "../common/ui";
+import { MODULE_API_BASE } from "../../apiBase";
 
 export interface CleaningConfig {
   removeNullRows: boolean;
@@ -153,7 +154,7 @@ export default function DataCleaning({
   const fetchGroupPreview = useCallback(async (groupId: string) => {
     if (!sessionId || groupPreviews[groupId]) return;
     try {
-      const res = await fetch("/api/header-norm-group-preview", {
+      const res = await fetch(`${MODULE_API_BASE}/header-norm-group-preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, groupIds: [groupId] }),

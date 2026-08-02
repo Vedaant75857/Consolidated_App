@@ -1,7 +1,7 @@
 name = "performance_reviewer"
 description = "Project-local performance reviewer for slow frontend/backend code, expensive calculations, unnecessary network calls, caching, and large data workloads."
 
-model = "gpt-5.6-terra"
+model = "gpt-5.6-luna"
 model_reasoning_effort = "high"
 sandbox_mode = "read-only"
 

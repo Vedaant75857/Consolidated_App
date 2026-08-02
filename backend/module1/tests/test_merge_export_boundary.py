@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import importlib
 import io
+import json
 import sys
 import uuid
 import zipfile
@@ -103,16 +104,115 @@ def test_merge_downloads_and_analyzer_transfer_share_a_public_schema(app_client,
 
     def fake_post(url, *, files, timeout):
         captured["url"] = url
-        captured["csv"] = files["file"][1].read()
+        captured["payload"] = files["file"][1].read()
+        captured["manifest"] = json.loads(files["manifest"][1].read().decode("utf-8"))
         captured["timeout"] = timeout
         return AnalyzerResponse()
 
     routes = importlib.import_module("routes.merging_routes")
     monkeypatch.setattr(routes._requests, "post", fake_post)
-    app_module.app.config["MODULE3_BACKEND_URL"] = "http://analyzer.test"
+    app_module.app.config["UNIFIED_BACKEND_URL"] = "http://unified.test:8000"
 
     response = client.post("/api/merge/transfer-to-analyzer", json={"sessionId": session_id})
     assert response.status_code == 200
-    assert response.get_json() == {"ok": True, "analyzerSessionId": "analyzer-session"}
-    assert captured["url"] == "http://analyzer.test/api/import"
-    _assert_public_csv(captured["csv"])
+    assert response.get_json() == {
+        "ok": True, "analyzerSessionId": "analyzer-session", "transport": "typed_artifact",
+    }
+    assert captured["url"] == "http://unified.test:8000/api/module3/import"
+    assert captured["payload"].startswith(b"PAR1") and captured["payload"].endswith(b"PAR1")
+    assert captured["manifest"]["transport_version"] == "typed-artifact.v1"
+    assert captured["manifest"]["manifest"]["payload_checksum"]
+
+
+def test_analyzer_transfer_uses_lossy_csv_only_after_explicit_unsupported_status(app_client, monkeypatch):
+    client, app_module = app_client
+    session_id = uuid.uuid4().hex
+    _seed_merge_output(session_id)
+    calls: list[dict] = []
+
+    class Unsupported:
+        status_code = 415
+        text = "typed artifacts unsupported"
+
+        @staticmethod
+        def json():
+            return {"code": "UNSUPPORTED_TYPED_ARTIFACT"}
+
+    class Accepted:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {"sessionId": "analyzer-csv-session"}
+
+    def fake_post(url, *, files, timeout):
+        calls.append(files)
+        return Unsupported() if len(calls) == 1 else Accepted()
+
+    routes = importlib.import_module("routes.merging_routes")
+    monkeypatch.setattr(routes._requests, "post", fake_post)
+    app_module.app.config["UNIFIED_BACKEND_URL"] = "http://unified.test:8000"
+
+    response = client.post("/api/merge/transfer-to-analyzer", json={"sessionId": session_id})
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "ok": True, "analyzerSessionId": "analyzer-csv-session", "transport": "csv",
+        "warning": "Typed artifact unsupported by destination; CSV transfer is lossy.",
+    }
+    assert calls[0]["file"][2] == "application/vnd.apache.parquet"
+    assert calls[1]["file"][2] == "text/csv"
+    _assert_public_csv(calls[1]["file"][1].read())
+
+
+def test_unrelated_422_never_downgrades_to_csv(app_client, monkeypatch):
+    client, app_module = app_client
+    session_id = uuid.uuid4().hex
+    _seed_merge_output(session_id)
+    calls: list[dict] = []
+
+    class InvalidArtifact:
+        status_code = 422
+        text = "schema validation failed"
+
+        @staticmethod
+        def json():
+            return {"code": "SCHEMA_VALIDATION_FAILED", "error": "bad schema"}
+
+    def fake_post(url, *, files, timeout):
+        calls.append(files)
+        return InvalidArtifact()
+
+    routes = importlib.import_module("routes.merging_routes")
+    monkeypatch.setattr(routes._requests, "post", fake_post)
+    app_module.app.config["UNIFIED_BACKEND_URL"] = "http://unified.test:8000"
+
+    response = client.post("/api/merge/transfer-to-analyzer", json={"sessionId": session_id})
+    assert response.status_code == 502
+    assert "bad schema" in response.get_json()["error"]
+    assert len(calls) == 1
+
+
+def test_normalizer_success_requires_session_id(app_client, monkeypatch):
+    client, app_module = app_client
+    session_id = uuid.uuid4().hex
+    _seed_merge_output(session_id)
+
+    class MissingSession:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {"imported": True}
+
+    def fake_post(url, *, files, timeout):
+        return MissingSession()
+
+    routes = importlib.import_module("routes.merging_routes")
+    monkeypatch.setattr(routes._requests, "post", fake_post)
+    app_module.app.config["UNIFIED_BACKEND_URL"] = "http://unified.test:8000"
+
+    response = client.post("/api/merge/transfer-to-normalizer", json={"sessionId": session_id})
+    assert response.status_code == 502
+    assert response.get_json() == {"ok": False, "error": "Normalizer did not return a session ID"}

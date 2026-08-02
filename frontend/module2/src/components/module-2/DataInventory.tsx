@@ -3,6 +3,7 @@ import { Loader2, ArrowRight, Trash2, RowsIcon, Check, Database, ChevronDown, Ch
 import { motion } from "motion/react";
 import { SurfaceCard, PrimaryButton } from "../common/ui";
 import VirtualPreviewTable from "./VirtualPreviewTable";
+import { MODULE_API_BASE } from "../../apiBase";
 
 interface DataInventoryProps {
   inventory: any[];
@@ -37,7 +38,7 @@ function HeaderRowEditor({
   const fetchRaw = async () => {
     setLoadingRaw(true);
     try {
-      const res = await fetch(`/api/get-raw-preview?tableKey=${encodeURIComponent(tableKey)}&sessionId=${encodeURIComponent(sessionId)}`);
+      const res = await fetch(`${MODULE_API_BASE}/get-raw-preview?tableKey=${encodeURIComponent(tableKey)}&sessionId=${encodeURIComponent(sessionId)}`);
       if (!res.ok) throw new Error("Failed to fetch raw data");
       const data = await res.json();
       setRawPreview(data.rawPreview || []);
@@ -198,7 +199,7 @@ const FormattedTable: React.FC<{ tableKey: string, setError: any, setLoading: an
   const fetchPreview = async () => {
     setFetching(true);
     try {
-      const res = await fetch(`/api/get-preview?tableKey=${encodeURIComponent(tableKey)}&sessionId=${encodeURIComponent(sessionId)}`);
+      const res = await fetch(`${MODULE_API_BASE}/get-preview?tableKey=${encodeURIComponent(tableKey)}&sessionId=${encodeURIComponent(sessionId)}`);
       if (!res.ok) throw new Error("Failed to fetch formatted preview");
       const data = await res.json();
       setPreview(data);
@@ -225,7 +226,7 @@ const FormattedTable: React.FC<{ tableKey: string, setError: any, setLoading: an
     if (onBeforeMutate) await onBeforeMutate();
     setLoading(true);
     try {
-      const res = await fetch("/api/delete-rows", {
+      const res = await fetch(`${MODULE_API_BASE}/delete-rows`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tableKey, rowIds: Array.from(selectedRowIds), sessionId }),
       });
@@ -286,7 +287,7 @@ export default function DataInventory({ inventory, onProceed, loading, setLoadin
     if (onBeforeMutate) await onBeforeMutate();
     setLoading(true);
     try {
-      await fetch("/api/delete-table", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tableKey, sessionId }) });
+      await fetch(`${MODULE_API_BASE}/delete-table`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tableKey, sessionId }) });
       setLocalInventory(prev => prev.filter(i => i.table_key !== tableKey));
       if (expandedTable === tableKey) setExpandedTable(null);
     } catch (err: any) { setError(err.message); } finally { setLoading(false); }
@@ -296,7 +297,7 @@ export default function DataInventory({ inventory, onProceed, loading, setLoadin
     if (onBeforeMutate) await onBeforeMutate();
     setError(null);
     const payload = { tableKey, rowIndex, customNames, sessionId };
-    const res = await fetch("/api/set-header-row", {
+    const res = await fetch(`${MODULE_API_BASE}/set-header-row`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
     });
     if (!res.ok) throw new Error("Failed to set header");

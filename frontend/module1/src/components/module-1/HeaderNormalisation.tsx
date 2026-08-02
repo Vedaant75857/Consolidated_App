@@ -4,6 +4,7 @@ import { ArrowRight, Columns3, Loader2, SkipForward, Maximize2, Minimize2, Downl
 import { motion, AnimatePresence } from "motion/react";
 import { PrimaryButton, SecondaryButton, SurfaceCard } from "../common/ui";
 import { isReservedProvenanceColumn, sanitizeReservedColumns, sanitizeReservedRows } from "../../utils/reservedColumns";
+import { MODULE_API_BASE } from "../../apiBase";
 
 interface HeaderNormalisationProps {
   sessionId: string;
@@ -347,7 +348,7 @@ function GroupPanel({
   const handleDownloadExcel = async () => {
     setDownloading(true);
     try {
-      const res = await fetch("/api/header-norm-download-excel", {
+      const res = await fetch(`${MODULE_API_BASE}/header-norm-download-excel`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -602,7 +603,7 @@ export default function HeaderNormalisation({
       const formData = new FormData();
       formData.append("sessionId", sessionId);
       formData.append("file", file);
-      const res = await fetch("/api/header-norm-upload-excel", { method: "POST", body: formData });
+      const res = await fetch(`${MODULE_API_BASE}/header-norm-upload-excel`, { method: "POST", body: formData });
       if (!res.ok) throw new Error("Upload failed");
       const data = await res.json();
       const uploadedDecisions = data.decisions || {};
@@ -663,7 +664,7 @@ export default function HeaderNormalisation({
           mapped_to: d.mapped_to || d.suggested_std_field || null,
         }));
       }
-      const res = await fetch("/api/header-norm-download-summary", {
+      const res = await fetch(`${MODULE_API_BASE}/header-norm-download-summary`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, decisions: payload }),

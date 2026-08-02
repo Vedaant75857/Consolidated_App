@@ -18,6 +18,7 @@ import {
   hydrateApiKeyFromUrl,
   setSessionApiKey,
 } from "./apiKeySession";
+import { MODULE_API_BASE } from "./apiBase";
 
 const LEGACY_API_KEY = "normalizer_apiKey";
 
@@ -98,7 +99,7 @@ export default function App() {
       if (source) setImportSource(source);
 
       const sid = urlSessionId || sessionId;
-      fetch(`/api/current-inventory?sessionId=${encodeURIComponent(sid)}`)
+      fetch(`${MODULE_API_BASE}/current-inventory?sessionId=${encodeURIComponent(sid)}`)
         .then((res) => {
           if (!res.ok) throw new Error(`Session not found (${res.status})`);
           return res.json();
@@ -139,7 +140,7 @@ export default function App() {
         setInventory([]);
         setFilename(null);
         try {
-          await fetch("/api/reset-state", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId }) });
+          await fetch(`${MODULE_API_BASE}/reset-state`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId }) });
         } catch (err) {
           console.error("Backend reset-state failed:", err);
         }
@@ -147,7 +148,7 @@ export default function App() {
       if (fromStep < 3) {
         setNormResetKey((k: number) => k + 1);
         try {
-          await fetch("/api/reset-normalization", {
+          await fetch(`${MODULE_API_BASE}/reset-normalization`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ sessionId }),
@@ -186,7 +187,7 @@ export default function App() {
 
       const data: any = await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open("POST", "/api/upload");
+        xhr.open("POST", `${MODULE_API_BASE}/upload`);
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) {
             setUploadProgress(Math.round((e.loaded / e.total) * 100));
@@ -237,7 +238,7 @@ export default function App() {
     setLoadingMessage("Locking table into pipeline…");
     setError(null);
     try {
-      const res = await fetch("/api/select-table", {
+      const res = await fetch(`${MODULE_API_BASE}/select-table`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tableKey, sessionId }),
@@ -306,7 +307,7 @@ export default function App() {
       {/* Back to Home bar */}
       <div className="h-10 bg-white/90 dark:bg-neutral-900/90 backdrop-blur-sm border-b border-neutral-200/80 dark:border-neutral-700/80 flex items-center px-4 shrink-0 z-50">
         <a
-          href={getConfig().home ?? import.meta.env.VITE_HOME_URL ?? "http://localhost:3010"}
+          href={getConfig().home ?? import.meta.env.VITE_HOME_URL ?? "/"}
           className="flex items-center gap-2 text-xs font-medium text-neutral-500 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
         >
           <ArrowLeft className="w-3.5 h-3.5" />

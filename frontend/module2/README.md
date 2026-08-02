@@ -7,15 +7,16 @@ repository root, install dependencies with:
 .\setup.ps1
 ```
 
-Run its backend and frontend in separate terminals:
+Start the unified backend and this module's frontend in separate terminals:
 
 ```powershell
-npm run dev:normalizer-be
+npm run dev:backend
 npm run dev:normalizer-fe
 ```
 
-The backend listens on `http://localhost:5000`, and Vite serves the frontend on
-`http://localhost:3003`.
+The unified backend listens on `http://localhost:8000`, and Vite serves the
+frontend on `http://localhost:3003`. Vite rewrites this frontend's `/api/*`
+requests to the Module 2 namespace on the unified backend.
 
 The normal workflow is to upload an Excel or CSV file, map its columns, select
 normalization steps, run the pipeline, and export the cleaned dataset.

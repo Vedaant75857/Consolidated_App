@@ -61,6 +61,11 @@ app = Flask(__name__)
 app.json = SafeJSONProvider(app)
 CORS(app)
 
+
+def create_app() -> Flask:
+    """Return the Module 3 application for the unified backend host."""
+    return app
+
 app.register_blueprint(upload_bp, url_prefix="/api")
 app.register_blueprint(mapping_bp, url_prefix="/api")
 app.register_blueprint(views_bp, url_prefix="/api")

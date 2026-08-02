@@ -1,4 +1,6 @@
-const BASE = "/api/normalize";
+import { MODULE_API_BASE } from "../../../apiBase";
+
+const BASE = `${MODULE_API_BASE}/normalize`;
 const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes for long-running normalization agents
 const RETRY_ATTEMPTS = 2;
 const RETRY_DELAY_MS = 1000;

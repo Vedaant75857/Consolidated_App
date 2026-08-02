@@ -23,7 +23,9 @@ import type {
   PreviewTableState,
 } from "../types/excelPreview";
 
-const BASE = "/api";
+import { MODULE_API_BASE } from "../apiBase";
+
+const BASE = MODULE_API_BASE;
 const DEFAULT_TIMEOUT_MS = 120_000;
 
 export class ApiClientError extends Error {

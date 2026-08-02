@@ -22,6 +22,7 @@ import {
   hydrateApiKeyFromUrl,
   setSessionApiKey,
 } from "./apiKeySession";
+import { MODULE_API_BASE } from "./apiBase";
 import {
   isReservedProvenanceColumn,
   sanitizePreviewDto,
@@ -185,7 +186,7 @@ export default function App() {
     insightsAbortRef.current = controller;
     setGroupInsightsLoading(true);
     try {
-      const res = await fetch("/api/group-insights", {
+      const res = await fetch(`${MODULE_API_BASE}/group-insights`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId: sid, apiKey: key }),
@@ -209,7 +210,7 @@ export default function App() {
   const fetchGroupPreviewForHeaderNorm = useCallback(async (groupIds: string[]) => {
     if (!sessionId || groupIds.length === 0) return;
     try {
-      const res = await fetch("/api/header-norm-group-preview", {
+      const res = await fetch(`${MODULE_API_BASE}/header-norm-group-preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, groupIds, limit: 50 }),
@@ -290,7 +291,7 @@ export default function App() {
       // Clear backend artifacts
       if (sessionId) {
         try {
-          await fetch("/api/execution/invalidate-downstream", {
+          await fetch(`${MODULE_API_BASE}/execution/invalidate-downstream`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ sessionId, fromStep }),
@@ -352,7 +353,7 @@ export default function App() {
 
       (async () => {
         try {
-          const res = await fetch(`/api/execution/state?sessionId=${encodeURIComponent(sid)}`);
+          const res = await fetch(`${MODULE_API_BASE}/execution/state?sessionId=${encodeURIComponent(sid)}`);
           if (!res.ok || cancelled) {
             sessionStorage.removeItem(STORAGE_KEY);
             setSessionId("");
@@ -511,7 +512,7 @@ export default function App() {
   ) => {
     if (!sessionId) throw new Error("Missing session. Upload a file first.");
 
-    const res = await fetch("/api/execution/run", {
+    const res = await fetch(`${MODULE_API_BASE}/execution/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -566,7 +567,7 @@ export default function App() {
     try {
       const data: any = await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open("POST", "/api/upload");
+        xhr.open("POST", `${MODULE_API_BASE}/upload`);
         xhr.timeout = 600000; // 10 minute timeout for large files
 
         // --- Phase 1: track upload bytes (progress bar) ---
@@ -666,7 +667,7 @@ export default function App() {
   const syncSessionFromBackend = useCallback(async (): Promise<boolean> => {
     if (!sessionId) return false;
     try {
-      const res = await fetch(`/api/execution/state?sessionId=${encodeURIComponent(sessionId)}`);
+      const res = await fetch(`${MODULE_API_BASE}/execution/state?sessionId=${encodeURIComponent(sessionId)}`);
       if (!res.ok) return false;
       const data = await res.json();
       const patch = data.statePatch || {};
@@ -689,7 +690,7 @@ export default function App() {
   const fetchPreview = async (tableKey: string): Promise<boolean> => {
     const requestVersion = previewMutationVersionRef.current[tableKey] || 0;
     try {
-      const res = await fetch(`/api/get-preview?sessionId=${encodeURIComponent(sessionId)}&tableKey=${encodeURIComponent(tableKey)}`);
+      const res = await fetch(`${MODULE_API_BASE}/get-preview?sessionId=${encodeURIComponent(sessionId)}&tableKey=${encodeURIComponent(tableKey)}`);
       if (!res.ok) {
         const message = await parseFetchError(res);
         setPreviewErrors((prev) => ({ ...prev, [tableKey]: message }));
@@ -719,7 +720,7 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/delete-table", {
+      const res = await fetch(`${MODULE_API_BASE}/delete-table`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, tableKey }),
@@ -750,7 +751,7 @@ export default function App() {
     setLoadingMessage(`Deleting ${tableKeys.length} table${tableKeys.length !== 1 ? "s" : ""}…`);
     setError(null);
     try {
-      const res = await fetch("/api/delete-tables", {
+      const res = await fetch(`${MODULE_API_BASE}/delete-tables`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, tableKeys }),
@@ -787,7 +788,7 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/delete-rows", {
+      const res = await fetch(`${MODULE_API_BASE}/delete-rows`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, tableKey, rowIds }),
@@ -824,7 +825,7 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/set-header-row", {
+      const res = await fetch(`${MODULE_API_BASE}/set-header-row`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, tableKey, headerRowIndex, customColumnNames }),
@@ -857,7 +858,7 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/clean-table", {
+      const res = await fetch(`${MODULE_API_BASE}/clean-table`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, tableKey, config }),
@@ -889,7 +890,7 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/clean-group", {
+      const res = await fetch(`${MODULE_API_BASE}/clean-group`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, groupId, config }),
@@ -928,7 +929,7 @@ export default function App() {
         if (valueColumn) body.valueColumn = valueColumn;
         if (keep) body.keep = keep;
       }
-      const res = await fetch("/api/dedup-preview", {
+      const res = await fetch(`${MODULE_API_BASE}/dedup-preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -957,7 +958,7 @@ export default function App() {
         if (valueColumn) body.valueColumn = valueColumn;
         if (keep) body.keep = keep;
       }
-      const res = await fetch("/api/dedup-apply", {
+      const res = await fetch(`${MODULE_API_BASE}/dedup-apply`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -993,7 +994,7 @@ export default function App() {
 
   const handleAnalyzeColumns = async (groupId: string, columns: string[]) => {
     try {
-      const res = await fetch("/api/analyze-column-format", {
+      const res = await fetch(`${MODULE_API_BASE}/analyze-column-format`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, groupId, columns }),
@@ -1012,7 +1013,7 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/apply-column-standardize", {
+      const res = await fetch(`${MODULE_API_BASE}/apply-column-standardize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, groupId, actions }),
@@ -1043,7 +1044,7 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/concat-columns-apply", {
+      const res = await fetch(`${MODULE_API_BASE}/concat-columns-apply`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, groupId, columns }),
@@ -1076,7 +1077,7 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/delete-concat-column", {
+      const res = await fetch(`${MODULE_API_BASE}/delete-concat-column`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, groupId, columnName }),
@@ -1117,7 +1118,7 @@ export default function App() {
         const groupIds = groupSchema.map((g: any) => g.group_id);
         let data: any = null;
 
-        const hnRes = await fetch("/api/header-norm-group-preview", {
+        const hnRes = await fetch(`${MODULE_API_BASE}/header-norm-group-preview`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ sessionId, groupIds }),
@@ -1135,7 +1136,7 @@ export default function App() {
         }
 
         if (!data) {
-          const gpRes = await fetch("/api/group-preview", {
+          const gpRes = await fetch(`${MODULE_API_BASE}/group-preview`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ sessionId, groupIds }),
@@ -1340,7 +1341,7 @@ export default function App() {
 
   const syncGroupsToServer = useCallback((groups: any[], unassignedItems: any[]) => {
     if (!sessionId) return;
-    fetch("/api/save-append-groups", {
+    fetch(`${MODULE_API_BASE}/save-append-groups`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessionId, appendGroups: groups, unassigned: unassignedItems }),
@@ -1580,7 +1581,7 @@ export default function App() {
   const handleDeleteMergeOutput = useCallback(async (version: number) => {
     if (!sessionId) return;
     try {
-      const res = await fetch("/api/merge/delete-output", {
+      const res = await fetch(`${MODULE_API_BASE}/merge/delete-output`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, version }),
@@ -1632,7 +1633,7 @@ export default function App() {
       {/* Back to Home bar */}
       <div className="h-10 bg-white/90 dark:bg-neutral-900/90 backdrop-blur-sm border-b border-neutral-200/80 dark:border-neutral-700/80 flex items-center px-4 shrink-0 z-50">
         <a
-          href={getConfig().home ?? import.meta.env.VITE_HOME_URL ?? "http://localhost:3010"}
+                        href={getConfig().home ?? import.meta.env.VITE_HOME_URL ?? "/"}
           className="flex items-center gap-2 text-xs font-medium text-neutral-500 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
         >
           <ArrowLeft className="w-3.5 h-3.5" />

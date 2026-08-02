@@ -16,8 +16,9 @@ export default defineConfig(() => {
       hmr: process.env.DISABLE_HMR !== 'true',
       proxy: {
         '/api': {
-          target: 'http://127.0.0.1:3001',
+          target: 'http://127.0.0.1:8000',
           changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/api/, '/api/module1'),
           timeout: 600000,
           proxyTimeout: 600000,
           ws: true,

@@ -4,6 +4,7 @@ import { motion } from "motion/react";
 import JSZip from "jszip";
 import { SurfaceCard, EmptyState, PrimaryButton, SecondaryButton, itemVariants } from "../common/ui";
 import VirtualPreviewTable from "./VirtualPreviewTable";
+import { MODULE_API_BASE } from "../../apiBase";
 
 const ACCEPTED_EXTENSIONS = [".csv", ".xls", ".xlsx", ".xlsm", ".xlsb", ".xltx", ".xltm", ".zip"];
 
@@ -126,7 +127,7 @@ function HeaderRowEditor({
     setRawError(null);
     setLoadingRaw(true);
     try {
-      const res = await fetch("/api/get-raw-preview", {
+      const res = await fetch(`${MODULE_API_BASE}/get-raw-preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, tableKey }),

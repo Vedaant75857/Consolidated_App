@@ -8,8 +8,9 @@ export default defineConfig({
     port: 3004,
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:3005",
+        target: "http://127.0.0.1:8000",
         changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, "/api/module3"),
         timeout: 600000,
         proxyTimeout: 600000,
         ws: true,

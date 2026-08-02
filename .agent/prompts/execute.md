@@ -6,7 +6,7 @@ Execute:
 Instructions:
 - Read `.agent/PLAN.md` first.
 - Execute the approved plan or the next relevant checklist item.
-- Route to the smallest useful set of project-local agents.
+- Route to the smallest useful set of project-local agents, and make sure that the model being used is the one in their respective.toml files
 - Make the smallest safe change.
 - Keep frontend/backend contracts synchronized.
 - Run narrow validation first.

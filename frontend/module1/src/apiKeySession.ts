@@ -50,9 +50,14 @@ export function hydrateApiKeyFromUrl(legacyKey?: string): string {
 }
 
 export function buildApiKeyFragmentUrl(url: string, apiKey = getSessionApiKey()): string {
+  const next = new URL(url, typeof window !== "undefined" ? window.location.href : "http://localhost");
+  // Suite navigation is same-origin; the canonical sessionStorage key is
+  // available there, so do not expose it in newly generated links. Keep the
+  // fragment fallback only for configured cross-origin legacy frontends.
+  const currentOrigin = typeof window !== "undefined" ? window.location.origin : next.origin;
+  if (next.origin === currentOrigin) return `${next.pathname}${next.search}${next.hash}`;
   const trimmed = apiKey.trim();
   if (!trimmed) return url;
-  const next = new URL(url, typeof window !== "undefined" ? window.location.href : "http://localhost");
   const hashParams = new URLSearchParams(next.hash.replace(/^#/, ""));
   hashParams.set("apiKey", trimmed);
   next.hash = hashParams.toString();

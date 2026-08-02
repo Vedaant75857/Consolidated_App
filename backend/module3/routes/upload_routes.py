@@ -1,16 +1,17 @@
 import io
+import json
+import hashlib
+import inspect
 import random
 import time
 import zipfile
 
 from flask import Blueprint, jsonify, request
 
-from shared.db import get_session_db, get_session_lock, set_meta, get_meta, delete_meta, get_all_meta_keys, session_exists
+from shared.db import get_session_db, get_session_lock, set_meta, get_meta, delete_meta, get_all_meta_keys, session_exists, delete_session
 from services.mapping.column_mapper import STANDARD_FIELDS
 from services.upload.file_loader import (
     _EXCEL_EXTS,
-    load_zip_to_session,
-    load_single_file,
     collect_column_info,
     build_inventory,
     build_preview,
@@ -20,8 +21,44 @@ from services.upload.file_loader import (
     set_header_row_for_table,
     delete_rows_from_table,
 )
+# Keep the route's public loader names unchanged while routing upload/import
+# through the disabled-by-default parity-gated adapter.  Existing tests and
+# callers can continue monkey-patching ``upload_routes.load_*``.
+try:
+    # Package-qualified import prevents unified_loader's top-level
+    # ``ingestion_adapter`` alias from binding Module 1's adapter here.
+    from backend.module3.ingestion_adapter import load_single_file, load_zip_to_session, import_typed_artifact_to_session, verify_typed_artifact
+except ImportError:  # pragma: no cover - standalone module3 launcher
+    from ingestion_adapter import load_single_file, load_zip_to_session, import_typed_artifact_to_session, verify_typed_artifact
 
 upload_bp = Blueprint("upload", __name__)
+_MAX_TYPED_IMPORT_BYTES = 512 * 1024 * 1024
+_MAX_TYPED_MANIFEST_BYTES = 2 * 1024 * 1024
+
+
+def _read_bounded_upload(file_obj, limit: int = _MAX_TYPED_IMPORT_BYTES) -> bytes:
+    total = 0
+    chunks: list[bytes] = []
+    while True:
+        chunk = file_obj.stream.read(min(1024 * 1024, limit - total + 1))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise ValueError("uploaded artifact exceeds configured size limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _invoke_upload_loader(loader, conn, *args, session_id: str):
+    """Pass session identity when supported without breaking test doubles."""
+    try:
+        parameters = inspect.signature(loader).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "session_id" in parameters:
+        return loader(conn, *args, session_id=session_id)
+    return loader(conn, *args)
 
 
 @upload_bp.route("/upload", methods=["POST"])
@@ -42,9 +79,13 @@ def upload():
             ext not in excel_exts and zipfile.is_zipfile(io.BytesIO(file_data))
         )
         if is_zip_archive:
-            table_keys, warnings = load_zip_to_session(conn, file_data)
+            table_keys, warnings = _invoke_upload_loader(
+                load_zip_to_session, conn, file_data, session_id=session_id
+            )
         else:
-            table_keys, warnings = load_single_file(conn, filename, file_data)
+            table_keys, warnings = _invoke_upload_loader(
+                load_single_file, conn, filename, file_data, session_id=session_id
+            )
 
         if not table_keys:
             return jsonify({
@@ -103,21 +144,79 @@ def import_from_module():
     Creates a session, loads the data, and returns sessionId so the frontend
     can open Module 3 at step 2 (Column Mapping) via ?sessionId=...
     """
+    created_session = False
     try:
         f = request.files.get("file")
         if not f:
             return jsonify({"error": "No file provided"}), 400
 
         filename = f.filename or "imported.csv"
-        file_data = f.read()
+        if request.content_length and request.content_length > _MAX_TYPED_IMPORT_BYTES + (2 * 1024 * 1024):
+            return jsonify({"error": "uploaded artifact exceeds configured size limit"}), 413
+        file_data = _read_bounded_upload(f)
 
-        session_id = str(int(time.time() * 1000)) + hex(random.getrandbits(32))[2:]
-        conn = get_session_db(session_id)
-
-        table_keys, load_warnings = load_single_file(conn, filename, file_data)
+        # Typed cross-module transfers carry a JSON manifest alongside a real
+        # Parquet/Arrow payload. Verify bytes and manifest before creating a
+        # session or publishing any Module 3 metadata.
+        manifest_upload = request.files.get("manifest")
+        manifest_raw = manifest_upload.stream.read(_MAX_TYPED_MANIFEST_BYTES + 1) if manifest_upload else request.form.get("manifest")
+        if isinstance(manifest_raw, str) and len(manifest_raw.encode("utf-8")) > _MAX_TYPED_MANIFEST_BYTES:
+            return jsonify({"error": "typed transfer manifest exceeds configured size limit"}), 413
+        if isinstance(manifest_raw, bytes) and len(manifest_raw) > _MAX_TYPED_MANIFEST_BYTES:
+            return jsonify({"error": "typed transfer manifest exceeds configured size limit"}), 413
+        is_typed = bool(manifest_raw) or filename.lower().endswith((".parquet", ".arrow"))
+        if is_typed:
+            if not manifest_raw:
+                return jsonify({"error": "Typed import requires a transfer manifest."}), 400
+            try:
+                manifest_value = manifest_raw.encode("utf-8") if isinstance(manifest_raw, str) else manifest_raw
+                verified_manifest = verify_typed_artifact(manifest_value, file_data)
+                # Verification/materialization is atomic from the route's
+                # perspective: no session is created before byte verification.
+                artifact_id = str(verified_manifest.artifact_id)
+                session_id = "typed-" + hashlib.sha256(artifact_id.encode("utf-8")).hexdigest()[:32]
+                with get_session_lock(session_id):
+                    if session_exists(session_id):
+                        existing_conn = get_session_db(session_id)
+                        existing_manifest = get_meta(existing_conn, "typed_transfer_manifest")
+                        existing_checksum = (existing_manifest or {}).get("payload_checksum") if isinstance(existing_manifest, dict) else None
+                        if existing_checksum == verified_manifest.payload_checksum:
+                            return jsonify({"sessionId": session_id})
+                        return jsonify({"error": "artifact_id is already bound to a different payload", "code": "ARTIFACT_ID_CONFLICT"}), 409
+                    conn = get_session_db(session_id)
+                    created_session = True
+                    table_keys, load_warnings = import_typed_artifact_to_session(conn, file_data, manifest_value)
+                    set_meta(conn, "typed_transfer_manifest", verified_manifest.to_dict())
+                    set_meta(conn, "typed_transfer_source", verified_manifest.source_module)
+            except ImportError as exc:
+                try:
+                    if created_session and "session_id" in locals():
+                        delete_session(session_id)
+                except Exception:
+                    pass
+                return jsonify({"error": str(exc), "code": "UNSUPPORTED_TYPED_ARTIFACT"}), 415
+            except Exception as exc:
+                try:
+                    if "session_id" in locals():
+                        delete_session(session_id)
+                except Exception:
+                    pass
+                return jsonify({"error": f"Typed import failed: {exc}"}), 400
+        else:
+            # CSV remains a deliberately lossy compatibility fallback.
+            session_id = str(int(time.time() * 1000)) + hex(random.getrandbits(32))[2:]
+            conn = get_session_db(session_id)
+            table_keys, load_warnings = _invoke_upload_loader(
+                load_single_file, conn, filename, file_data, session_id=session_id
+            )
 
         if not table_keys:
             error_detail = "; ".join(w.get("message", "") for w in load_warnings) if load_warnings else "File could not be parsed"
+            try:
+                if created_session:
+                    delete_session(session_id)
+            except Exception:
+                pass
             return jsonify({"error": f"Import failed: {error_detail}"}), 400
 
         columns = collect_column_info(conn, table_keys)
@@ -128,10 +227,18 @@ def import_from_module():
         set_meta(conn, "columns", columns)
         set_meta(conn, "step", 2)
 
-        return jsonify({"sessionId": session_id})
+        response = {"sessionId": session_id}
+        if not is_typed:
+            response["warnings"] = [{"code": "LOSSY_CSV_FALLBACK", "message": "Legacy CSV import may lose source types and provenance."}]
+        return jsonify(response)
     except Exception as exc:
         import traceback
         traceback.print_exc()
+        try:
+            if created_session and "session_id" in locals():
+                delete_session(session_id)
+        except Exception:
+            pass
         return jsonify({"error": str(exc)}), 500
 
 

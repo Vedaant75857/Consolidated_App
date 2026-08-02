@@ -16,10 +16,11 @@ import UnsupportedCurrencyPanel, {
 } from "./UnsupportedCurrencyPanel";
 import { getConfig } from "../../runtimeConfig";
 import { buildApiKeyFragmentUrl } from "../../apiKeySession";
+import { MODULE_API_BASE } from "../../apiBase";
 
 /** Resolve at call time so the async config.json has loaded by the time the user clicks. */
 function getAnalyzerFE(): string {
-  return getConfig().summarizer ?? import.meta.env.VITE_ANALYZER_FE ?? "http://localhost:3004";
+  return getConfig().summarizer ?? import.meta.env.VITE_ANALYZER_FE ?? "/summarizer/";
 }
 
 const OPERATIONS = [
@@ -87,6 +88,63 @@ interface NormDashboardProps {
   sessionId: string;
 }
 
+/** Compatibility response for typed transfers and the legacy CSV fallback. */
+interface TransferResponse {
+  ok?: boolean;
+  error?: string;
+  analyzerSessionId?: string;
+  transport?: string;
+  warning?: unknown;
+  warnings?: unknown;
+}
+
+interface TransferResult {
+  ok: boolean;
+  message: string;
+  transport?: string;
+  warning?: string;
+}
+
+function formatTransferWarning(data: TransferResponse): string | undefined {
+  const values: unknown[] = [];
+  const append = (value: unknown) => {
+    if (value === undefined || value === null) return;
+    if (Array.isArray(value)) values.push(...value);
+    else values.push(value);
+  };
+  append(data.warning);
+  append(data.warnings);
+  const messages = values
+    .map((value) => {
+      if (typeof value === "string") return value.trim();
+      if (value && typeof value === "object") {
+        const entry = value as { message?: unknown; code?: unknown };
+        if (typeof entry.message === "string") return entry.message.trim();
+        if (typeof entry.code === "string") return entry.code.trim();
+      }
+      return "";
+    })
+    .filter(Boolean);
+  return messages.length > 0 ? messages.join(" ") : undefined;
+}
+
+function isCsvTransport(transport?: string): boolean {
+  return typeof transport === "string" && transport.toLowerCase().includes("csv");
+}
+
+function transferSuccessMessage(data: TransferResponse): TransferResult {
+  const transport = typeof data.transport === "string" ? data.transport : undefined;
+  const warning = formatTransferWarning(data);
+  return {
+    ok: true,
+    message: "Opened Spend Summarizer in a new tab",
+    transport,
+    warning: isCsvTransport(transport)
+      ? `CSV fallback (lossy)${warning ? `: ${warning}` : "."}`
+      : warning,
+  };
+}
+
 export default function NormDashboard({ apiKey, activeTab = "supplier_name", setActiveTab, setLoadingMessage, setLoadingOnCancel, sessionId }: NormDashboardProps) {
   const [completedOps, setCompletedOps] = useState<Set<string>>(new Set());
   const [activeOp, setActiveOp] = useState<string | null>(null);
@@ -130,7 +188,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
 
   // Fetch supported currencies from FX table on mount
   useEffect(() => {
-    fetch("/api/supported-currencies")
+    fetch(`${MODULE_API_BASE}/supported-currencies`)
       .then((r) => r.json())
       .then((d) => {
         if (Array.isArray(d.currencies) && d.currencies.length > 0) {
@@ -149,7 +207,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
 
     const apply = async () => {
       try {
-        const res = await fetch(`/api/suggest-columns?sessionId=${encodeURIComponent(sessionId)}`);
+        const res = await fetch(`${MODULE_API_BASE}/suggest-columns?sessionId=${encodeURIComponent(sessionId)}`);
         if (!res.ok) throw new Error("suggest-columns failed");
         const s = await res.json();
 
@@ -227,7 +285,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
     setOperationPreviewLoading(true);
     setOperationPreviewError(null);
     try {
-      const res = await fetch(`/api/current-preview?sessionId=${encodeURIComponent(sessionId)}`);
+        const res = await fetch(`${MODULE_API_BASE}/current-preview?sessionId=${encodeURIComponent(sessionId)}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to load preview");
       setOperationPreview({
@@ -320,7 +378,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
     }
 
     try {
-      const res = await fetch("/api/run-normalization", {
+      const res = await fetch(`${MODULE_API_BASE}/run-normalization`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ agent_id: agentId, kwargs: agentKwargs, apiKey, sessionId }),
@@ -368,7 +426,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
     setFxOverridesMonthly({});
     setShowFxValidation(false);
     try {
-      const res = await fetch("/api/assess-currency-conversion", {
+      const res = await fetch(`${MODULE_API_BASE}/assess-currency-conversion`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -423,7 +481,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
     setScAssessError(null);
     setCountryNormMetrics(null);
     try {
-      const res = await fetch("/api/assess-supplier-country", {
+      const res = await fetch(`${MODULE_API_BASE}/assess-supplier-country`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, kwargs: { country_col: supplierCountryColumn } }),
@@ -450,7 +508,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
     setRegionAssessError(null);
     setRegionNormMetrics(null);
     try {
-      const res = await fetch("/api/assess-region", {
+      const res = await fetch(`${MODULE_API_BASE}/assess-region`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, kwargs: { region_col: regionColumn } }),
@@ -494,7 +552,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
     });
 
     try {
-      const res = await fetch(`/api/download?sessionId=${encodeURIComponent(sessionId)}`, { signal: controller.signal });
+      const res = await fetch(`${MODULE_API_BASE}/download?sessionId=${encodeURIComponent(sessionId)}`, { signal: controller.signal });
       if (!res.ok) throw new Error("Download failed");
       const blob = await res.blob();
       const disposition = res.headers.get("content-disposition");
@@ -522,7 +580,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
   // Send to Summarizer state
   const [showAnalyzerConfirm, setShowAnalyzerConfirm] = useState(false);
   const [sendingToAnalyzer, setSendingToAnalyzer] = useState(false);
-  const [analyzerSendResult, setAnalyzerSendResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [analyzerSendResult, setAnalyzerSendResult] = useState<TransferResult | null>(null);
   const [showTransferOverlay, setShowTransferOverlay] = useState(false);
 
   const handleSendToAnalyzer = useCallback(async () => {
@@ -532,12 +590,12 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
     setShowTransferOverlay(true);
 
     try {
-      const res = await fetch("/api/transfer-to-analyzer", {
+      const res = await fetch(`${MODULE_API_BASE}/transfer-to-analyzer`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ apiKey, sessionId }),
       });
-      const data = await res.json();
+      const data: TransferResponse = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error || "Transfer failed");
 
       const analyzerSessionId: string = data.analyzerSessionId;
@@ -557,7 +615,7 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      setAnalyzerSendResult({ ok: true, message: "Opened Spend Summarizer in a new tab" });
+      setAnalyzerSendResult(transferSuccessMessage(data));
     } catch (err: any) {
       setAnalyzerSendResult({ ok: false, message: err.message || "Send failed" });
     } finally {
@@ -657,13 +715,22 @@ export default function NormDashboard({ apiKey, activeTab = "supplier_name", set
 
             {/* Result feedback */}
             {analyzerSendResult && (
-              <div className={`flex items-center gap-2 p-3 rounded-xl text-sm font-medium ${
-                analyzerSendResult.ok
-                  ? "bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300"
-                  : "bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300"
+              <div className={`flex items-start gap-2 p-3 rounded-xl text-sm font-medium ${
+                !analyzerSendResult.ok
+                  ? "bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300"
+                  : analyzerSendResult.warning
+                    ? "bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300"
+                    : "bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300"
               }`}>
-                {analyzerSendResult.ok ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
-                <span className="flex-1">{analyzerSendResult.message}</span>
+                {analyzerSendResult.ok && !analyzerSendResult.warning ? <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" /> : <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />}
+                <span className="flex-1">
+                  <span className="block">{analyzerSendResult.message}</span>
+                  {analyzerSendResult.transport && (
+                    <span className="block mt-0.5 text-xs font-normal opacity-90">
+                      Transport: {analyzerSendResult.transport}{analyzerSendResult.warning ? ` — ${analyzerSendResult.warning}` : ""}
+                    </span>
+                  )}
+                </span>
                 {!analyzerSendResult.ok && (
                   <button
                     onClick={handleDownload}

@@ -216,6 +216,54 @@ def test_set_header_row_rebuilds_table_and_returns_single_preview(fresh_session)
     assert inv_row["rows"] == 2
 
 
+def test_set_header_row_applies_custom_column_names(fresh_session):
+    """Custom display names are applied by positional column index."""
+    from shared.db import get_session_db, register_table, quote_id, safe_table_name
+
+    client, session_id = fresh_session
+    conn = get_session_db(session_id)
+
+    key = "custom-header.csv::"
+    raw_name = safe_table_name("raw", key)
+    tbl_name = safe_table_name("tbl", key)
+    rq = quote_id(raw_name)
+    tq = quote_id(tbl_name)
+    conn.execute(
+        f"CREATE TABLE {rq} ("
+        f"{quote_id('RAW_1')} VARCHAR, {quote_id('RAW_2')} VARCHAR, {quote_id('RAW_3')} VARCHAR)"
+    )
+    conn.execute(
+        f"INSERT INTO {rq} VALUES "
+        f"('preamble', NULL, NULL), "
+        f"('Item', 'Qty', 'Cost'), "
+        f"('Widget', '10', '2.50')"
+    )
+    conn.execute(
+        f"CREATE TABLE {tq} ("
+        f"{quote_id('FILE_NAME')} VARCHAR, {quote_id('RECORD_ID')} VARCHAR, "
+        f"{quote_id('ORIGINAL')} VARCHAR)"
+    )
+    register_table(conn, key, tbl_name)
+    conn.commit()
+
+    resp = client.post(
+        "/api/set-header-row",
+        json={
+            "sessionId": session_id,
+            "tableKey": key,
+            "headerRowIndex": 1,
+            "customColumnNames": {"0": "SKU", "2": "Unit Price"},
+        },
+    )
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    preview = resp.get_json()["preview"]
+    assert "SKU" in preview["columns"]
+    assert "QTY" in preview["columns"]
+    assert "UNIT PRICE" in preview["columns"]
+    assert preview["rows"][0]["SKU"] == "WIDGET"
+    assert preview["rows"][0]["UNIT PRICE"] == "2.50"
+
+
 def test_set_header_row_survives_cursor_column_skew(fresh_session, monkeypatch):
     from shared.db import get_session_db, register_table, quote_id, safe_table_name
     from shared.db import duckdb_compat

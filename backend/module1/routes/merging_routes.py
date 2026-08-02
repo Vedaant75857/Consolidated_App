@@ -8,6 +8,7 @@ import json
 import os
 import time
 import zipfile
+import uuid
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -43,22 +44,23 @@ def _configured_backend_url(key: str) -> str | None:
     return value
 
 
-def _normalizer_be() -> str:
-    """Resolve the Module 2 backend URL, retaining the local launcher fallback."""
-    configured = _configured_backend_url("MODULE2_BACKEND_URL")
+def _unified_backend_url() -> str:
+    """Resolve the one-process host URL used by cross-module handoffs."""
+    configured = _configured_backend_url("UNIFIED_BACKEND_URL")
     if configured:
         return configured
-    ports = current_app.config.get("RUNTIME_PORTS", {})
-    return f"http://localhost:{ports.get('normalizer', 5000)}"
+    port = current_app.config.get("UNIFIED_BACKEND_PORT") or os.environ.get("UNIFIED_BACKEND_PORT", "8000")
+    return f"http://127.0.0.1:{int(port)}"
+
+
+def _normalizer_be() -> str:
+    """Resolve the Module 2 namespace on the unified backend."""
+    return f"{_unified_backend_url()}/api/module2"
 
 
 def _analyzer_be() -> str:
-    """Resolve the Module 3 backend URL, retaining the local launcher fallback."""
-    configured = _configured_backend_url("MODULE3_BACKEND_URL")
-    if configured:
-        return configured
-    ports = current_app.config.get("RUNTIME_PORTS", {})
-    return f"http://localhost:{ports.get('summarizer', 3005)}"
+    """Resolve the Module 3 namespace on the unified backend."""
+    return f"{_unified_backend_url()}/api/module3"
 
 from shared.db import (
     drop_table,
@@ -900,6 +902,110 @@ def _read_version_csv(conn, version: int | None) -> tuple[bytes, str]:
     return buf.getvalue().encode("utf-8"), filename
 
 
+def _version_target(conn, version: int | None) -> tuple[str, str, list[str]]:
+    """Resolve a merge version while the caller holds the session lock."""
+    target_table = "final_merged"
+    filename = "final_merged"
+    if version is not None:
+        merge_history = get_meta(conn, "merge_history") or []
+        entry = next((e for e in merge_history if e["version"] == version), None)
+        if not entry:
+            raise ValueError(f"Version {version} not found in merge history")
+        target_table = entry["table_name"]
+        label = entry.get("file_label", f"merge_v{version}")
+        filename = "".join(c if c.isalnum() or c in "._- " else "_" for c in label)
+    if not table_exists(conn, target_table):
+        raise ValueError("No merged data found")
+    columns = _export_columns(conn, target_table)
+    if not columns:
+        raise ValueError("Merged data has no exportable columns")
+    return target_table, (filename or "merged_data"), columns
+
+
+def _typed_manifest(conn, target_table: str, filename: str, columns: list[str], destination: str):
+    """Build a schema-bound manifest without materialising table rows."""
+    from backend.ingestion.models import OrderedColumnSchema, TableArtifact, ValueType
+    from backend.ingestion.transfer import TransferManifest
+
+    type_rows = conn.execute(
+        "SELECT column_name, data_type FROM information_schema.columns "
+        "WHERE table_name = ? ORDER BY ordinal_position", (target_table,)
+    ).fetchall()
+    duck_types = {str(row[0]): str(row[1]).upper() for row in type_rows}
+    def value_type(name: str):
+        dtype = duck_types.get(name, "")
+        if "BOOL" in dtype:
+            return ValueType.BOOLEAN
+        if "INT" in dtype:
+            return ValueType.INTEGER
+        if any(token in dtype for token in ("DECIMAL", "NUMERIC")):
+            return ValueType.DECIMAL
+        if any(token in dtype for token in ("DOUBLE", "FLOAT", "REAL")):
+            return ValueType.FLOAT
+        if "TIMESTAMP" in dtype:
+            return ValueType.TIMESTAMP
+        if "DATE" in dtype:
+            return ValueType.DATE
+        if "TIME" in dtype:
+            return ValueType.TIME
+        return ValueType.TEXT
+
+    schema = tuple(
+        OrderedColumnSchema(
+            key=f"COL_{index + 1}", display_name=name, ordinal=index,
+            value_type=value_type(name), physical_name=name,
+        )
+        for index, name in enumerate(columns)
+    )
+    rows = table_row_count(conn, target_table)
+    artifact = TableArtifact(
+        table_key=target_table, display_name=filename,
+        columns=schema, row_count=rows,
+    )
+    return TransferManifest.from_tables(
+        artifact_id=f"module1-{uuid.uuid4().hex}", source_module="module1",
+        destination_module=destination, tables=[artifact],
+    )
+
+
+def _export_typed_artifact(conn, target_table: str, filename: str,
+                           columns: list[str], destination: str):
+    """Export Parquet and bind the manifest to its actual payload bytes."""
+    from backend.ingestion.typed_artifact import (
+        TypedArtifactLimits, export_duckdb_parquet, serialize_transport,
+    )
+
+    # Export a SQL projection so internal preview/provenance columns never
+    # cross the module boundary.  DuckDB performs this copy column-wise; no
+    # Python DataFrame or all-row object materialisation is involved.
+    projection_table = f"m1_transfer_{uuid.uuid4().hex}"
+    conn.execute(
+        f"CREATE TEMP TABLE {quote_id(projection_table)} AS "
+        f"SELECT {public_projection(columns)} FROM {quote_id(target_table)}"
+    )
+    try:
+        manifest = _typed_manifest(conn, projection_table, filename, columns, destination)
+        bound_manifest, payload = export_duckdb_parquet(
+            conn, projection_table, manifest, limits=TypedArtifactLimits(),
+        )
+        return bytes(payload), f"{filename}.parquet", serialize_transport(bound_manifest)
+    finally:
+        conn.execute(f"DROP TABLE IF EXISTS {quote_id(projection_table)}")
+
+
+def _typed_unsupported(response) -> bool:
+    """Fallback only for an explicit typed-artifact capability response."""
+    try:
+        body = response.json()
+    except Exception:
+        return False
+    if not isinstance(body, dict):
+        return False
+    return str(body.get("code", "")).upper() in {
+        "UNSUPPORTED_TYPED_ARTIFACT", "INGEST_UNSUPPORTED_TYPED_ARTIFACT",
+    }
+
+
 @merging_bp.route("/merge/transfer-to-normalizer", methods=["POST"])
 def transfer_to_normalizer():
     """Send a merge output to the Data Normalizer (Module 2) via backend-to-backend transfer."""
@@ -910,14 +1016,34 @@ def transfer_to_normalizer():
         if not session_id:
             return jsonify({"ok": False, "error": "Missing sessionId"}), 400
 
-        conn = get_session_db(session_id)
-        csv_bytes, filename = _read_version_csv(conn, version)
+        with get_session_lock(session_id):
+            conn = get_session_db(session_id)
+            target, label, columns = _version_target(conn, version)
+            parquet_bytes, filename, manifest_bytes = _export_typed_artifact(
+                conn, target, label, columns, "module2",
+            )
 
         resp = _requests.post(
-            f"{_normalizer_be()}/api/import-from-stitcher",
-            files={"file": (filename, io.BytesIO(csv_bytes), "text/csv")},
+            f"{_normalizer_be()}/import-from-stitcher",
+            files={
+                "file": (filename, io.BytesIO(parquet_bytes), "application/vnd.apache.parquet"),
+                "manifest": ("manifest.json", io.BytesIO(manifest_bytes), "application/json"),
+            },
             timeout=120,
         )
+        transport = "typed_artifact"
+        warning = None
+        if _typed_unsupported(resp):
+            with get_session_lock(session_id):
+                conn = get_session_db(session_id)
+                csv_bytes, csv_filename = _read_version_csv(conn, version)
+            resp = _requests.post(
+                f"{_normalizer_be()}/import-from-stitcher",
+                files={"file": (csv_filename, io.BytesIO(csv_bytes), "text/csv")},
+                timeout=120,
+            )
+            transport = "csv"
+            warning = "Typed artifact unsupported by destination; CSV transfer is lossy."
         if resp.status_code != 200:
             err_text = resp.text
             try:
@@ -927,7 +1053,12 @@ def transfer_to_normalizer():
             return jsonify({"ok": False, "error": f"Normalizer import failed: {err_text}"}), 502
 
         normalizer_session_id = resp.json().get("sessionId", "")
-        return jsonify({"ok": True, "normalizerSessionId": normalizer_session_id})
+        if not normalizer_session_id:
+            return jsonify({"ok": False, "error": "Normalizer did not return a session ID"}), 502
+        result = {"ok": True, "normalizerSessionId": normalizer_session_id, "transport": transport}
+        if warning:
+            result["warning"] = warning
+        return jsonify(result)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:
@@ -947,14 +1078,34 @@ def transfer_to_analyzer():
         if not session_id:
             return jsonify({"ok": False, "error": "Missing sessionId"}), 400
 
-        conn = get_session_db(session_id)
-        csv_bytes, filename = _read_version_csv(conn, version)
+        with get_session_lock(session_id):
+            conn = get_session_db(session_id)
+            target, label, columns = _version_target(conn, version)
+            parquet_bytes, filename, manifest_bytes = _export_typed_artifact(
+                conn, target, label, columns, "module3",
+            )
 
         resp = _requests.post(
-            f"{_analyzer_be()}/api/import",
-            files={"file": (filename, io.BytesIO(csv_bytes), "text/csv")},
+            f"{_analyzer_be()}/import",
+            files={
+                "file": (filename, io.BytesIO(parquet_bytes), "application/vnd.apache.parquet"),
+                "manifest": ("manifest.json", io.BytesIO(manifest_bytes), "application/json"),
+            },
             timeout=120,
         )
+        transport = "typed_artifact"
+        warning = None
+        if _typed_unsupported(resp):
+            with get_session_lock(session_id):
+                conn = get_session_db(session_id)
+                csv_bytes, csv_filename = _read_version_csv(conn, version)
+            resp = _requests.post(
+                f"{_analyzer_be()}/import",
+                files={"file": (csv_filename, io.BytesIO(csv_bytes), "text/csv")},
+                timeout=120,
+            )
+            transport = "csv"
+            warning = "Typed artifact unsupported by destination; CSV transfer is lossy."
         if resp.status_code != 200:
             err_text = resp.text
             try:
@@ -967,7 +1118,10 @@ def transfer_to_analyzer():
         analyzer_session_id = data.get("sessionId")
         if not analyzer_session_id:
             return jsonify({"ok": False, "error": "Analyzer did not return a session ID"}), 502
-        return jsonify({"ok": True, "analyzerSessionId": analyzer_session_id})
+        result = {"ok": True, "analyzerSessionId": analyzer_session_id, "transport": transport}
+        if warning:
+            result["warning"] = warning
+        return jsonify(result)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:

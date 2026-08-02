@@ -5,6 +5,7 @@ import math
 import os
 import sys as _sys
 import io
+import inspect
 import re as _re
 import uuid
 import warnings
@@ -45,6 +46,12 @@ from db import (
     DB_DIR,
 )
 from db.bridge import sqlite_to_df, df_to_sqlite, PREVIEW_POOL, pick_best_df_rows
+try:
+    # Optional compatibility boundary.  It is disabled by default and keeps
+    # the legacy loader as the rollback path until parity gates pass.
+    from backend.module2.ingestion_adapter import load_source_file_to_session as _adapter_load_source_file
+except ImportError:  # pragma: no cover - standalone module2 hosting
+    from ingestion_adapter import load_source_file_to_session as _adapter_load_source_file
 
 
 def _nan_to_none(obj):
@@ -89,6 +96,11 @@ app = Flask(__name__)
 app.json = SafeJSONProvider(app)
 CORS(app)
 
+
+def create_app() -> Flask:
+    """Return the Module 2 application for the unified backend host."""
+    return app
+
 AGENT_MAPPING = {
     "date": date_normalization_agent,
     "payment_terms": payment_terms_agent,
@@ -102,8 +114,11 @@ AGENT_MAPPING = {
 import zipfile
 import requests as _requests
 
-SOURCE_EXCEL_EXTS = ('.xls', '.xlsx', '.xlsm', '.xlsb', '.xltx', '.xltm')
-SOURCE_DATA_EXTS = SOURCE_EXCEL_EXTS + ('.csv',)
+SOURCE_EXCEL_EXTS = ('.xls', '.xlsx', '.xlsm', '.xlsb', '.xltx', '.xltm', '.ods')
+# Shared ingestion supports the common delimited aliases while the legacy
+# loader remains the default rollback path.  Keeping these in the route's
+# allow-list lets an explicitly gated shared upload handle TSV/PSV/TAB members.
+SOURCE_DATA_EXTS = SOURCE_EXCEL_EXTS + ('.csv', '.tsv', '.psv', '.tab')
 
 # ── Session startup / shutdown cleanup ─────────────────────────────────────────
 
@@ -383,20 +398,30 @@ def upload_file():
                                         nested_name = nested_entry.filename
                                         nested_lower = nested_name.lower()
                                         if nested_lower.endswith(SOURCE_DATA_EXTS):
-                                            _load_source_file_to_session(
+                                            _adapter_load_source_file(
                                                 conn,
                                                 f"{name}/{nested_name}",
                                                 nested_zf.read(nested_name),
                                                 inventory,
+                                                legacy_loader=_load_source_file_to_session,
+                                                session_id=session_id,
                                             )
                             elif lower.endswith(SOURCE_DATA_EXTS):
-                                _load_source_file_to_session(conn, name, zf.read(name), inventory)
+                                _adapter_load_source_file(
+                                    conn, name, zf.read(name), inventory,
+                                    legacy_loader=_load_source_file_to_session,
+                                    session_id=session_id,
+                                )
                         except Exception as e:
                             logger.error("Failed parsing %s: %s", name, e, exc_info=True)
             else:
                 try:
                     if filename.endswith(SOURCE_DATA_EXTS):
-                        _load_source_file_to_session(conn, file.filename, buffer, inventory)
+                        _adapter_load_source_file(
+                            conn, file.filename, buffer, inventory,
+                            legacy_loader=_load_source_file_to_session,
+                            session_id=session_id,
+                        )
                 except Exception as e:
                     logger.error("Failed parsing directly uploaded file %s: %s", file.filename, e, exc_info=True)
 
@@ -928,29 +953,149 @@ def _configured_backend_url(key: str) -> str | None:
 
 
 def _analyzer_be() -> str:
-    """Resolve the Module 3 backend URL, retaining the local launcher fallback."""
-    configured = _configured_backend_url("MODULE3_BACKEND_URL")
+    """Resolve the Module 3 namespace on the one-process backend host."""
+    configured = _configured_backend_url("UNIFIED_BACKEND_URL")
     if configured:
-        return configured
-    ports = current_app.config.get("RUNTIME_PORTS", {})
-    return f"http://localhost:{ports.get('summarizer', 3005)}"
+        return f"{configured}/api/module3"
+    port = current_app.config.get("UNIFIED_BACKEND_PORT") or os.environ.get("UNIFIED_BACKEND_PORT", "8000")
+    return f"http://127.0.0.1:{int(port)}/api/module3"
+
+
+def _typed_artifact_module():
+    """Load the optional typed transport implementation package-qualified."""
+    for module_name in ("backend.ingestion.typed_artifact", "ingestion.typed_artifact"):
+        try:
+            return __import__(module_name, fromlist=["*"])
+        except (ImportError, ModuleNotFoundError):
+            continue
+    return None
+
+
+def _manifest_json_bytes(upload) -> bytes | None:
+    if upload is not None:
+        return _read_bounded_upload(upload, 2 * 1024 * 1024)
+    value = request.form.get("manifest")
+    if value:
+        return value.encode("utf-8")
+    return None
+
+
+def _read_bounded_upload(upload, max_bytes: int) -> bytes:
+    declared = getattr(upload, "content_length", None)
+    if declared is not None and declared > max_bytes:
+        raise ValueError("upload exceeds configured size limit")
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = upload.stream.read(min(1024 * 1024, max_bytes - total + 1))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError("upload exceeds configured size limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _parse_transport_manifest(raw_manifest: bytes, payload: bytes):
+    """Parse and byte-verify a typed manifest before touching a session DB."""
+    api = _typed_artifact_module()
+    if api is not None and callable(getattr(api, "parse_transport_manifest", None)):
+        return api.parse_transport_manifest(raw_manifest, payload)
+
+    raise ValueError("typed transport parser is unavailable")
+
+
+def _call_typed_api(fn, **kwargs):
+    """Pass only parameters supported by the in-flight typed_artifact API."""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return fn(**kwargs)
+    return fn(**{key: value for key, value in kwargs.items() if key in params})
+
+
+def _typed_result_field(result, *names):
+    if isinstance(result, dict):
+        for name in names:
+            if name in result:
+                return result[name]
+    for name in names:
+        if hasattr(result, name):
+            return getattr(result, name)
+    return None
 
 
 @app.route('/api/import-from-stitcher', methods=['POST'])
 def import_from_stitcher():
-    """Accept a CSV file from DataStitcher (Module 1) with headers already in row 0."""
+    """Import a verified typed artifact, with explicitly lossy CSV fallback."""
     if 'file' not in request.files:
         return jsonify({"error": "No file provided"}), 400
 
     file = request.files['file']
-    buffer = file.read()
+    try:
+        buffer = _read_bounded_upload(file, 512 * 1024 * 1024)
+    except ValueError as exc:
+        return jsonify({"error": str(exc), "code": "typed_payload_too_large"}), 413
     fname = file.filename or "imported.csv"
 
-    import_id = str(uuid.uuid4())
+    manifest_upload = request.files.get("manifest")
+    try:
+        manifest_bytes = _manifest_json_bytes(manifest_upload)
+    except ValueError as exc:
+        return jsonify({"error": str(exc), "code": "typed_manifest_too_large"}), 413
+    is_typed = bool(manifest_bytes is not None or fname.lower().endswith((".parquet", ".arrow")))
+
+    # Verify all untrusted bytes and manifest metadata before creating a session
+    # or acquiring its lock.  A malformed/tampered artifact is side-effect free.
+    manifest = None
+    if is_typed:
+        if not manifest_bytes:
+            return jsonify({"error": "Typed transfer manifest is required", "code": "typed_manifest_required"}), 400
+        try:
+            manifest = _parse_transport_manifest(manifest_bytes, buffer)
+            if getattr(manifest, "destination_module", "module2") not in ("module2", "module-2", ""):
+                return jsonify({"error": "Typed transfer destination does not match Module 2", "code": "typed_destination_mismatch"}), 400
+            if getattr(manifest, "source_module", "") not in ("module1", "module-1"):
+                return jsonify({"error": "Typed transfer source is not Module 1", "code": "typed_source_mismatch"}), 400
+            if len(getattr(manifest, "tables", ())) != 1:
+                return jsonify({"error": "Module 2 typed import requires one table", "code": "typed_table_count_invalid"}), 400
+            table = manifest.tables[0]
+            keys = [str(column.key) for column in table.columns]
+            physical = [str(column.physical_name or column.key) for column in table.columns]
+            reserved = {"__row_id", "record_id", "recordid"}
+            if len(keys) != len(set(keys)) or len(physical) != len(set(physical)) or any(name.casefold() in reserved for name in physical):
+                return jsonify({"error": "Typed transfer schema contains duplicate or reserved columns", "code": "typed_schema_invalid"}), 422
+        except Exception as exc:
+            logger.warning("Rejected typed Module 2 import before session mutation: %s", exc)
+            return jsonify({"error": "Invalid typed transfer artifact", "code": "typed_manifest_invalid"}), 400
+        typed_api = _typed_artifact_module()
+        if not typed_api or not callable(getattr(typed_api, "import_duckdb_parquet", None)):
+            return jsonify({"error": "Typed transfer import is unavailable", "code": "UNSUPPORTED_TYPED_ARTIFACT"}), 415
+
+    if manifest is not None:
+        import hashlib
+        import_id = f"typed_{hashlib.sha256(str(manifest.artifact_id).encode('utf-8')).hexdigest()[:40]}"
+    else:
+        import_id = str(uuid.uuid4())
     session_id = import_id
 
     with get_session_lock(session_id):
         conn = get_session_db(session_id)
+        if manifest is not None:
+            previous = get_meta(conn, "typed_transfer")
+            if previous:
+                if previous.get("payload_checksum") != manifest.payload_checksum:
+                    return jsonify({"error": "Typed artifact ID already exists with a different payload", "code": "typed_artifact_collision"}), 409
+                existing = all_registered_tables(conn)
+                inventory = []
+                for entry in existing:
+                    inventory.append({
+                        "table_key": entry["table_key"],
+                        "rows": table_row_count(conn, entry["sql_name"]),
+                        "cols": len(read_table_columns(conn, entry["sql_name"])),
+                    })
+                return jsonify({"inventory": inventory, "imported": True, "sessionId": session_id, "transport": "typed", "idempotent": True})
         for entry in all_registered_tables(conn):
             drop_table(conn, entry["sql_name"], commit=False)
             unregister_table(conn, entry["table_key"], commit=False)
@@ -958,23 +1103,168 @@ def import_from_stitcher():
 
         try:
             key = f"{fname}::"
+            if manifest is not None:
+                key = str(manifest.tables[0].table_key)
+                api = _typed_artifact_module()
+                importer = getattr(api, "import_duckdb_parquet", None) if api else None
+                if not callable(importer):
+                    return jsonify({"error": "Typed transfer import is unavailable", "code": "UNSUPPORTED_TYPED_ARTIFACT"}), 415
+
+                imported = _call_typed_api(
+                    importer, conn=conn, connection=conn, payload=buffer,
+                    manifest=manifest, table_name=safe_table_name("typed_import", import_id),
+                    session_id=import_id,
+                )
+                raw_source = _typed_result_field(imported, "raw_table", "rawTable")
+                typed_source = _typed_result_field(imported, "typed_table", "typedTable")
+                # The shared importer currently materializes one requested
+                # staging table and returns TransferTable metadata.  Keep
+                # accepting richer raw/typed result objects when available.
+                staging_source = safe_table_name("typed_import", import_id)
+                if not raw_source and not typed_source:
+                    raw_source = typed_source = staging_source
+                typed_source = typed_source or raw_source
+                raw_source = raw_source or typed_source
+                data_sql = safe_table_name("data", key)
+                raw_sql = safe_table_name("raw", key)
+                conn.execute(f"DROP TABLE IF EXISTS {quote_id(data_sql)}")
+                conn.execute(f"CREATE TABLE {quote_id(data_sql)} AS SELECT * FROM {quote_id(str(typed_source))}")
+                source_columns = read_table_columns(conn, str(raw_source))
+                if not source_columns:
+                    source_columns = read_table_columns(conn, str(typed_source))
+                raw_projection = ", ".join(
+                    f"CAST({quote_id(column)} AS VARCHAR) AS {quote_id(column)}"
+                    for column in source_columns
+                )
+                conn.execute(f"DROP TABLE IF EXISTS {quote_id(raw_sql)}")
+                conn.execute(f"CREATE TABLE {quote_id(raw_sql)} AS SELECT {raw_projection} FROM {quote_id(str(raw_source))}")
+                register_table(conn, key, data_sql, commit=False)
+                conn.execute(f"DROP TABLE IF EXISTS {quote_id('active')}")
+                # Module 2 agents historically operate on VARCHAR active data;
+                # keep native typed data in the registered source table while
+                # exposing a compatibility active projection.
+                conn.execute(f"CREATE TABLE {quote_id('active')} AS SELECT * FROM {quote_id(raw_sql)}")
+                set_meta(conn, "active_table_key", key)
+                set_meta(conn, "filename", fname)
+                set_meta(conn, "import_id", import_id)
+                set_meta(conn, "typed_transfer", {
+                    "artifact_id": manifest.artifact_id,
+                    "source_module": manifest.source_module,
+                    "destination_module": manifest.destination_module,
+                    "contract_version": manifest.contract_version,
+                    "payload_checksum": manifest.payload_checksum,
+                    "raw_hash": manifest.tables[0].raw_hash,
+                    "typed_hash": manifest.tables[0].typed_hash,
+                    "provenance": dict(manifest.tables[0].provenance),
+                    "raw_representation": "VARCHAR compatibility projection",
+                })
+                row_count = int(conn.execute(f"SELECT COUNT(*) FROM {quote_id(data_sql)}").fetchone()[0])
+                cols = len(read_table_columns(conn, data_sql))
+                if (
+                    lookup_sql_name(conn, key) != data_sql
+                    or not table_exists(conn, raw_sql)
+                    or not table_exists(conn, data_sql)
+                    or not table_exists(conn, "active")
+                    or get_meta(conn, "active_table_key") != key
+                ):
+                    raise RuntimeError("typed import publication postcondition failed")
+                inventory = [{"table_key": key, "rows": row_count, "cols": cols}]
+                conn.commit()
+                return jsonify({"inventory": inventory, "imported": True, "sessionId": import_id, "transport": "typed"})
+
             df = pd.read_csv(io.BytesIO(buffer))
             if df.empty:
                 return jsonify({"error": "Imported file contains no data"}), 400
 
             data_sql = safe_table_name("data", key)
-            df_to_sqlite(conn, data_sql, df)
-            register_table(conn, key, data_sql)
+            df_to_sqlite(conn, data_sql, df, commit=False)
+            register_table(conn, key, data_sql, commit=False)
             set_meta(conn, "import_id", import_id)
+            conn.commit()
 
             inventory = [{"table_key": key, "rows": len(df), "cols": len(df.columns)}]
-            return jsonify({"inventory": inventory, "imported": True, "sessionId": import_id})
+            return jsonify({"inventory": inventory, "imported": True, "sessionId": import_id,
+                            "transport": "csv", "warnings": [{
+                                "code": "LOSSY_CSV_FALLBACK",
+                                "message": "CSV import is a lossy compatibility fallback; typed values and provenance may not survive.",
+                            }]})
         except Exception as e:
+            try:
+                conn.rollback()
+                for table_name in (
+                    safe_table_name("typed_import", import_id),
+                    safe_table_name("raw", key),
+                    safe_table_name("data", key),
+                    "active",
+                ):
+                    conn.execute(f"DROP TABLE IF EXISTS {quote_id(table_name)}")
+                conn.commit()
+            except Exception:
+                logger.exception("Failed to clean up partial Module 2 typed import")
             logger.error("Failed to import data: %s", e, exc_info=True)
             return jsonify({"error": f"Failed to import data: {str(e)}"}), 500
 
 
 # ── Download / Transfer ────────────────────────────────────────────────────────
+
+
+class _TypedTransportUnavailable(RuntimeError):
+    pass
+
+
+def _export_typed_transfer(conn, *, filename: str, session_id: str):
+    api = _typed_artifact_module()
+    exporter = getattr(api, "export_duckdb_parquet", None) if api else None
+    if not callable(exporter):
+        raise _TypedTransportUnavailable("typed transport exporter is unavailable")
+    from backend.ingestion.models import OrderedColumnSchema, ValueType
+    from backend.ingestion.transfer import TransferManifest, TransferTable
+    schema_rows = conn.execute('PRAGMA table_info("active")').fetchall()
+    type_map = {
+        "BOOL": ValueType.BOOLEAN, "INTEGER": ValueType.INTEGER, "BIGINT": ValueType.INTEGER,
+        "DECIMAL": ValueType.DECIMAL, "DOUBLE": ValueType.FLOAT, "FLOAT": ValueType.FLOAT,
+        "DATE": ValueType.DATE, "TIME": ValueType.TIME, "TIMESTAMP": ValueType.TIMESTAMP,
+    }
+    columns = tuple(
+        OrderedColumnSchema(
+            key=str(row[1]), display_name=str(row[1]), ordinal=index,
+            value_type=next((value for token, value in type_map.items() if token in str(row[2]).upper()), ValueType.TEXT),
+            physical_name=str(row[1]),
+        )
+        for index, row in enumerate(schema_rows)
+    )
+    row_count = int(conn.execute('SELECT COUNT(*) FROM "active"').fetchone()[0])
+    manifest = TransferManifest(
+        f"module2:{session_id}", "module2", "module3",
+        (TransferTable("active", columns, row_count),),
+    )
+    result = _call_typed_api(
+        exporter, conn=conn, connection=conn, table_name="active",
+        filename=filename, session_id=session_id, manifest=manifest,
+    )
+    payload = _typed_result_field(result, "payload", "bytes", "artifact")
+    manifest = _typed_result_field(result, "manifest", "transport_manifest")
+    if isinstance(result, (tuple, list)) and len(result) >= 2:
+        if hasattr(result[0], "verify_payload"):
+            manifest, payload = result[0], result[1]
+        else:
+            payload, manifest = result[0], result[1]
+    if not isinstance(payload, (bytes, bytearray, memoryview)) or manifest is None:
+        raise _TypedTransportUnavailable("typed exporter returned an incomplete artifact")
+    if isinstance(manifest, (bytes, bytearray, memoryview, str)):
+        raise _TypedTransportUnavailable("typed exporter returned an unbound manifest")
+    # Return the bound manifest object; serialization is an HTTP transport
+    # concern and happens immediately before multipart submission.
+    return manifest, bytes(payload)
+
+
+def _typed_destination_unsupported(resp) -> bool:
+    try:
+        body = resp.json() or {}
+    except Exception:
+        return False
+    code = str(body.get("code", body.get("error_code", ""))).lower()
+    return code in {"unsupported_typed_artifact", "typed_unsupported", "typed_import_unsupported", "unsupported_typed_transport"}
 
 @app.route('/api/transfer-to-analyzer', methods=['POST'])
 def transfer_to_analyzer():
@@ -986,33 +1276,66 @@ def transfer_to_analyzer():
 
     with get_session_lock(session_id):
         conn = get_session_db(session_id)
-        df = sqlite_to_df(conn, "active")
-        if df is None:
+        if not table_exists(conn, "active"):
             return jsonify({"ok": False, "error": "No active dataset to transfer"}), 400
         filename = get_meta(conn, "filename") or "normalized_data"
 
     try:
+        base_name = filename.rsplit('.', 1)[0] if filename else "normalized_data"
+        with get_session_lock(session_id):
+            conn = get_session_db(session_id)
+            typed_manifest, typed_payload = _export_typed_transfer(
+                conn, filename=f"{base_name}_normalized.parquet", session_id=session_id,
+            )
+            typed_api = _typed_artifact_module()
+            manifest_bytes = typed_api.serialize_transport(typed_manifest)
+
+        typed_resp = _requests.post(
+            f"{_analyzer_be()}/import",
+            files={
+                "file": (f"{base_name}_normalized.parquet", io.BytesIO(typed_payload), "application/vnd.apache.parquet"),
+                "manifest": (f"{base_name}_normalized.manifest.json", io.BytesIO(manifest_bytes), "application/json"),
+            },
+            timeout=120,
+        )
+        if typed_resp.status_code == 200:
+            data = typed_resp.json()
+            if not data.get("sessionId"):
+                return jsonify({"ok": False, "error": "Analyzer returned no session for typed transfer", "code": "typed_destination_invalid"}), 502
+            return jsonify({"ok": True, "analyzerSessionId": data.get("sessionId"), "transport": "typed"})
+        if not _typed_destination_unsupported(typed_resp):
+            err = typed_resp.json().get("error", typed_resp.text) if typed_resp.headers.get("content-type", "").startswith("application/json") else typed_resp.text
+            return jsonify({"ok": False, "error": f"Analyzer typed upload failed: {err}", "code": "typed_destination_failed"}), 502
+
+        # CSV is permitted only for an explicit destination capability refusal.
+        with get_session_lock(session_id):
+            conn = get_session_db(session_id)
+            df = sqlite_to_df(conn, "active")
+            if df is None:
+                return jsonify({"ok": False, "error": "No active dataset to transfer"}), 400
         csv_str = df.to_csv(index=False, na_rep="")
         csv_bytes = csv_str.encode("utf-8")
-        fname = (filename.rsplit('.', 1)[0] + "_normalized.csv") if filename else "normalized_data.csv"
-
+        fname = f"{base_name}_normalized.csv"
         resp = _requests.post(
-            f"{_analyzer_be()}/api/import",
+            f"{_analyzer_be()}/import",
             files={"file": (fname, io.BytesIO(csv_bytes), "text/csv")},
             timeout=120,
         )
         if resp.status_code != 200:
             err = resp.json().get("error", resp.text) if resp.headers.get("content-type", "").startswith("application/json") else resp.text
             return jsonify({"ok": False, "error": f"Analyzer upload failed: {err}"}), 502
-
         data = resp.json()
-        return jsonify({"ok": True, "analyzerSessionId": data.get("sessionId")})
+        return jsonify({"ok": True, "analyzerSessionId": data.get("sessionId"), "transport": "csv",
+                        "warnings": [{"code": "LOSSY_CSV_FALLBACK",
+                                      "message": "Destination does not support typed transfer; CSV fallback may lose types and provenance."}]})
     except Exception as e:
         import traceback
         traceback.print_exc()
         err_str = str(e).lower()
         if "connection" in err_str or "refused" in err_str or "httpconnectionpool" in err_str:
             return jsonify({"ok": False, "error": "Cannot reach the Data Analyzer backend. Is it running?"}), 502
+        if isinstance(e, _TypedTransportUnavailable):
+            return jsonify({"ok": False, "error": str(e), "code": "typed_export_unavailable"}), 503
         return jsonify({"ok": False, "error": str(e)}), 500
 
 

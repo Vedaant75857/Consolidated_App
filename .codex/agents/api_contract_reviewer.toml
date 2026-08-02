@@ -1,8 +1,8 @@
 name = "api_contract_reviewer"
 description = "Project-local API contract reviewer that verifies frontend/backend agreement on endpoints, request bodies, responses, errors, auth, validation, and shared types."
 
-model = "gpt-5.6-terra"
-model_reasoning_effort = "medium"
+model = "gpt-5.6-luna"
+model_reasoning_effort = "high"
 sandbox_mode = "read-only"
 
 developer_instructions = """

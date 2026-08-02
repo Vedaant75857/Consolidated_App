@@ -12,7 +12,7 @@ export const pageVariants = {
     filter: "blur(0px)",
     transition: {
       duration: 0.35,
-      ease: [0.22, 1, 0.36, 1],
+      ease: [0.22, 1, 0.36, 1] as [number, number, number, number],
       staggerChildren: 0.06,
     },
   },
@@ -26,18 +26,18 @@ export const pageVariants = {
 
 export const horizontalVariants = {
   initial: (dir: number) => ({ opacity: 0, x: dir > 0 ? 60 : -60, filter: "blur(4px)" }),
-  animate: { opacity: 1, x: 0, filter: "blur(0px)", transition: { duration: 0.3, ease: [0.22, 1, 0.36, 1] } },
+  animate: { opacity: 1, x: 0, filter: "blur(0px)", transition: { duration: 0.3, ease: [0.22, 1, 0.36, 1] as [number, number, number, number] } },
   exit: (dir: number) => ({ opacity: 0, x: dir > 0 ? -60 : 60, filter: "blur(4px)", transition: { duration: 0.2 } }),
 };
 
 export const itemVariants = {
   initial: { opacity: 0, y: 12 },
-  animate: { opacity: 1, y: 0, transition: { duration: 0.25, ease: [0.22, 1, 0.36, 1] } },
+  animate: { opacity: 1, y: 0, transition: { duration: 0.25, ease: [0.22, 1, 0.36, 1] as [number, number, number, number] } },
 };
 
 export const softSpring = { type: "spring" as const, stiffness: 280, damping: 24 };
 
-export const entranceEasing = { duration: 0.32, ease: [0.22, 1, 0.36, 1] };
+export const entranceEasing = { duration: 0.32, ease: [0.22, 1, 0.36, 1] as [number, number, number, number] };
 
 /* ─── SurfaceCard ─── */
 

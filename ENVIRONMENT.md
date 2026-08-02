@@ -16,6 +16,28 @@ Create these ignored files locally and provide real credentials through the
 deployment platform's secret manager in production. Never commit credential
 values.
 
+## TLS certificates behind Zscaler inspection
+
+The repository never includes a company-specific Zscaler certificate. The
+unified Python backend automatically uses the standard Windows Bain path
+`C:\\Bain\\Setup\\Zscaler\\zscaler.pem` when that file exists. Other users
+should set `PROCIP_CA_BUNDLE` to the PEM file supplied by their own IT team:
+
+```powershell
+$env:PROCIP_CA_BUNDLE = 'C:\\path\\to\\organization-ca-bundle.pem'
+npm run dev
+```
+
+The backend maps this to `REQUESTS_CA_BUNDLE` and `SSL_CERT_FILE` for Python
+HTTP clients. It never disables certificate verification. For a persistent
+setting, configure `PROCIP_CA_BUNDLE` in the shell or deployment environment
+instead of committing it to `.env`.
+
+This setting only affects Python processes started by this repository. `pip`
+and npm may need their own CA settings (`PIP_CERT` and npm's `cafile`), while
+Claude Code requires `NODE_EXTRA_CA_CERTS` and AWS CLI uses `ca_bundle`.
+External tools cannot be configured by application code.
+
 ## Frontend navigation
 
 | Application | File | Variables |

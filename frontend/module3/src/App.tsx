@@ -60,6 +60,7 @@ import {
   hydrateApiKeyFromUrl,
   setSessionApiKey,
 } from "./apiKeySession";
+import { MODULE_API_BASE } from "./apiBase";
 
 const LEGACY_API_KEY = "summarizer_apiKey";
 
@@ -185,7 +186,7 @@ export default function App() {
       // Clear backend artifacts
       if (sessionId) {
         try {
-          await fetch("/api/invalidate-downstream", {
+          await fetch(`${MODULE_API_BASE}/invalidate-downstream`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ sessionId, fromStep }),
@@ -309,7 +310,7 @@ export default function App() {
         warnings: UploadWarning[];
       }>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open("POST", "/api/upload");
+        xhr.open("POST", `${MODULE_API_BASE}/upload`);
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) {
             setUploadProgress(Math.round((e.loaded / e.total) * 100));
@@ -360,7 +361,7 @@ export default function App() {
     async (tableKey: string) => {
       if (!sessionId) return;
       try {
-        const res = await fetch(`/api/get-preview?sessionId=${encodeURIComponent(sessionId)}&tableKey=${encodeURIComponent(tableKey)}`);
+        const res = await fetch(`${MODULE_API_BASE}/get-preview?sessionId=${encodeURIComponent(sessionId)}&tableKey=${encodeURIComponent(tableKey)}`);
         if (!res.ok) return;
         const data = await res.json();
         if (data.preview) {
@@ -758,7 +759,7 @@ export default function App() {
       {/* Back to Home bar */}
       <div className="h-10 bg-white/90 dark:bg-neutral-900/90 backdrop-blur-sm border-b border-neutral-200/80 dark:border-neutral-700/80 flex items-center px-4 shrink-0 z-50">
         <a
-          href={getConfig().home ?? import.meta.env.VITE_HOME_URL ?? "http://localhost:3010"}
+                        href={getConfig().home ?? import.meta.env.VITE_HOME_URL ?? "/"}
           className="flex items-center gap-2 text-xs font-medium text-neutral-500 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
         >
           <ArrowLeft className="w-3.5 h-3.5" />

@@ -5,15 +5,20 @@
   "scripts": {
     "setup": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\setup.ps1",
     "predev": "npm run setup",
-    "dev": "concurrently -n landing,stitcher-be,stitcher-fe,normalizer-be,normalizer-fe,summarizer-be,summarizer-fe -c cyan,blue,magenta,green,yellow,red,white \"npm run dev:landing\" \"npm run dev:stitcher-be\" \"npm run dev:stitcher-fe\" \"npm run dev:normalizer-be\" \"npm run dev:normalizer-fe\" \"npm run dev:summarizer-be\" \"npm run dev:summarizer-fe\"",
+    "dev": "concurrently -n suite,backend -c cyan,blue \"npm run dev:suite\" \"npm run dev:backend\"",
+    "dev:suite": "npm --prefix frontend/suite run dev",
     "dev:landing": "npm --prefix frontend/landing run dev",
-    "dev:stitcher-be": ".venv\\Scripts\\python.exe backend/module1/app.py",
+    "dev:backend": ".venv\\Scripts\\python.exe backend/unified_app.py",
     "dev:stitcher-fe": "npm --prefix frontend/module1 run dev",
-    "dev:normalizer-be": ".venv\\Scripts\\python.exe backend/module2/app.py",
     "dev:normalizer-fe": "npm --prefix frontend/module2 run dev",
-    "dev:summarizer-be": ".venv\\Scripts\\python.exe backend/module3/app.py",
     "dev:summarizer-fe": "npm --prefix frontend/module3 run dev",
-    "build:frontends": "npm --prefix frontend/landing run build && npm --prefix frontend/module1 run build && npm --prefix frontend/module2 run build && npm --prefix frontend/module3 run build"
+    "dev:legacy-frontends": "concurrently -n landing,stitcher-fe,normalizer-fe,summarizer-fe -c cyan,magenta,yellow,white \"npm run dev:landing\" \"npm run dev:stitcher-fe\" \"npm run dev:normalizer-fe\" \"npm run dev:summarizer-fe\"",
+    "dev:legacy-backends": "concurrently -n stitcher-be,normalizer-be,summarizer-be -c blue,green,red \"npm run dev:legacy:stitcher-be\" \"npm run dev:legacy:normalizer-be\" \"npm run dev:legacy:summarizer-be\"",
+    "dev:legacy:stitcher-be": ".venv\\Scripts\\python.exe backend/module1/app.py",
+    "dev:legacy:normalizer-be": ".venv\\Scripts\\python.exe backend/module2/app.py",
+    "dev:legacy:summarizer-be": ".venv\\Scripts\\python.exe backend/module3/app.py",
+    "build:suite": "npm --prefix frontend/suite run build",
+    "build:frontends": "npm run build:suite && npm --prefix frontend/landing run build && npm --prefix frontend/module1 run build && npm --prefix frontend/module2 run build && npm --prefix frontend/module3 run build"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

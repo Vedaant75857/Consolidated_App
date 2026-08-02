@@ -9,6 +9,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "`n--- Installing node_modules for Frontends ---"
 
 $frontends = @(
+    ".\frontend\suite",
     ".\frontend\landing",
     ".\frontend\module1",
     ".\frontend\module2",
@@ -20,9 +21,9 @@ foreach ($frontend in $frontends) {
         Write-Host "Installing NPM dependencies for $frontend"
         Push-Location $frontend
         try {
-            if ($frontend -eq ".\frontend\module1") {
-                # Module 1 currently uses React 19 while glide-data-grid's peer
-                # declaration only advertises support through React 18.
+            if ($frontend -eq ".\frontend\module1" -or $frontend -eq ".\frontend\suite") {
+                # The suite and Module 1 use React 19 while glide-data-grid's
+                # peer declaration only advertises support through React 18.
                 npm install --legacy-peer-deps
             } else {
                 npm install

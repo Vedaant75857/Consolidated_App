@@ -73,10 +73,10 @@ const OTHER_FIELD_GROUP = {
 } as const;
 
 const FIELD_GROUP_BY_KEY = new Map<string, string>(
-  FIELD_GROUPS.flatMap((group) => group.fieldKeys.map((fieldKey) => [fieldKey, group.key]))
+  FIELD_GROUPS.flatMap((group) => group.fieldKeys.map((fieldKey): [string, string] => [fieldKey, group.key]))
 );
 const FIELD_ORDER_BY_KEY = new Map<string, number>(
-  FIELD_GROUPS.flatMap((group) => group.fieldKeys.map((fieldKey, index) => [fieldKey, index]))
+  FIELD_GROUPS.flatMap((group) => group.fieldKeys.map((fieldKey, index): [string, number] => [fieldKey, index]))
 );
 
 const SPEND_DATE_FALLBACK_HIERARCHY = [

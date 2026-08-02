@@ -1,0 +1,20 @@
+@layer components {
+  .suite-shell { min-height: 100vh; }
+  .suite-nav {
+    position: fixed; z-index: 50; inset: 0 0 auto; display: flex; align-items: center;
+    justify-content: space-between; gap: 1rem; min-height: 3.5rem; padding: .5rem 1rem;
+    background: color-mix(in srgb, white 90%, transparent); border-bottom: 1px solid rgb(226 232 240 / .8);
+    backdrop-filter: blur(12px);
+  }
+  .suite-brand { color: #111827; font-weight: 700; text-decoration: none; white-space: nowrap; }
+  .suite-nav nav { display: flex; gap: .25rem; overflow-x: auto; }
+  .suite-nav nav a { border-radius: .5rem; color: #475569; font-size: .875rem; padding: .4rem .6rem; text-decoration: none; white-space: nowrap; }
+  .suite-nav nav a:hover, .suite-nav nav a[aria-current="page"] { background: #f1f5f9; color: #0f172a; }
+  .suite-route { min-height: 100vh; padding-top: 3.5rem; }
+  .suite-loading, .suite-error { align-items: center; display: flex; flex-direction: column; justify-content: center; min-height: 60vh; padding: 2rem; text-align: center; }
+  .suite-error h1 { color: #0f172a; font-size: 1.5rem; font-weight: 700; }
+  .suite-error p { color: #475569; }
+  .suite-error-actions { display: flex; gap: .75rem; }
+  .suite-error button { border: 1px solid #cbd5e1; border-radius: .5rem; background: white; cursor: pointer; padding: .5rem .75rem; }
+  .suite-error button:first-child { background: #0f172a; color: white; }
+}
